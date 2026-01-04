@@ -7,6 +7,7 @@ from ..storage.duckdb_client import DuckDBClient
 from ..config import settings
 from .alpaca_client import get_alpaca_client
 from .iex_client import get_iex_client
+import pandas as pd
 
 log = logging.getLogger("app.poller")
 
@@ -17,8 +18,19 @@ class IngestPoller:
     async def _ingest_frames(self, symbol: str, frames, source: str) -> int:
         inserted = 0
         async for df in frames:
+            chunk_start = pd.to_datetime(df["ts"]).min().isoformat() if not df.empty else None
+            chunk_end = pd.to_datetime(df["ts"]).max().isoformat() if not df.empty else None
             inserted += self.db.insert_bars(df, symbol, source=source)
-            log.info("ingested chunk", extra={"symbol": symbol, "rows": len(df), "source": source})
+            log.info(
+                "ingested chunk",
+                extra={
+                    "symbol": symbol,
+                    "rows": len(df),
+                    "source": source,
+                    "chunk_start": chunk_start,
+                    "chunk_end": chunk_end,
+                },
+            )
         return inserted
 
     async def run_history(self, symbol: str, start: str | None = None, end: str | None = None) -> dict:
