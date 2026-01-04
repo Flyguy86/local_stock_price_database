@@ -80,9 +80,12 @@ class DuckDBClient:
     def table_page(self, table: str, limit: int, offset: int) -> tuple[pd.DataFrame, int]:
         if table not in self.list_tables():
             raise ValueError("table not found")
-        total = self.conn.execute(f"SELECT COUNT(*) FROM {duckdb.quote_identifier(table)}").fetchone()[0]
+        if not table.replace("_", "").isalnum():
+            raise ValueError("invalid table name")
+        ident = f'"{table}"'
+        total = self.conn.execute(f"SELECT COUNT(*) FROM {ident}").fetchone()[0]
         df = self.conn.execute(
-            f"SELECT * FROM {duckdb.quote_identifier(table)} LIMIT ? OFFSET ?",
+            f"SELECT * FROM {ident} LIMIT ? OFFSET ?",
             [limit, offset],
         ).fetch_df()
         return df, total
