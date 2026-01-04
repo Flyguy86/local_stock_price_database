@@ -330,10 +330,22 @@ async def dashboard():
           loadTableRows(Math.floor((tableState.total - 1) / tableState.limit) * tableState.limit);
         }
 
-        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
-        refreshStatus();
-        refreshLogs();
-        loadTables();
+        async function refreshLogs() {
+          try {
+            const res = await fetch("/logs?limit=100");
+            const data = await res.json();
+            const box = document.getElementById("logs-box");
+            box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
+            box.scrollTop = box.scrollHeight;
+          } catch (e) {
+            console.error("log fetch failed", e);
+          }
+        }
+
+         setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
+         refreshStatus();
+         refreshLogs();
+         loadTables();
       </script>
     </body>
     </html>
