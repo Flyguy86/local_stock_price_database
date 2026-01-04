@@ -20,16 +20,15 @@ class IngestPoller:
         async for df in frames:
             chunk_start = pd.to_datetime(df["ts"]).min().isoformat() if not df.empty else None
             chunk_end = pd.to_datetime(df["ts"]).max().isoformat() if not df.empty else None
+            rows = len(df)
             inserted += self.db.insert_bars(df, symbol, source=source)
             log.info(
-                "ingested chunk",
-                extra={
-                    "symbol": symbol,
-                    "rows": len(df),
-                    "source": source,
-                    "chunk_start": chunk_start,
-                    "chunk_end": chunk_end,
-                },
+                "ingested chunk range=%s -> %s rows=%s symbol=%s source=%s",
+                chunk_start,
+                chunk_end,
+                rows,
+                symbol,
+                source,
             )
         return inserted
 
