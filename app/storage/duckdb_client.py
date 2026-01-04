@@ -1,8 +1,8 @@
 from __future__ import annotations
 import duckdb
 from pathlib import Path
-from typing import Iterable
 import pandas as pd
+import os
 from .schema import table_blueprints
 
 class DuckDBClient:
@@ -20,7 +20,7 @@ class DuckDBClient:
         df["symbol"] = symbol
         df["source"] = source
         cols = ["symbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count", "source"]
-        df = df[cols]
+        df = df[cols].drop_duplicates(subset=["symbol", "ts"])
         self.conn.register("tmp_df", df)
         self.conn.execute(
             """
@@ -35,7 +35,16 @@ class DuckDBClient:
             dest = self.parquet_root / symbol / f"dt={date}"
             dest.mkdir(parents=True, exist_ok=True)
             file_path = dest / "bars.parquet"
-            group.drop(columns=["date"]).to_parquet(file_path, index=False)
+            if file_path.exists():
+                existing = pd.read_parquet(file_path)
+                merged = (
+                    pd.concat([existing, group.drop(columns=["date"])], ignore_index=True)
+                    .drop_duplicates(subset=["ts"])
+                    .sort_values("ts")
+                )
+            else:
+                merged = group.drop(columns=["date"]).sort_values("ts")
+            merged.to_parquet(file_path, index=False)
         return len(df)
 
     def latest_bars(self, symbol: str, limit: int = 100) -> pd.DataFrame:
@@ -89,3 +98,25 @@ class DuckDBClient:
             [limit, offset],
         ).fetch_df()
         return df, total
+
+    def delete_symbol(self, symbol: str) -> int:
+        deleted = self.conn.execute("DELETE FROM bars WHERE symbol = ?", [symbol]).rowcount
+        parquet_path = self.parquet_root / symbol
+        if parquet_path.exists():
+            for root, dirs, files in os.walk(parquet_path, topdown=False):
+                for f in files:
+                    Path(root, f).unlink()
+                for d in dirs:
+                    Path(root, d).rmdir()
+            parquet_path.rmdir()
+        return deleted
+
+    def delete_all(self) -> None:
+        self.conn.execute("DELETE FROM bars")
+        if self.parquet_root.exists():
+            for root, dirs, files in os.walk(self.parquet_root, topdown=False):
+                for f in files:
+                    Path(root, f).unlink()
+                for d in dirs:
+                    Path(root, d).rmdir()
+            self.parquet_root.mkdir(parents=True, exist_ok=True)
