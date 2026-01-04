@@ -106,6 +106,16 @@ async def logs(limit: int = 100):
     with log_lock:
         return log_buffer[-limit:]
 
+@app.delete("/bars/{symbol}")
+async def delete_bars_symbol(symbol: str):
+    deleted = db.delete_symbol(symbol)
+    return {"symbol": symbol, "deleted": deleted}
+
+@app.delete("/bars")
+async def delete_all_bars():
+    db.delete_all()
+    return {"deleted": "all"}
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return """
@@ -133,6 +143,10 @@ async def dashboard():
         <input id="end" placeholder="end ISO (optional)" style="width:18ch" />
         <button onclick="ingest()">Start ingest</button>
         <span id="ingest-result"></span>
+        <div style="margin-top:0.5rem;">
+          <button onclick="deleteSymbol()">Delete symbol data</button>
+          <button onclick="deleteAll()">Delete ALL data</button>
+        </div>
       </section>
 
       <section>
@@ -346,6 +360,20 @@ async def dashboard():
          refreshStatus();
          refreshLogs();
          loadTables();
+
+         async function deleteSymbol() {
+          const symbol = document.getElementById("symbol").value.trim();
+          if (!symbol) { alert("Enter a symbol"); return; }
+          if (!confirm(`Delete data for ${symbol}?`)) return;
+          await fetch(`/bars/${symbol}`, { method: "DELETE" });
+          refreshStatus(); loadTables();
+        }
+
+        async function deleteAll() {
+          if (!confirm("Delete ALL data?")) return;
+          await fetch(`/bars`, { method: "DELETE" });
+          refreshStatus(); loadTables();
+        }
       </script>
     </body>
     </html>
