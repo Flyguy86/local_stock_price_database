@@ -15,30 +15,43 @@ class IngestPoller:
     def __init__(self, db: DuckDBClient):
         self.db = db
 
-    async def _ingest_frames(self, symbol: str, frames, source: str) -> int:
-        inserted = 0
-        async for df in frames:
-            chunk_start = pd.to_datetime(df["ts"]).min().isoformat() if not df.empty else None
-            chunk_end = pd.to_datetime(df["ts"]).max().isoformat() if not df.empty else None
-            rows = len(df)
-            inserted += self.db.insert_bars(df, symbol, source=source)
-            log.info(
-                "ingested chunk range=%s -> %s rows=%s symbol=%s source=%s",
-                chunk_start,
-                chunk_end,
-                rows,
-                symbol,
-                source,
-            )
-        return inserted
-
     async def run_history(self, symbol: str, start: str | None = None, end: str | None = None) -> dict:
         inserted = 0
+        target_start = pd.to_datetime(start, utc=True) if start else None
+        current_end = end
         # Prefer Alpaca if configured
         if settings.alpaca_key_id and settings.alpaca_secret_key:
             client = get_alpaca_client()
             try:
-                inserted = await self._ingest_frames(symbol, client.fetch_bars(symbol, timeframe="1Min", start=start, end=end), source="alpaca")
+                while True:
+                    got_any = False
+                    chunk_earliest = None
+                    async for df in client.fetch_bars(symbol, timeframe="1Min", start=start, end=current_end):
+                        got_any = True
+                        if df.empty:
+                            continue
+                        chunk_start = pd.to_datetime(df["ts"]).min().isoformat()
+                        chunk_end = pd.to_datetime(df["ts"]).max().isoformat()
+                        rows = len(df)
+                        inserted += self.db.insert_bars(df, symbol, source="alpaca")
+                        log.info(
+                            "ingested chunk range=%s -> %s rows=%s symbol=%s source=%s",
+                            chunk_start,
+                            chunk_end,
+                            rows,
+                            symbol,
+                            "alpaca",
+                        )
+                        earliest_val = pd.to_datetime(df["ts"]).min()
+                        chunk_earliest = earliest_val if chunk_earliest is None else min(chunk_earliest, earliest_val)
+                    if not got_any or chunk_earliest is None:
+                        break
+                    if target_start and chunk_earliest <= target_start:
+                        break
+                    new_end = (chunk_earliest - pd.Timedelta(minutes=1)).isoformat()
+                    if current_end == new_end:
+                        break
+                    current_end = new_end
                 return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
             except HTTPStatusError as exc:
                 log.warning("alpaca fetch failed, attempting IEX", extra={"symbol": symbol, "status": exc.response.status_code})
@@ -48,7 +61,21 @@ class IngestPoller:
         if settings.iex_token:
             client = get_iex_client()
             try:
-                inserted = await self._ingest_frames(symbol, client.fetch_bars(symbol), source="iex")
+                async for df in client.fetch_bars(symbol):
+                    if df.empty:
+                        continue
+                    chunk_start = pd.to_datetime(df["ts"]).min().isoformat()
+                    chunk_end = pd.to_datetime(df["ts"]).max().isoformat()
+                    rows = len(df)
+                    inserted += self.db.insert_bars(df, symbol, source="iex")
+                    log.info(
+                        "ingested chunk range=%s -> %s rows=%s symbol=%s source=%s",
+                        chunk_start,
+                        chunk_end,
+                        rows,
+                        symbol,
+                        "iex",
+                    )
                 return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
             finally:
                 await client.aclose()
