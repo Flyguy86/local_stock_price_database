@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from ..config import settings
@@ -28,7 +28,7 @@ class Status(BaseModel):
 agent_status: dict[str, Status] = {}
 
 @app.post("/ingest/{symbol}", response_model=IngestResponse)
-async def ingest_symbol(symbol: str, background: BackgroundTasks, start: str | None = None, end: str | None = None):
+async def ingest_symbol(symbol: str, start: str | None = None, end: str | None = None):
     logger.info("ingest request queued", extra={"symbol": symbol, "start": start, "end": end})
     agent_status[symbol] = Status(symbol=symbol, state="queued", last_update=None)
     async def task():
@@ -41,7 +41,7 @@ async def ingest_symbol(symbol: str, background: BackgroundTasks, start: str | N
         except Exception:
             logger.exception("ingest failed", extra={"symbol": symbol})
             agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None)
-    background.add_task(asyncio.create_task, task())
+    asyncio.create_task(task())
     return IngestResponse(symbol=symbol, inserted=0, ts="queued")
 
 @app.get("/status", response_model=list[Status])
