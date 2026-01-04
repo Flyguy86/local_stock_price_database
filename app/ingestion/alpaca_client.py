@@ -9,10 +9,11 @@ from ..config import settings
 log = logging.getLogger("app.alpaca")
 
 class AlpacaClient:
-    def __init__(self, key: str | None, secret: str | None, base_url: str):
+    def __init__(self, key: str | None, secret: str | None, base_url: str, feed: str | None = None):
         self.key = key
         self.secret = secret
         self.base_url = base_url
+        self.feed = feed
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={
@@ -35,6 +36,8 @@ class AlpacaClient:
         backoff = 1.0
         while True:
             params = {"timeframe": timeframe, "limit": limit, "page_token": next_page}
+            if self.feed:
+                params["feed"] = self.feed
             if start:
                 params["start"] = start
             if end:
@@ -72,4 +75,4 @@ class AlpacaClient:
         await self._client.aclose()
 
 def get_alpaca_client() -> AlpacaClient:
-    return AlpacaClient(settings.alpaca_key_id, settings.alpaca_secret_key, settings.alpaca_base_url)
+    return AlpacaClient(settings.alpaca_key_id, settings.alpaca_secret_key, settings.alpaca_base_url, settings.alpaca_feed)

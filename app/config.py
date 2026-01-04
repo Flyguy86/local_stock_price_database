@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     alpaca_key_id: str | None = None
     alpaca_secret_key: str | None = None
     alpaca_base_url: str = "https://data.alpaca.markets"
+    alpaca_feed: str = "iex"
     iex_token: str | None = None
     iex_base_url: str = "https://cloud.iexapis.com"
     data_dir: Path = Path("data")
