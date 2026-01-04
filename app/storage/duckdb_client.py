@@ -53,3 +53,36 @@ class DuckDBClient:
                 "SELECT DISTINCT symbol FROM bars ORDER BY symbol"
             ).fetchall()
         ]
+
+    def list_tables(self) -> list[str]:
+        return [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()"
+            ).fetchall()
+        ]
+
+    def bars_page(self, symbol: str, limit: int, offset: int) -> tuple[pd.DataFrame, int]:
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM bars WHERE symbol = ?", [symbol]
+        ).fetchone()[0]
+        df = self.conn.execute(
+            """
+            SELECT * FROM bars
+            WHERE symbol = ?
+            ORDER BY ts DESC
+            LIMIT ? OFFSET ?
+            """,
+            [symbol, limit, offset],
+        ).fetch_df()
+        return df, total
+
+    def table_page(self, table: str, limit: int, offset: int) -> tuple[pd.DataFrame, int]:
+        if table not in self.list_tables():
+            raise ValueError("table not found")
+        total = self.conn.execute(f"SELECT COUNT(*) FROM {duckdb.quote_identifier(table)}").fetchone()[0]
+        df = self.conn.execute(
+            f"SELECT * FROM {duckdb.quote_identifier(table)} LIMIT ? OFFSET ?",
+            [limit, offset],
+        ).fetch_df()
+        return df, total

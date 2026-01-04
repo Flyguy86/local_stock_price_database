@@ -71,15 +71,33 @@ async def status():
     return list(agent_status.values())
 
 @app.get("/bars/{symbol}")
-async def get_bars(symbol: str, limit: int = 100):
+async def get_bars(symbol: str, limit: int = 100, offset: int = 0):
     if limit <= 0 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be 1..1000")
-    df = db.latest_bars(symbol, limit)
-    return df.to_dict(orient="records")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+    df, total = db.bars_page(symbol, limit, offset)
+    return {"rows": df.to_dict(orient="records"), "total": total, "limit": limit, "offset": offset}
 
 @app.get("/symbols")
 async def symbols():
     return db.list_symbols()
+
+@app.get("/tables")
+async def tables():
+    return db.list_tables()
+
+@app.get("/tables/{table}/rows")
+async def table_rows(table: str, limit: int = 100, offset: int = 0):
+    if limit <= 0 or limit > 1000:
+        raise HTTPException(status_code=400, detail="limit must be 1..1000")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be >= 0")
+    try:
+        df, total = db.table_page(table, limit, offset)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="table not found")
+    return {"rows": df.to_dict(orient="records"), "total": total, "limit": limit, "offset": offset}
 
 @app.get("/logs")
 async def logs(limit: int = 100):
@@ -128,14 +146,39 @@ async def dashboard():
       <section>
         <h3>Latest bars</h3>
         <input id="bars-symbol" placeholder="symbol" />
-        <input id="bars-limit" type="number" value="5" min="1" max="1000" />
-        <button onclick="loadBars()">Load</button>
+        <input id="bars-limit" type="number" value="20" min="1" max="1000" />
+        <button onclick="loadBars(0)">Load</button>
+        <button onclick="barsFirst()">First</button>
+        <button onclick="barsPrev()">Prev</button>
+        <button onclick="barsNext()">Next</button>
+        <button onclick="barsLast()">Last</button>
+        <span id="bars-page-info"></span>
         <table id="bars-table">
           <thead></thead>
           <tbody></tbody>
         </table>
       </section>
 
+      <section>
+        <h3>Tables</h3>
+        <button onclick="loadTables()">Refresh tables</button>
+        <ul id="tables-list"></ul>
+        <div>
+          <strong>Browse table</strong>
+          <input id="table-name" placeholder="table name" />
+          <input id="table-limit" type="number" value="20" min="1" max="1000" />
+          <button onclick="loadTableRows(0)">Load</button>
+          <button onclick="tableFirst()">First</button>
+          <button onclick="tablePrev()">Prev</button>
+          <button onclick="tableNext()">Next</button>
+          <button onclick="tableLast()">Last</button>
+          <span id="table-page-info"></span>
+          <table id="table-rows">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
       <script>
         function isoFromLookbackYears(years) {
           if (!years || isNaN(years) || years <= 0) return null;
@@ -187,44 +230,15 @@ async def dashboard():
           });
         }
 
-        async function loadBars() {
+        let barsState = {offset: 0, total: 0, limit: 20, symbol: ""};
+        let tableState = {offset: 0, total: 0, limit: 20, table: ""};
+
+        async function loadBars(offsetOverride) {
           const symbol = document.getElementById("bars-symbol").value.trim();
-          const limit = document.getElementById("bars-limit").value;
+          const limit = parseInt(document.getElementById("bars-limit").value, 10);
           if (!symbol) { alert("Enter a symbol"); return; }
-          const res = await fetch(`/bars/${symbol}?limit=${limit}`);
+          const offset = offsetOverride ?? barsState.offset;
+          const res = await fetch(`/bars/${symbol}?limit=${limit}&offset=${offset}`);
           const data = await res.json();
-          const head = document.querySelector("#bars-table thead");
-          const body = document.querySelector("#bars-table tbody");
-          head.innerHTML = ""; body.innerHTML = "";
-          if (data.length === 0) { body.innerHTML = "<tr><td>No data</td></tr>"; return; }
-          const cols = Object.keys(data[0]);
-          const trHead = document.createElement("tr");
-          cols.forEach(c => { const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); });
-          head.appendChild(trHead);
-          data.forEach(row => {
-            const tr = document.createElement("tr");
-            cols.forEach(c => { const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); });
-            body.appendChild(tr);
-          });
-        }
-
-        async function refreshLogs() {
-          try {
-            const res = await fetch("/logs?limit=100");
-            const data = await res.json();
-            const box = document.getElementById("logs-box");
-            box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
-            box.scrollTop = box.scrollHeight;
-          } catch (e) {
-            console.error("log fetch failed", e);
-          }
-        }
-
-        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
-
-        refreshStatus();
-        refreshLogs();
-      </script>
-    </body>
-    </html>
-    """
+          barsState = {offset: data.offset, total: data.total, limit: data.limit, symbol};
+          
