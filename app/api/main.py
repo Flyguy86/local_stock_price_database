@@ -78,8 +78,8 @@ async def dashboard():
       <section>
         <h3>Ingest symbol</h3>
         <input id="symbol" placeholder="e.g. AAPL" />
-        <input id="start" placeholder="start ISO (optional)" />
-        <input id="end" placeholder="end ISO (optional)" />
+        <input id="lookback-years" type="number" value="1" step="0.25" min="0.1" style="width:8ch" />
+        <label for="lookback-years">lookback (years)</label>
         <button onclick="ingest()">Start ingest</button>
         <span id="ingest-result"></span>
       </section>
@@ -102,13 +102,23 @@ async def dashboard():
       </section>
 
       <script>
+        function isoFromLookbackYears(years) {
+          if (!years || isNaN(years) || years <= 0) return null;
+          const now = new Date();
+          const d = new Date(now);
+          d.setFullYear(d.getFullYear() - years);
+          return d.toISOString();
+        }
+
         async function ingest() {
           const symbol = document.getElementById("symbol").value.trim();
-          const start = document.getElementById("start").value.trim();
+          const startManual = document.getElementById("start").value.trim();
           const end = document.getElementById("end").value.trim();
+          const lookback = parseFloat(document.getElementById("lookback-years").value);
           if (!symbol) { alert("Enter a symbol"); return; }
           const qs = new URLSearchParams();
-          if (start) qs.append("start", start);
+          const startFromLookback = startManual || isoFromLookbackYears(lookback);
+          if (startFromLookback) qs.append("start", startFromLookback);
           if (end) qs.append("end", end);
           const res = await fetch(`/ingest/${symbol}?` + qs.toString(), { method: "POST" });
           const data = await res.json();
