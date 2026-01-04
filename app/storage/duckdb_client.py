@@ -13,22 +13,24 @@ class DuckDBClient:
         for ddl in table_blueprints():
             self.conn.execute(ddl)
 
-    def insert_bars(self, df: pd.DataFrame, symbol: str) -> int:
+    def insert_bars(self, df: pd.DataFrame, symbol: str, source: str | None = None) -> int:
         if df.empty:
             return 0
         df = df.copy()
         df["symbol"] = symbol
-        # Idempotent insert: skip existing (symbol, ts)
+        df["source"] = source
+        cols = ["symbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count", "source"]
+        df = df[cols]
+        self.conn.register("tmp_df", df)
         self.conn.execute(
             """
             INSERT INTO bars
-            SELECT * FROM df
+            SELECT * FROM tmp_df
             ON CONFLICT DO NOTHING
-            """,
-            {"df": df},
+            """
         )
-        # Partitioned Parquet append
-        df["date"] = df["ts"].dt.date
+        self.conn.unregister("tmp_df")
+        df["date"] = pd.to_datetime(df["ts"]).dt.date
         for date, group in df.groupby("date"):
             dest = self.parquet_root / symbol / f"dt={date}"
             dest.mkdir(parents=True, exist_ok=True)
