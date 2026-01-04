@@ -55,6 +55,18 @@ Stock price database
 - Run: `docker-compose up`
 - API available at `http://localhost:8000`
 
+## Environment variables (.env example)
+Create a `.env` in the repo root:
+```
+ALPACA_API_KEY_ID=PKEPWSDBRZZOMMZQF9CS
+ALPACA_API_SECRET_KEY=5iyJMFLNFhCzsGtedThbhuP69Mg1RFuEA0jh44Zn
+ALPACA_API_BASE_URL=https://paper-api.alpaca.markets/
+ALPACA_FEED=iex
+# Optional IEX direct token
+IEX_TOKEN=YOUR_IEX_TOKEN
+```
+Both `ALPACA_*` and `ALPACA_API_*` names are accepted.
+
 ## Notes
 - Configure Alpaca keys via env: `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`.
 - Optionally set Alpaca feed (defaults to IEX) via env: `ALPACA_FEED=iex`.
