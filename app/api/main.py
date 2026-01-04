@@ -29,16 +29,18 @@ agent_status: dict[str, Status] = {}
 
 @app.post("/ingest/{symbol}", response_model=IngestResponse)
 async def ingest_symbol(symbol: str, background: BackgroundTasks, start: str | None = None, end: str | None = None):
+    logger.info("ingest request queued", extra={"symbol": symbol, "start": start, "end": end})
     agent_status[symbol] = Status(symbol=symbol, state="queued", last_update=None)
     async def task():
         agent_status[symbol] = Status(symbol=symbol, state="running", last_update=None)
+        logger.info("ingest task started", extra={"symbol": symbol, "start": start, "end": end})
         try:
             result = await poller.run_history(symbol, start=start, end=end)
             agent_status[symbol] = Status(symbol=symbol, state="succeeded", last_update=result["ts"])
-        except Exception as exc:
+            logger.info("ingest task succeeded", extra={"symbol": symbol, "inserted": result["inserted"], "ts": result["ts"]})
+        except Exception:
             logger.exception("ingest failed", extra={"symbol": symbol})
             agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None)
-            raise exc
     background.add_task(asyncio.create_task, task())
     return IngestResponse(symbol=symbol, inserted=0, ts="queued")
 
@@ -79,7 +81,9 @@ async def dashboard():
         <h3>Ingest symbol</h3>
         <input id="symbol" placeholder="e.g. AAPL" />
         <input id="lookback-years" type="number" value="1" step="0.25" min="0.1" style="width:8ch" />
-        <label for="lookback-years">lookback (years)</label>
+        <label for="lookback-years">lookback (years)</label><br/>
+        <input id="start" placeholder="start ISO (optional)" style="width:18ch" />
+        <input id="end" placeholder="end ISO (optional)" style="width:18ch" />
         <button onclick="ingest()">Start ingest</button>
         <span id="ingest-result"></span>
       </section>
@@ -112,17 +116,25 @@ async def dashboard():
 
         async function ingest() {
           const symbol = document.getElementById("symbol").value.trim();
-          const startManual = document.getElementById("start").value.trim();
-          const end = document.getElementById("end").value.trim();
+          const startManualEl = document.getElementById("start");
+          const endEl = document.getElementById("end");
+          const startManual = startManualEl ? startManualEl.value.trim() : "";
+          const end = endEl ? endEl.value.trim() : "";
           const lookback = parseFloat(document.getElementById("lookback-years").value);
           if (!symbol) { alert("Enter a symbol"); return; }
           const qs = new URLSearchParams();
           const startFromLookback = startManual || isoFromLookbackYears(lookback);
           if (startFromLookback) qs.append("start", startFromLookback);
           if (end) qs.append("end", end);
-          const res = await fetch(`/ingest/${symbol}?` + qs.toString(), { method: "POST" });
-          const data = await res.json();
-          document.getElementById("ingest-result").textContent = JSON.stringify(data);
+          try {
+            console.log("ingest request", { symbol, start: startFromLookback, end });
+            const res = await fetch(`/ingest/${symbol}?` + qs.toString(), { method: "POST" });
+            const data = await res.json();
+            document.getElementById("ingest-result").textContent = JSON.stringify(data);
+          } catch (e) {
+            console.error("ingest error", e);
+            document.getElementById("ingest-result").textContent = "error: " + e;
+          }
           refreshStatus();
         }
 
