@@ -57,6 +57,7 @@ Stock price database
 
 ## Notes
 - Configure Alpaca keys via env: `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`.
+- Or configure IEX via env: `IEX_TOKEN` (uses `https://cloud.iexapis.com` by default).
 - Data + DuckDB files default under `./data/duckdb`.
 - Parquet partitions: `data/parquet/{symbol}/dt={YYYY-MM-DD}/...`
 

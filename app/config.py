@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     alpaca_key_id: str | None = None
     alpaca_secret_key: str | None = None
     alpaca_base_url: str = "https://data.alpaca.markets"
+    iex_token: str | None = None
+    iex_base_url: str = "https://cloud.iexapis.com"
     data_dir: Path = Path("data")
     duckdb_path: Path = Path("data/duckdb/local.db")
     parquet_dir: Path = Path("data/parquet")

@@ -23,12 +23,15 @@ class Status(BaseModel):
     symbol: str
     state: str
     last_update: str | None = None
+    error_message: str | None = None
 
 # In-memory agent status
 agent_status: dict[str, Status] = {}
 
 @app.post("/ingest/{symbol}", response_model=IngestResponse)
 async def ingest_symbol(symbol: str, start: str | None = None, end: str | None = None):
+    if not ((settings.alpaca_key_id and settings.alpaca_secret_key) or settings.iex_token):
+        raise HTTPException(status_code=400, detail="Missing provider credentials: set Alpaca keys or IEX token")
     logger.info("ingest request queued", extra={"symbol": symbol, "start": start, "end": end})
     agent_status[symbol] = Status(symbol=symbol, state="queued", last_update=None)
     async def task():
@@ -38,9 +41,9 @@ async def ingest_symbol(symbol: str, start: str | None = None, end: str | None =
             result = await poller.run_history(symbol, start=start, end=end)
             agent_status[symbol] = Status(symbol=symbol, state="succeeded", last_update=result["ts"])
             logger.info("ingest task succeeded", extra={"symbol": symbol, "inserted": result["inserted"], "ts": result["ts"]})
-        except Exception:
+        except Exception as exc:
             logger.exception("ingest failed", extra={"symbol": symbol})
-            agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None)
+            agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None, error_message=str(exc))
     asyncio.create_task(task())
     return IngestResponse(symbol=symbol, inserted=0, ts="queued")
 
@@ -146,6 +149,12 @@ async def dashboard():
           data.forEach(s => {
             const li = document.createElement("li");
             li.textContent = `${s.symbol}: ${s.state}` + (s.last_update ? ` @ ${s.last_update}` : "");
+            if (s.error_message) {
+              const err = document.createElement("div");
+              err.style.color = "red";
+              err.textContent = `error: ${s.error_message}`;
+              li.appendChild(err);
+            }
             list.appendChild(li);
           });
         }
