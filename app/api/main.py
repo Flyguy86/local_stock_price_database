@@ -241,4 +241,100 @@ async def dashboard():
           const res = await fetch(`/bars/${symbol}?limit=${limit}&offset=${offset}`);
           const data = await res.json();
           barsState = {offset: data.offset, total: data.total, limit: data.limit, symbol};
-          
+          const table = document.getElementById("bars-table");
+          table.querySelector("thead").innerHTML = "<tr><th>ts</th><th>open</th><th>high</th><th>low</th><th>close</th><th>volume</th></tr>";
+          const tbody = table.querySelector("tbody");
+          tbody.innerHTML = "";
+          data.rows.forEach(r => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `<td>${r.ts}</td><td>${r.open}</td><td>${r.high}</td><td>${r.low}</td><td>${r.close}</td><td>${r.volume}</td>`;
+            tbody.appendChild(tr);
+          });
+          document.getElementById("bars-page-info").textContent = `Showing ${offset + 1} to ${offset + data.rows.length} of ${data.total} rows`;
+        }
+
+        async function loadTables() {
+          const res = await fetch("/tables");
+          const data = await res.json();
+          const list = document.getElementById("tables-list");
+          list.innerHTML = "";
+          data.forEach(t => {
+            const li = document.createElement("li");
+            li.textContent = t;
+            list.appendChild(li);
+          });
+        }
+
+        async function loadTableRows(offsetOverride) {
+          const table = document.getElementById("table-name").value.trim();
+          const limit = parseInt(document.getElementById("table-limit").value, 10);
+          if (!table) { alert("Enter a table name"); return; }
+          const offset = offsetOverride ?? tableState.offset;
+          const res = await fetch(`/tables/${table}/rows?limit=${limit}&offset=${offset}`);
+          const data = await res.json();
+          tableState = {offset: data.offset, total: data.total, limit: data.limit, table};
+          const tableEl = document.getElementById("table-rows");
+          tableEl.querySelector("thead").innerHTML = "";
+          const tbody = tableEl.querySelector("tbody");
+          tbody.innerHTML = "";
+          if (data.rows.length > 0) {
+            Object.keys(data.rows[0]).forEach(key => {
+              const th = document.createElement("th");
+              th.textContent = key;
+              tableEl.querySelector("thead").appendChild(th);
+            });
+            data.rows.forEach(r => {
+              const tr = document.createElement("tr");
+              Object.values(r).forEach(v => {
+                const td = document.createElement("td");
+                td.textContent = v;
+                tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+            });
+            document.getElementById("table-page-info").textContent = `Showing ${offset + 1} to ${offset + data.rows.length} of ${data.total} rows`;
+          } else {
+            document.getElementById("table-page-info").textContent = "No rows found";
+          }
+        }
+
+        function barsFirst() {
+          loadBars(0);
+        }
+
+        function barsPrev() {
+          loadBars(barsState.offset - barsState.limit);
+        }
+
+        function barsNext() {
+          loadBars(barsState.offset + barsState.limit);
+        }
+
+        function barsLast() {
+          loadBars(Math.floor((barsState.total - 1) / barsState.limit) * barsState.limit);
+        }
+
+        function tableFirst() {
+          loadTableRows(0);
+        }
+
+        function tablePrev() {
+          loadTableRows(tableState.offset - tableState.limit);
+        }
+
+        function tableNext() {
+          loadTableRows(tableState.offset + tableState.limit);
+        }
+
+        function tableLast() {
+          loadTableRows(Math.floor((tableState.total - 1) / tableState.limit) * tableState.limit);
+        }
+
+        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
+        refreshStatus();
+        refreshLogs();
+        loadTables();
+      </script>
+    </body>
+    </html>
+    """
