@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import threading
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -10,6 +11,24 @@ from ..storage.duckdb_client import DuckDBClient
 from ..ingestion.poller import IngestPoller
 
 logger = configure_json_logger(settings.log_level)
+LOG_BUFFER_MAX = 200
+log_buffer: list[dict] = []
+log_lock = threading.Lock()
+
+class InMemoryHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        payload = {
+            "ts": getattr(record, "ts", None) or getattr(record, "created", None),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        with log_lock:
+            log_buffer.append(payload)
+            if len(log_buffer) > LOG_BUFFER_MAX:
+                del log_buffer[: len(log_buffer) - LOG_BUFFER_MAX]
+
+logger.addHandler(InMemoryHandler())
 db = DuckDBClient(settings.duckdb_path, settings.parquet_dir)
 poller = IngestPoller(db)
 app = FastAPI(title="local_stock_price_database")
@@ -62,6 +81,13 @@ async def get_bars(symbol: str, limit: int = 100):
 async def symbols():
     return db.list_symbols()
 
+@app.get("/logs")
+async def logs(limit: int = 100):
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be positive")
+    with log_lock:
+        return log_buffer[-limit:]
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return """
@@ -95,6 +121,8 @@ async def dashboard():
         <h3>Agent status</h3>
         <button onclick="refreshStatus()">Refresh</button>
         <ul id="status-list"></ul>
+        <h4>Server logs</h4>
+        <pre id="logs-box" style="background:#f7f7f7; padding:0.5rem; max-height:240px; overflow:auto;"></pre>
       </section>
 
       <section>
@@ -180,7 +208,22 @@ async def dashboard():
           });
         }
 
+        async function refreshLogs() {
+          try {
+            const res = await fetch("/logs?limit=100");
+            const data = await res.json();
+            const box = document.getElementById("logs-box");
+            box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
+            box.scrollTop = box.scrollHeight;
+          } catch (e) {
+            console.error("log fetch failed", e);
+          }
+        }
+
+        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
+
         refreshStatus();
+        refreshLogs();
       </script>
     </body>
     </html>
