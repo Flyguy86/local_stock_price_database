@@ -58,9 +58,9 @@ Stock price database
 ## Environment variables (.env example)
 Create a `.env` in the repo root:
 ```
-ALPACA_API_KEY_ID=PKEPWSDBRZZOMMZQF9CS
-ALPACA_API_SECRET_KEY=5iyJMFLNFhCzsGtedThbhuP69Mg1RFuEA0jh44Zn
-ALPACA_API_BASE_URL=https://paper-api.alpaca.markets/
+ALPACA_API_KEY_ID=PKEPWSDBRZZOMMZQF
+ALPACA_API_SECRET_KEY=5iyJMFLNFhCzhbhuP69Mg1RFuEA0jh44Zn
+ALPACA_API_BASE_URL=https://data.alpaca.markets/
 ALPACA_FEED=iex
 # Optional IEX direct token
 IEX_TOKEN=YOUR_IEX_TOKEN

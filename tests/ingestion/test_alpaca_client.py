@@ -1,101 +1,3 @@
-import json
-from datetime import datetime, timezone
-
-import pandas as pd
-import pytest
-
-from app.ingestion.alpaca_client import AlpacaClient
-from app.ingestion import poller as poller_module
-from app.ingestion.poller import IngestPoller
-
-
-class DummyResponse:
-    def __init__(self, payload: dict):
-        self.status_code = 200
-        self._payload = payload
-        self.headers = {}
-        self.text = json.dumps(payload)
-
-    def json(self) -> dict:
-        return self._payload
-
-    def raise_for_status(self) -> None:
-        return None
-
-
-class DummyAsyncClient:
-    def __init__(self, response: DummyResponse):
-        self.response = response
-        self.calls: list[tuple[str, dict]] = []
-
-    async def get(self, url: str, params: dict):
-        self.calls.append((url, params))
-        return self.response
-
-    async def aclose(self) -> None:
-        return None
-
-
-class StubAlpacaClient:
-    def __init__(self, frames: list[pd.DataFrame]):
-        self._frames = frames
-        self._served = False
-        self.calls: list[dict] = []
-
-    async def fetch_bars(
-        self,
-        symbol: str,
-        timeframe: str = "1Min",
-        start: str | None = None,
-        end: str | None = None,
-        limit: int = 0,
-        adjustments: str | None = None,
-    ):
-        self.calls.append(
-            {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "start": start,
-                "end": end,
-                "limit": limit,
-                "adjustments": adjustments,
-            }
-        )
-        if self._served:
-            return
-        self._served = True
-        for frame in self._frames:
-            yield frame
-
-    async def aclose(self) -> None:
-        return None
-
-
-class DummyDuckDBClient:
-    def __init__(self):
-        self.inserts: list[tuple[str, str | None, pd.DataFrame]] = []
-
-    def insert_bars(self, df: pd.DataFrame, symbol: str, source: str | None = None) -> int:
-        self.inserts.append((symbol, source, df.copy()))
-        return len(df)
-
-
-@pytest.mark.asyncio
-async def test_fetch_bars_includes_adjustment_and_limit(monkeypatch):
-    payload = {
-        "bars": [
-            {
-                "t": "2024-01-01T12:00:00Z",
-                "o": 1.0,
-                "h": 2.0,
-                "l": 0.5,
-                "c": 1.5,
-                "v": 100,
-                "vw": 1.2,
-                "n": 10,
-            }
-        ]
-    }
     dummy_response = DummyResponse(payload)
     dummy_client = DummyAsyncClient(dummy_response)
     alpaca = AlpacaClient("key", "secret", "https://example.com", feed="iex")
@@ -115,6 +17,36 @@ async def test_fetch_bars_includes_adjustment_and_limit(monkeypatch):
     assert frames[0]["ts"].iloc[0] == pd.Timestamp("2024-01-01T12:00:00Z", tz=timezone.utc)
 
 
+@pytest.mark.asyncio
+async def test_run_history_ingests_alpaca_data(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "ts": pd.to_datetime(["2024-01-01T12:00:00Z", "2024-01-01T12:01:00Z"], utc=True),
+            "open": [1.0, 1.1],
+            "high": [1.2, 1.3],
+            "low": [0.9, 1.0],
+            "close": [1.05, 1.15],
+            "volume": [100, 150],
+            "vwap": [1.02, 1.12],
+            "trade_count": [5, 6],
+        }
+    )
+    stub_client = StubAlpacaClient([df])
+    monkeypatch.setattr(poller_module, "get_alpaca_client", lambda: stub_client)
+    dummy_db = DummyDuckDBClient()
+    ingest = IngestPoller(dummy_db)
+
+    result = await ingest.run_history("AAPL", start="2023-12-31T00:00:00Z", end="2024-01-02T00:00:00Z")
+
+    assert result["symbol"] == "AAPL"
+    assert result["inserted"] == len(df)
+    assert dummy_db.inserts, "Expected bars to be inserted"
+    _, source, inserted_df = dummy_db.inserts[0]
+    assert source == "alpaca"
+    assert len(inserted_df) == len(df)
+    assert stub_client.calls[0]["limit"] == 3000
+    assert stub_client.calls[0]["adjustments"] == "all"
+    await stub_client.aclose()
 @pytest.mark.asyncio
 async def test_run_history_ingests_alpaca_data(monkeypatch):
     df = pd.DataFrame(
