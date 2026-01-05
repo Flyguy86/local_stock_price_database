@@ -4,6 +4,8 @@
 - The HTML at `/` in [feature_service/web.py](feature_service/web.py) is the manual test harness. For each step, expose a test button, render raw input/output, and show a pass/fail badge beside the button.
 - Steps to support now: (1) read DuckDB `local.db` and list unique tickers; (2) allow selecting any/all tickers; (3) trigger feature generation. Pause after these with visible raw data before/after and per-step indicators.
 - Preserve checkbox UX (`select all` / `clear`) and status polling via `/status`. New steps should mirror the pattern: button → fetch → render raw data → pass/fail badge.
+(3) for each step, we need to have a narrative of what is happening, what to expect, and how to interpret the results. This is critical for non-technical users to understand the process and outcomes.  Also this provides of with stepping stones to the correct final product.
+
 
 ## Core context
 - Services: ingestion API in [app/api/main.py](app/api/main.py) (pulls bars from Alpaca/IEX into DuckDB + Parquet) and feature builder in [feature_service](feature_service) (engineers indicators into DuckDB + partitioned Parquet).
