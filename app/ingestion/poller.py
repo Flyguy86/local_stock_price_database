@@ -116,3 +116,15 @@ class IngestPoller:
 
     async def run_live_once(self, symbol: str) -> dict:
         return await self.run_history(symbol)
+
+    async def run_live_batch(self, symbols: list[str]) -> dict:
+        now = pd.Timestamp.now(tz=timezone.utc)
+        start = (now - pd.Timedelta(minutes=15)).isoformat()
+        total_inserted = 0
+        for sym in symbols:
+            try:
+                result = await self.run_history(sym, start=start, end=None)
+                total_inserted += result["inserted"]
+            except Exception as exc:
+                log.exception("live batch failure", extra={"symbol": sym, "error": str(exc)})
+        return {"symbols": len(symbols), "inserted": total_inserted, "ts": datetime.now(timezone.utc).isoformat()}

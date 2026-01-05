@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import contextlib
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -9,6 +10,7 @@ from ..config import settings
 from ..logging import configure_json_logger
 from ..storage.duckdb_client import DuckDBClient
 from ..ingestion.poller import IngestPoller
+from ..ingestion.alpaca_client import get_alpaca_client
 
 logger = configure_json_logger(settings.log_level)
 LOG_BUFFER_MAX = 200
@@ -152,6 +154,7 @@ async def dashboard():
         th, td {{ border: 1px solid #e2e8f0; padding: 0.35rem 0.5rem; font-size: 0.9rem; }}
         .badge {{ padding: 0.15rem 0.5rem; border-radius: 999px; background: #e0f2fe; color: #075985; font-size: 0.8rem; display: inline-block; }}
         pre {{ white-space: pre-wrap; font-size: 0.85rem; background: #0b1224; color: #e2e8f0; padding: 0.75rem; border-radius: 8px; max-height: 260px; overflow: auto; }}
+        #logs-container {{ max-height: 300px; overflow: auto; background: #0b1224; color: #e2e8f0; border-radius: 8px; padding: 0.4rem; }}
         ul {{ padding-left: 1.1rem; }}
       </style>
     </head>
@@ -187,10 +190,15 @@ async def dashboard():
 
         <section>
           <h3>Agent status & Logs</h3>
-          <div class="row"><button onclick="refreshStatus()">Refresh</button></div>
+          <div class="row">
+            <button onclick="refreshStatus()">Refresh</button>
+            <button onclick="toggleLogs()">Collapse/Expand logs</button>
+          </div>
           <ul id="status-list"></ul>
-          <h4>Server logs</h4>
-          <div id="logs-box"></div>
+           <h4>Server logs</h4>
+          <div id="logs-container" style="display:block;">
+            <div id="logs-box"></div>
+          </div>
         </section>
 
         <section>
@@ -344,27 +352,32 @@ async def dashboard():
           const data = await res.json();
           const box = document.getElementById("logs-box");
           box.innerHTML = "";
-          data.forEach((l, idx) => {
-            const row = document.createElement("div");
-            row.style.marginBottom = "0.35rem";
-            const summary = document.createElement("div");
-            summary.textContent = `[${l.level}] ${l.message}`;
-            row.appendChild(summary);
-            if (l.raw) {
-              const btn = document.createElement("button");
-              btn.textContent = "show raw";
-              btn.style.marginTop = "0.2rem";
-              const pre = document.createElement("pre");
-              pre.style.display = "none";
-              try { pre.textContent = JSON.stringify(JSON.parse(l.raw), null, 2); }
-              catch { pre.textContent = l.raw; }
-              btn.onclick = () => { pre.style.display = pre.style.display === "none" ? "block" : "none"; };
-              row.appendChild(btn);
-              row.appendChild(pre);
-            }
-            box.appendChild(row);
-          });
-          box.scrollTop = box.scrollHeight;
+          [...data].reverse().forEach((l, idx) => {
+             const row = document.createElement("div");
+             row.style.marginBottom = "0.35rem";
+             const summary = document.createElement("div");
+             summary.textContent = `[${l.level}] ${l.message}`;
+             row.appendChild(summary);
+             if (l.raw) {
+               const btn = document.createElement("button");
+               btn.textContent = "show raw";
+               btn.style.marginTop = "0.2rem";
+               const pre = document.createElement("pre");
+               pre.style.display = "none";
+               try { pre.textContent = JSON.stringify(JSON.parse(l.raw), null, 2); }
+               catch { pre.textContent = l.raw; }
+               btn.onclick = () => { pre.style.display = pre.style.display === "none" ? "block" : "none"; };
+               row.appendChild(btn);
+               row.appendChild(pre);
+             }
+             box.appendChild(row);
+           });
+           box.scrollTop = box.scrollHeight;
+        }
+
+        function toggleLogs() {
+          const container = document.getElementById("logs-container");
+          container.style.display = container.style.display === "none" ? "block" : "none";
         }
 
         async function loadDebugToggle() {
@@ -389,3 +402,63 @@ async def dashboard():
     """
     html = base.replace("__ALPACA_FEED__", str(settings.alpaca_feed)).replace("__DUCKDB_PATH__", str(settings.duckdb_path))
     return HTMLResponse(html)
+
+live_task: asyncio.Task | None = None
+
+async def live_updater():
+    if not (settings.alpaca_key_id and settings.alpaca_secret_key):
+        logger.info("live updater disabled; missing alpaca credentials")
+        return
+    client = get_alpaca_client()
+    try:
+        while True:
+            try:
+                clock = await client.get_clock()
+                is_open = clock.get("is_open", False)
+                next_open = clock.get("next_open")
+                next_close = clock.get("next_close")
+                if not is_open:
+                    sleep_for = 60
+                    if next_open:
+                        try:
+                            ts = datetime.fromisoformat(next_open.replace("Z", "+00:00"))
+                            delta = (ts - datetime.now(timezone.utc)).total_seconds()
+                            sleep_for = max(30, min(delta, 600)) if delta > 0 else 60
+                        except Exception:
+                            sleep_for = 60
+                    logger.info("market closed; sleeping", extra={"sleep_seconds": sleep_for, "next_open": next_open})
+                    await asyncio.sleep(sleep_for)
+                    continue
+                symbols = db.list_symbols()
+                if symbols:
+                    result = await poller.run_live_batch(symbols)
+                    logger.info("live batch complete", extra={"symbols": result["symbols"], "inserted": result["inserted"]})
+                else:
+                    logger.info("live batch skipped; no symbols")
+                if next_close:
+                    try:
+                        ts_close = datetime.fromisoformat(next_close.replace("Z", "+00:00"))
+                        if ts_close < datetime.now(timezone.utc):
+                            await asyncio.sleep(60)
+                            continue
+                    except Exception:
+                        pass
+                await asyncio.sleep(60)
+            except Exception:
+                logger.exception("live updater loop error")
+                await asyncio.sleep(60)
+    finally:
+        await client.aclose()
+
+@app.on_event("startup")
+async def _startup():
+    global live_task
+    live_task = asyncio.create_task(live_updater())
+
+@app.on_event("shutdown")
+async def _shutdown():
+    global live_task
+    if live_task:
+        live_task.cancel()
+        with contextlib.suppress(Exception):
+            await live_task

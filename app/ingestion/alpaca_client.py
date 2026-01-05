@@ -10,13 +10,22 @@ from ..config import settings
 log = logging.getLogger("app.alpaca")
 
 class AlpacaClient:
-    def __init__(self, key: str | None, secret: str | None, base_url: str, feed: str | None = None):
+    def __init__(self, key: str | None, secret: str | None, base_url: str, feed: str | None = None, trading_base_url: str | None = None):
         self.key = key
         self.secret = secret
         self.base_url = base_url
         self.feed = feed
+        self.trading_base_url = trading_base_url or base_url
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
+            headers={
+                "APCA-API-KEY-ID": self.key or "",
+                "APCA-API-SECRET-KEY": self.secret or "",
+            },
+            timeout=30.0,
+        )
+        self._trading_client = httpx.AsyncClient(
+            base_url=self.trading_base_url,
             headers={
                 "APCA-API-KEY-ID": self.key or "",
                 "APCA-API-SECRET-KEY": self.secret or "",
@@ -121,8 +130,20 @@ class AlpacaClient:
             if not next_page:
                 break
 
+    async def get_clock(self) -> dict:
+        resp = await self._trading_client.get("/v2/clock")
+        resp.raise_for_status()
+        return resp.json()
+
     async def aclose(self):
         await self._client.aclose()
+        await self._trading_client.aclose()
 
 def get_alpaca_client() -> AlpacaClient:
-    return AlpacaClient(settings.alpaca_key_id, settings.alpaca_secret_key, settings.alpaca_base_url, settings.alpaca_feed)
+    return AlpacaClient(
+        settings.alpaca_key_id,
+        settings.alpaca_secret_key,
+        settings.alpaca_base_url,
+        settings.alpaca_feed,
+        settings.alpaca_trading_base_url,
+    )

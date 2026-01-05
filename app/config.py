@@ -15,6 +15,10 @@ class Settings(BaseSettings):
         default="https://data.alpaca.markets/",
         validation_alias=AliasChoices("ALPACA_BASE_URL", "ALPACA_API_BASE_URL"),
     )
+    alpaca_trading_base_url: str = Field(
+        default="https://paper-api.alpaca.markets",
+        validation_alias=AliasChoices("ALPACA_TRADING_BASE_URL", "ALPACA_API_TRADING_BASE_URL"),
+    )
     alpaca_feed: str = "iex"
     alpaca_debug_raw: bool = False
     iex_token: str | None = None
