@@ -195,8 +195,13 @@ def run_pipeline(
     dest_parquet: Path,
     symbols: Iterable[str] | None = None,
 ) -> dict:
-    tmp_src = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".duckdb").name)
+    tmpdir = tempfile.TemporaryDirectory()
+    tmp_src = Path(tmpdir.name) / source_db.name
     shutil.copy2(source_db, tmp_src)
+    wal_src = source_db.with_suffix(source_db.suffix + ".wal")
+    if wal_src.exists():
+        wal_dst = tmp_src.with_suffix(tmp_src.suffix + ".wal")
+        shutil.copy2(wal_src, wal_dst)
     src_conn = duckdb.connect(str(tmp_src), read_only=True)
     dest_conn = duckdb.connect(str(dest_db))
     try:
@@ -231,4 +236,4 @@ def run_pipeline(
             dest_conn.close()
         finally:
             src_conn.close()
-            tmp_src.unlink(missing_ok=True)
+            tmpdir.cleanup()

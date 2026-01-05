@@ -1,5 +1,8 @@
 # Copilot Instructions
-
+## Code accuracy and completeness
+- Ensure all code is syntactically correct and complete.
+- Include necessary imports, function definitions, and class definitions.
+- Ensure spacing and indentation follow Python conventions (4 spaces per indent level).
 ## Feature_service UI test bench (required)
 - The HTML at `/` in [feature_service/web.py](feature_service/web.py) is the manual test harness. For each step, expose a test button, render raw input/output, and show a pass/fail badge beside the button.
 - Steps to support now: (1) read DuckDB `local.db` and list unique tickers; (2) allow selecting any/all tickers; (3) trigger feature generation. Pause after these with visible raw data before/after and per-step indicators.
