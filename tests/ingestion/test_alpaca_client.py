@@ -21,8 +21,16 @@ class DummyResponse:
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
+    def json(self) -> dict:
+        return self._payload
+
 
 class DummyAsyncClient:
+    def __init__(self, response: DummyResponse):
+        self._response = response
+        self.calls: list[tuple[str, dict]] = []
+        self.closed = False
+
     async def get(self, url: str, params: dict | None = None) -> DummyResponse:
         self.calls.append((url, dict(params or {})))
         return self._response
@@ -32,6 +40,11 @@ class DummyAsyncClient:
 
 
 class StubAlpacaClient:
+    def __init__(self, frames: list[pd.DataFrame]):
+        self._frames = list(frames)
+        self.calls: list[dict] = []
+        self.closed = False
+
     async def fetch_bars(
         self,
         symbol: str,
@@ -60,6 +73,9 @@ class StubAlpacaClient:
 
 
 class DummyDuckDBClient:
+    def __init__(self):
+        self.inserts: list[tuple[str, str, pd.DataFrame]] = []
+
     def insert_bars(self, df: pd.DataFrame, symbol: str, source: str) -> int:
         self.inserts.append((symbol, source, df.copy()))
         return len(df)
@@ -67,6 +83,11 @@ class DummyDuckDBClient:
 
 @pytest.mark.asyncio
 async def test_fetch_bars_requests_expected_params():
+    payload = {
+        "bars": [
+            {"t": "2024-01-01T12:00:00Z", "o": 1.0, "h": 1.2, "l": 0.9, "c": 1.05, "v": 100, "vw": 1.02, "n": 5}
+        ]
+    }
     dummy_response = DummyResponse(payload)
     dummy_client = DummyAsyncClient(dummy_response)
     alpaca = AlpacaClient("key", "secret", "https://example.com", feed="iex")
@@ -116,3 +137,4 @@ async def test_run_history_ingests_alpaca_data(monkeypatch):
     assert stub_client.calls[0]["limit"] == 3000
     assert stub_client.calls[0]["adjustments"] == "all"
     await stub_client.aclose()
+    assert stub_client.closed
