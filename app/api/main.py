@@ -666,5 +666,6 @@ async def _shutdown():
     global live_task
     if live_task:
         live_task.cancel()
-        with contextlib.suppress(Exception):
-            await live_task
+    with contextlib.suppress(asyncio.CancelledError):
+      await live_task
+    live_task = None
