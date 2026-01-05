@@ -6,6 +6,7 @@ import tempfile
 import shutil
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("feature_service")
@@ -57,6 +58,17 @@ def clean_bars(df: pd.DataFrame) -> pd.DataFrame:
     out = out.drop_duplicates(subset=["ts"], keep="last")
     out = out.dropna(subset=["open", "high", "low", "close"])
     out = out[out["volume"].fillna(0) >= 0]
+
+    # Normalize dtypes to avoid NAType -> float conversion errors when inserting/writing parquet
+    out["open"] = out["open"].astype("float64")
+    out["high"] = out["high"].astype("float64")
+    out["low"] = out["low"].astype("float64")
+    out["close"] = out["close"].astype("float64")
+    out["volume"] = out["volume"].fillna(0).astype("int64")
+    if "trade_count" in out.columns:
+        out["trade_count"] = out["trade_count"].fillna(0).astype("int64")
+    if "vwap" in out.columns:
+        out["vwap"] = out["vwap"].ffill().fillna(0.0).astype("float64")
     return out.reset_index(drop=True)
 
 
@@ -120,7 +132,7 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     out["day_of_month"] = ts.dt.day.astype("int64")
     out["month"] = ts.dt.month.astype("int64")
     # Placeholder for future enrichment; set NaN for now
-    out["days_until_earnings"] = pd.Series(pd.NA, index=out.index, dtype="float")
+    out["days_until_earnings"] = pd.Series(np.nan, index=out.index, dtype="float64")
 
     # Carry forward VWAP; ensure non-null if present
     out["vwap"] = out["vwap"].ffill()
