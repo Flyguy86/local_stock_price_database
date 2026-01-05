@@ -173,30 +173,34 @@ def run_pipeline(
     dest_parquet: Path,
     symbols: Iterable[str] | None = None,
 ) -> dict:
-    src_conn = duckdb.connect(str(source_db))
+    src_conn = duckdb.connect(str(source_db), read_only=True)
     dest_conn = duckdb.connect(str(dest_db))
+    try:
+        symbol_list = list(symbols) if symbols is not None else list_symbols(src_conn)
+        totals_inserted = 0
 
-    symbol_list = list(symbols) if symbols is not None else list_symbols(src_conn)
-    totals_inserted = 0
-
-    for sym in symbol_list:
-        df = fetch_bars(src_conn, sym)
-        if df.empty:
-            logger.info("no source bars", extra={"symbol": sym})
-            continue
-        cleaned = clean_bars(df)
-        featured = engineer_features(cleaned)
-        inserted = write_features(dest_conn, featured, sym, dest_parquet)
-        totals_inserted += inserted
-        logger.info(
-            "feature_build_complete",
-            extra={
-                "symbol": sym,
-                "source_rows": len(df),
-                "clean_rows": len(cleaned),
-                "feature_rows": len(featured),
-                "inserted": inserted,
-            },
-        )
-
-    return {"symbols": len(symbol_list), "inserted": totals_inserted}
+        for sym in symbol_list:
+            df = fetch_bars(src_conn, sym)
+            if df.empty:
+                logger.info("no source bars", extra={"symbol": sym})
+                continue
+            cleaned = clean_bars(df)
+            featured = engineer_features(cleaned)
+            inserted = write_features(dest_conn, featured, sym, dest_parquet)
+            totals_inserted += inserted
+            logger.info(
+                "feature_build_complete",
+                extra={
+                    "symbol": sym,
+                    "source_rows": len(df),
+                    "clean_rows": len(cleaned),
+                    "feature_rows": len(featured),
+                    "inserted": inserted,
+                },
+            )
+        return {"symbols": len(symbol_list), "inserted": totals_inserted}
+    finally:
+        try:
+            dest_conn.close()
+        finally:
+            src_conn.close()
