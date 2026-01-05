@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 import tempfile
 import shutil
+import duckdb
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
@@ -168,6 +169,7 @@ async def index():
       <script>
         let lastSymbols = [];
         let lastSelection = [];
+        let lastRunSymbols = [];
 
         function setBadge(id, state, text) {
           const el = document.getElementById(id);
@@ -234,6 +236,7 @@ async def index():
         async function runSelected() {
           const symbols = Array.from(document.querySelectorAll('#symbols-table tbody input:checked')).map(cb => cb.value);
           document.getElementById('step3-before').innerText = JSON.stringify({ symbols: symbols }, null, 2);
+          lastRunSymbols = symbols;
           const payload = symbols.length ? { symbols: symbols } : {};
           try {
             const res = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -242,7 +245,7 @@ async def index():
               throw new Error('status ' + res.status + ' body: ' + text.slice(0, 400));
             }
             const data = await res.json();
-            document.getElementById('step3-after').innerText = JSON.stringify(data, null, 2);
+            document.getElementById('step3-after').innerText = JSON.stringify({ run: data, sample: 'pending' }, null, 2);
             setBadge('step3-badge', 'pass', 'queued');
             pollStatus();
           } catch (err) {
@@ -257,6 +260,22 @@ async def index():
           document.getElementById('status-badge').innerText = data.state;
           document.getElementById('status-json').innerText = JSON.stringify(data, null, 2);
           document.getElementById('result-box').innerText = JSON.stringify(data.result, null, 2);
+
+          if (data.state === 'succeeded' && lastRunSymbols.length) {
+            try {
+              const sym = lastRunSymbols[0];
+              const sampRes = await fetch('/features_sample?symbol=' + encodeURIComponent(sym) + '&limit=3');
+              if (sampRes.ok) {
+                const sample = await sampRes.json();
+                document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample }, null, 2);
+              } else {
+                document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample_error: 'status ' + sampRes.status }, null, 2);
+              }
+            } catch (e) {
+              document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample_error: String(e) }, null, 2);
+            }
+          }
+
           if (data.state === 'running') { setTimeout(pollStatus, 1500); }
         }
 
@@ -289,6 +308,35 @@ async def symbols():
             conn.close()
         if tmpdir:
             tmpdir.cleanup()
+
+
+    @app.get("/features_sample")
+    async def features_sample(symbol: str, limit: int = 3):
+      conn = None
+      tmpdir = None
+      try:
+        tmpdir = tempfile.TemporaryDirectory()
+        tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
+        shutil.copy2(cfg.dest_db, tmp_dest)
+        wal_src = cfg.dest_db.with_suffix(cfg.dest_db.suffix + ".wal")
+        if wal_src.exists():
+          wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
+          shutil.copy2(wal_src, wal_dst)
+        conn = duckdb.connect(str(tmp_dest), read_only=True)
+        try:
+          conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
+        except duckdb.Error:
+          return []
+        df = conn.execute(
+          "SELECT * FROM feature_bars WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
+          [symbol, limit],
+        ).fetch_df()
+        return df.to_dict(orient="records")
+      finally:
+        if conn:
+          conn.close()
+        if tmpdir:
+          tmpdir.cleanup()
 
 
 class RunRequest(BaseModel):
