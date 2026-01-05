@@ -11,12 +11,32 @@ import pandas as pd
 logger = logging.getLogger("feature_service")
 
 
+def _has_table(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = current_schema() AND lower(table_name) = lower(?)
+            LIMIT 1
+            """,
+            [name],
+        ).fetchone()
+        return bool(row)
+    except duckdb.Error:
+        return False
+
+
 def list_symbols(src_conn: duckdb.DuckDBPyConnection) -> list[str]:
+    if not _has_table(src_conn, "bars"):
+        return []
     rows = src_conn.execute("SELECT DISTINCT symbol FROM bars ORDER BY symbol").fetchall()
     return [row[0] for row in rows]
 
 
 def fetch_bars(src_conn: duckdb.DuckDBPyConnection, symbol: str) -> pd.DataFrame:
+    if not _has_table(src_conn, "bars"):
+        return pd.DataFrame()
     return src_conn.execute(
         """
         SELECT ts, open, high, low, close, volume, vwap, trade_count
@@ -180,6 +200,9 @@ def run_pipeline(
     src_conn = duckdb.connect(str(tmp_src), read_only=True)
     dest_conn = duckdb.connect(str(dest_db))
     try:
+        if not _has_table(src_conn, "bars"):
+            logger.warning("source bars table missing; nothing to process", extra={"source_db": str(source_db)})
+            return {"symbols": 0, "inserted": 0}
         symbol_list = list(symbols) if symbols is not None else list_symbols(src_conn)
         totals_inserted = 0
 
