@@ -3,6 +3,7 @@ import asyncio
 import logging
 import threading
 import contextlib
+import importlib.util
 import shlex
 import sys
 from datetime import datetime, timezone
@@ -92,6 +93,21 @@ def _truncate_output(text: str) -> str:
 
 async def _run_tests_task(targets: list[str]) -> None:
   global current_test_task
+  if importlib.util.find_spec("pytest") is None:
+    message = "pytest is not installed. Install dev extras with 'pip install -e .[dev]' or 'poetry install --with dev'."
+    async with test_state_lock:
+      test_state.update(
+        {
+          "status": "error",
+          "completed_at": _now_iso(),
+          "returncode": None,
+          "stdout": "",
+          "stderr": message,
+        }
+      )
+      current_test_task = None
+    logger.warning("pytest missing for test run")
+    return
   cmd = [sys.executable, "-m", "pytest", *targets]
   logger.info("test run started", extra={"cmd": cmd})
   status = "failed"
