@@ -23,6 +23,8 @@ class InMemoryHandler(logging.Handler):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        if hasattr(record, "raw"):
+            payload["raw"] = record.raw
         with log_lock:
             log_buffer.append(payload)
             if len(log_buffer) > LOG_BUFFER_MAX:
@@ -128,7 +130,7 @@ async def set_alpaca_raw_debug(enabled: bool):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return f"""
+    base = """
     <!doctype html>
     <html lang="en">
     <head>
@@ -157,8 +159,8 @@ async def dashboard():
       <header>
         <h1>Local Stock Price Database</h1>
         <div class="row" style="gap:0.75rem; margin-top:0.35rem;">
-          <span class="badge">Alpaca feed: {settings.alpaca_feed}</span>
-          <span class="badge">DuckDB: {settings.duckdb_path}</span>
+          <span class="badge">Alpaca feed: __ALPACA_FEED__</span>
+          <span class="badge">DuckDB: __DUCKDB_PATH__</span>
         </div>
       </header>
       <main>
@@ -188,7 +190,7 @@ async def dashboard():
           <div class="row"><button onclick="refreshStatus()">Refresh</button></div>
           <ul id="status-list"></ul>
           <h4>Server logs</h4>
-          <pre id="logs-box"></pre>
+          <div id="logs-box"></div>
         </section>
 
         <section>
@@ -227,141 +229,163 @@ async def dashboard():
       </main>
 
       <script>
-        function isoFromLookbackYears(years) {{ if (!years || isNaN(years) || years <= 0) return null; const d = new Date(); d.setFullYear(d.getFullYear() - years); return d.toISOString(); }}
+        function isoFromLookbackYears(years) { if (!years || isNaN(years) || years <= 0) return null; const d = new Date(); d.setFullYear(d.getFullYear() - years); return d.toISOString(); }
 
-        async function ingest() {{
+        async function ingest() {
           const symbol = document.getElementById("symbol").value.trim();
           const startManual = document.getElementById("start").value.trim();
           const end = document.getElementById("end").value.trim();
           const lookback = parseFloat(document.getElementById("lookback-years").value);
-          if (!symbol) {{ alert("Enter a symbol"); return; }}
+          if (!symbol) { alert("Enter a symbol"); return; }
           const qs = new URLSearchParams();
           const startFromLookback = startManual || isoFromLookbackYears(lookback);
           if (startFromLookback) qs.append("start", startFromLookback);
           if (end) qs.append("end", end);
-          const res = await fetch(`/ingest/${symbol}?` + qs.toString(), {{ method: "POST" }});
+          const res = await fetch(`/ingest/${symbol}?` + qs.toString(), { method: "POST" });
           const data = await res.json();
           document.getElementById("ingest-result").textContent = JSON.stringify(data);
           refreshStatus();
-        }}
+        }
 
-        async function deleteSymbol() {{
+        async function deleteSymbol() {
           const symbol = document.getElementById("symbol").value.trim();
-          if (!symbol) {{ alert("Enter a symbol"); return; }}
+          if (!symbol) { alert("Enter a symbol"); return; }
           if (!confirm(`Delete data for ${symbol}?`)) return;
-          await fetch(`/bars/${symbol}`, {{ method: "DELETE" }});
+          await fetch(`/bars/${symbol}`, { method: "DELETE" });
           refreshStatus(); loadTables();
-        }}
+        }
 
-        async function deleteAll() {{
+        async function deleteAll() {
           if (!confirm("Delete ALL data?")) return;
-          await fetch(`/bars`, {{ method: "DELETE" }});
+          await fetch(`/bars`, { method: "DELETE" });
           refreshStatus(); loadTables();
-        }}
+        }
 
-        let barsState = {{offset: 0, total: 0, limit: 20, symbol: ""}};
-        let tableState = {{offset: 0, total: 0, limit: 20, table: ""}};
+        let barsState = {offset: 0, total: 0, limit: 20, symbol: ""};
+        let tableState = {offset: 0, total: 0, limit: 20, table: ""};
 
-        async function loadBars(offsetOverride) {{
+        async function loadBars(offsetOverride) {
           const symbol = document.getElementById("bars-symbol").value.trim();
           const limit = parseInt(document.getElementById("bars-limit").value, 10);
-          if (!symbol) {{ alert("Enter a symbol"); return; }}
+          if (!symbol) { alert("Enter a symbol"); return; }
           const offset = offsetOverride ?? barsState.offset;
           const res = await fetch(`/bars/${symbol}?limit=${limit}&offset=${offset}`);
           const data = await res.json();
-          barsState = {{offset: data.offset, total: data.total, limit: data.limit, symbol}};
+          barsState = {offset: data.offset, total: data.total, limit: data.limit, symbol};
           const head = document.querySelector("#bars-table thead");
           const body = document.querySelector("#bars-table tbody");
           head.innerHTML = ""; body.innerHTML = "";
-          if (!data.rows || data.rows.length === 0) {{ body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("bars-page-info").textContent = ""; return; }}
+          if (!data.rows || data.rows.length === 0) { body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("bars-page-info").textContent = ""; return; }
           const cols = Object.keys(data.rows[0]);
-          const trHead = document.createElement("tr"); cols.forEach(c => {{ const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }}); head.appendChild(trHead);
-          data.rows.forEach(row => {{ const tr = document.createElement("tr"); cols.forEach(c => {{ const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }}); body.appendChild(tr); }});
+          const trHead = document.createElement("tr"); cols.forEach(c => { const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }); head.appendChild(trHead);
+          data.rows.forEach(row => { const tr = document.createElement("tr"); cols.forEach(c => { const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }); body.appendChild(tr); });
           const end = Math.min(barsState.offset + barsState.limit, barsState.total);
           document.getElementById("bars-page-info").textContent = `Rows ${barsState.offset + 1}-${end} of ${barsState.total}`;
-        }}
-        function barsFirst() {{ loadBars(0); }}
-        function barsPrev() {{ loadBars(Math.max(0, barsState.offset - barsState.limit)); }}
-        function barsNext() {{ const o = barsState.offset + barsState.limit; if (o < barsState.total) loadBars(o); }}
-        function barsLast() {{ loadBars(Math.max(0, barsState.total - barsState.limit)); }}
+        }
+        function barsFirst() { loadBars(0); }
+        function barsPrev() { loadBars(Math.max(0, barsState.offset - barsState.limit)); }
+        function barsNext() { const o = barsState.offset + barsState.limit; if (o < barsState.total) loadBars(o); }
+        function barsLast() { loadBars(Math.max(0, barsState.total - barsState.limit)); }
 
-        async function loadTables() {{
+        async function loadTables() {
           const res = await fetch("/tables");
           const data = await res.json();
           const list = document.getElementById("tables-list");
           list.innerHTML = "";
-          data.forEach(t => {{
+          data.forEach(t => {
             const li = document.createElement("li");
             const btn = document.createElement("button");
             btn.textContent = t;
-            btn.onclick = () => {{ document.getElementById("table-name").value = t; loadTableRows(0); }};
+            btn.onclick = () => { document.getElementById("table-name").value = t; loadTableRows(0); };
             li.appendChild(btn);
             list.appendChild(li);
-          }});
-        }}
+          });
+        }
 
-        async function loadTableRows(offsetOverride) {{
+        async function loadTableRows(offsetOverride) {
           const table = document.getElementById("table-name").value.trim();
           const limit = parseInt(document.getElementById("table-limit").value, 10);
-          if (!table) {{ alert("Enter a table name"); return; }}
+          if (!table) { alert("Enter a table name"); return; }
           const offset = offsetOverride ?? tableState.offset;
           const res = await fetch(`/tables/${table}/rows?limit=${limit}&offset=${offset}`);
-          if (res.status === 404) {{ alert("Table not found"); return; }}
+          if (res.status === 404) { alert("Table not found"); return; }
           const data = await res.json();
-          tableState = {{offset: data.offset, total: data.total, limit: data.limit, table}};
+          tableState = {offset: data.offset, total: data.total, limit: data.limit, table};
           const head = document.querySelector("#table-rows thead");
           const body = document.querySelector("#table-rows tbody");
           head.innerHTML = ""; body.innerHTML = "";
-          if (!data.rows || data.rows.length === 0) {{ body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("table-page-info").textContent = ""; return; }}
+          if (!data.rows || data.rows.length === 0) { body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("table-page-info").textContent = ""; return; }
           const cols = Object.keys(data.rows[0]);
-          const trHead = document.createElement("tr"); cols.forEach(c => {{ const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }}); head.appendChild(trHead);
-          data.rows.forEach(row => {{ const tr = document.createElement("tr"); cols.forEach(c => {{ const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }}); body.appendChild(tr); }});
+          const trHead = document.createElement("tr"); cols.forEach(c => { const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }); head.appendChild(trHead);
+          data.rows.forEach(row => { const tr = document.createElement("tr"); cols.forEach(c => { const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }); body.appendChild(tr); });
           const end = Math.min(tableState.offset + tableState.limit, tableState.total);
           document.getElementById("table-page-info").textContent = `Rows ${tableState.offset + 1}-${end} of ${tableState.total}`;
-        }}
-        function tableFirst() {{ loadTableRows(0); }}
-        function tablePrev() {{ loadTableRows(Math.max(0, tableState.offset - tableState.limit)); }}
-        function tableNext() {{ const o = tableState.offset + tableState.limit; if (o < tableState.total) loadTableRows(o); }}
-        function tableLast() {{ loadTableRows(Math.max(0, tableState.total - tableState.limit)); }}
+        }
+        function tableFirst() { loadTableRows(0); }
+        function tablePrev() { loadTableRows(Math.max(0, tableState.offset - tableState.limit)); }
+        function tableNext() { const o = tableState.offset + tableState.limit; if (o < tableState.total) loadTableRows(o); }
+        function tableLast() { loadTableRows(Math.max(0, tableState.total - tableState.limit)); }
 
-        async function refreshStatus() {{
+        async function refreshStatus() {
           const res = await fetch("/status");
           const data = await res.json();
           const list = document.getElementById("status-list");
           list.innerHTML = "";
-          data.forEach(s => {{
+          data.forEach(s => {
             const li = document.createElement("li");
             li.textContent = `${s.symbol}: ${s.state}` + (s.last_update ? ` @ ${s.last_update}` : "");
-            if (s.error_message) {{ const err = document.createElement("div"); err.style.color = "red"; err.textContent = `error: ${s.error_message}`; li.appendChild(err); }}
+            if (s.error_message) { const err = document.createElement("div"); err.style.color = "red"; err.textContent = `error: ${s.error_message}`; li.appendChild(err); }
             list.appendChild(li);
-          }});
-        }}
+          });
+        }
 
-        async function refreshLogs() {{
+        async function refreshLogs() {
           const res = await fetch("/logs?limit=200");
           const data = await res.json();
           const box = document.getElementById("logs-box");
-          box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
+          box.innerHTML = "";
+          data.forEach((l, idx) => {
+            const row = document.createElement("div");
+            row.style.marginBottom = "0.35rem";
+            const summary = document.createElement("div");
+            summary.textContent = `[${l.level}] ${l.message}`;
+            row.appendChild(summary);
+            if (l.raw) {
+              const btn = document.createElement("button");
+              btn.textContent = "show raw";
+              btn.style.marginTop = "0.2rem";
+              const pre = document.createElement("pre");
+              pre.style.display = "none";
+              try { pre.textContent = JSON.stringify(JSON.parse(l.raw), null, 2); }
+              catch { pre.textContent = l.raw; }
+              btn.onclick = () => { pre.style.display = pre.style.display === "none" ? "block" : "none"; };
+              row.appendChild(btn);
+              row.appendChild(pre);
+            }
+            box.appendChild(row);
+          });
           box.scrollTop = box.scrollHeight;
-        }}
+        }
 
-        async function loadDebugToggle() {{
+        async function loadDebugToggle() {
           const res = await fetch("/debug/alpaca/raw");
           const data = await res.json();
           const cb = document.getElementById("alpaca-debug");
           const badge = document.getElementById("alpaca-debug-state");
           cb.checked = !!data.alpaca_debug_raw;
           badge.textContent = `alpaca_debug_raw=${data.alpaca_debug_raw}`;
-        }}
+        }
 
-        async function toggleAlpacaDebug(enabled) {{
-          await fetch(`/debug/alpaca/raw?enabled=${enabled}`, {{ method: "POST" }});
+        async function toggleAlpacaDebug(enabled) {
+          await fetch(`/debug/alpaca/raw?enabled=${enabled}`, { method: "POST" });
           loadDebugToggle();
-        }}
+        }
 
-        setInterval(() => {{ refreshStatus(); refreshLogs(); }}, 3000);
+        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
         refreshStatus(); refreshLogs(); loadTables(); loadDebugToggle();
       </script>
     </body>
     </html>
     """
+    html = base.replace("__ALPACA_FEED__", str(settings.alpaca_feed)).replace("__DUCKDB_PATH__", str(settings.duckdb_path))
+    return HTMLResponse(html)

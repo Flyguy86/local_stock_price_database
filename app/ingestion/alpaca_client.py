@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import json
 from typing import AsyncIterator
 import httpx
 import pandas as pd
@@ -43,28 +44,28 @@ class AlpacaClient:
                 params["start"] = start
             if end:
                 params["end"] = end
-            log.info(
-                "alpaca request",
-                extra={
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "feed": self.feed,
-                    "start": start,
-                    "end": end,
-                    "limit": limit,
-                    "page_token": next_page,
-                    "url": f"{self.base_url}/v2/stocks/{symbol}/bars",
-                    "params": params if settings.alpaca_debug_raw else None,
-                },
-            )
+            if settings.alpaca_debug_raw:
+                log.info(
+                    "alpaca raw request",
+                    extra={"raw": json.dumps({"url": f"{self.base_url}/v2/stocks/{symbol}/bars", "params": params})},
+                )
             resp = await self._client.get(f"/v2/stocks/{symbol}/bars", params=params)
             if settings.alpaca_debug_raw:
+                raw_payload = resp.text
+                try:
+                    raw_payload = json.dumps(resp.json())
+                except Exception:
+                    pass
                 log.info(
                     "alpaca raw response",
                     extra={
-                        "status_code": resp.status_code,
-                        "headers": dict(resp.headers),
-                        "text": resp.text[:2000],
+                        "raw": json.dumps(
+                            {
+                                "status_code": resp.status_code,
+                                "headers": dict(resp.headers),
+                                "body": raw_payload,
+                            }
+                        )
                     },
                 )
             if resp.status_code >= 400:
