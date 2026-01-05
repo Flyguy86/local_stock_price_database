@@ -137,6 +137,10 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     # Carry forward VWAP; ensure non-null if present
     out["vwap"] = out["vwap"].ffill()
 
+    # Round all float columns to 5 decimal places
+    float_cols = out.select_dtypes(include=['float64', 'float32']).columns
+    out[float_cols] = out[float_cols].round(5)
+
     return out
 
 
@@ -168,7 +172,8 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             day_of_week INTEGER,
             day_of_month INTEGER,
             month INTEGER,
-            days_until_earnings DOUBLE
+            days_until_earnings DOUBLE,
+            PRIMARY KEY (symbol, ts)
         );
         """
     )
@@ -183,12 +188,13 @@ def write_features(
     if df.empty:
         return 0
     ensure_dest_schema(dest_conn)
+    
+    # Ensure symbol column exists
+    if "symbol" not in df.columns:
+        df["symbol"] = symbol
+
     dest_conn.register("features_df", df)
-    dest_conn.execute(
-        "DELETE FROM feature_bars WHERE symbol = ? AND ts IN (SELECT ts FROM features_df)",
-        [symbol],
-    )
-    dest_conn.execute("INSERT INTO feature_bars BY NAME SELECT * FROM features_df")
+    dest_conn.execute("INSERT OR REPLACE INTO feature_bars BY NAME SELECT * FROM features_df")
     dest_conn.unregister("features_df")
 
     # Write partitioned parquet for downstream consumption

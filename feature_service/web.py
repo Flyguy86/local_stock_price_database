@@ -161,6 +161,7 @@ async def index():
             <button class="ghost" onclick="nextPage()">Next</button>
             <button class="ghost" onclick="lastPage()">Last</button>
             <button onclick="loadRows(pageState.offset)">Refresh</button>
+            <button class="fail" style="background: #7f1d1d; color: #fca5a5;" onclick="deleteAll()">Delete All</button>
           </div>
           <div style="overflow-x: auto;">
             <table id="features-table"><thead></thead><tbody></tbody></table>
@@ -175,6 +176,19 @@ async def index():
           if (!el) return;
           el.className = 'badge ' + (state === 'pass' ? 'pass' : state === 'fail' ? 'fail' : '');
           el.innerText = text || state;
+        }
+
+        async function deleteAll() {
+            if (!confirm("Are you sure you want to delete ALL data? This will drop the table and clear parquet files.")) return;
+            try {
+                const res = await fetch('/features', { method: 'DELETE' });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                alert("Success: " + JSON.stringify(data));
+                loadRows(0);
+            } catch (e) {
+                alert("Error: " + e.message);
+            }
         }
 
         async function loadSymbols() {
@@ -281,6 +295,29 @@ async def index():
     """
     html = html.replace("__SOURCE_DB__", str(cfg.source_db)).replace("__DEST_DB__", str(cfg.dest_db))
     return HTMLResponse(content=html)
+
+
+@app.delete("/features")
+async def delete_features():
+    async with status_lock:
+        if status["state"] == "running":
+             raise HTTPException(status_code=409, detail="Pipeline is running")
+        
+        try:
+            # Drop table from DuckDB
+            conn = duckdb.connect(str(cfg.dest_db))
+            conn.execute("DROP TABLE IF EXISTS feature_bars")
+            conn.close()
+            
+            # Clear parquet directory
+            if cfg.dest_parquet.exists():
+                shutil.rmtree(cfg.dest_parquet)
+                cfg.dest_parquet.mkdir(parents=True, exist_ok=True)
+                
+            return {"status": "deleted all data"}
+        except Exception as e:
+            logger.exception("failed to delete data")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/features/rows")
