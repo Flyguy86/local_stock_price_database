@@ -116,264 +116,251 @@ async def delete_all_bars():
     db.delete_all()
     return {"deleted": "all"}
 
+@app.get("/debug/alpaca/raw")
+async def get_alpaca_raw_debug():
+    return {"alpaca_debug_raw": settings.alpaca_debug_raw}
+
+@app.post("/debug/alpaca/raw")
+async def set_alpaca_raw_debug(enabled: bool):
+    settings.alpaca_debug_raw = enabled
+    logger.info("alpaca raw debug toggled", extra={"enabled": enabled})
+    return {"alpaca_debug_raw": settings.alpaca_debug_raw}
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return """
+    return f"""
     <!doctype html>
     <html lang="en">
     <head>
       <meta charset="utf-8" />
       <title>Local Stock DB Dashboard</title>
       <style>
-        body { font-family: sans-serif; margin: 1rem; }
-        section { margin-bottom: 1.5rem; }
-        input, button { margin-right: 0.5rem; }
-        table { border-collapse: collapse; }
-        td, th { border: 1px solid #ccc; padding: 0.25rem 0.5rem; }
+        :root {{ color-scheme: light; }}
+        body {{ font-family: "Inter", system-ui, sans-serif; margin: 0; background: #f5f7fb; color: #0f172a; }}
+        header {{ padding: 1.25rem 1.5rem; background: #0f172a; color: #e2e8f0; }}
+        h1 {{ margin: 0; font-size: 1.25rem; }}
+        main {{ padding: 1rem 1.5rem; display: grid; gap: 1rem; }}
+        section {{ background: #fff; border-radius: 10px; box-shadow: 0 6px 18px rgba(15,23,42,0.06); padding: 1rem; }}
+        .row {{ display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }}
+        label {{ font-weight: 600; }}
+        input, button {{ padding: 0.4rem 0.55rem; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 0.95rem; }}
+        button {{ background: #2563eb; color: #fff; border: none; cursor: pointer; }}
+        button:hover {{ background: #1d4ed8; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; }}
+        th, td {{ border: 1px solid #e2e8f0; padding: 0.35rem 0.5rem; font-size: 0.9rem; }}
+        .badge {{ padding: 0.15rem 0.5rem; border-radius: 999px; background: #e0f2fe; color: #075985; font-size: 0.8rem; display: inline-block; }}
+        pre {{ white-space: pre-wrap; font-size: 0.85rem; background: #0b1224; color: #e2e8f0; padding: 0.75rem; border-radius: 8px; max-height: 260px; overflow: auto; }}
+        ul {{ padding-left: 1.1rem; }}
       </style>
     </head>
     <body>
-      <h1>Local Stock Price Database</h1>
-      <section>
-        <h3>Ingest symbol</h3>
-        <input id="symbol" placeholder="e.g. AAPL" />
-        <input id="lookback-years" type="number" value="1" step="0.25" min="0.1" style="width:8ch" />
-        <label for="lookback-years">lookback (years)</label><br/>
-        <input id="start" placeholder="start ISO (optional)" style="width:18ch" />
-        <input id="end" placeholder="end ISO (optional)" style="width:18ch" />
-        <button onclick="ingest()">Start ingest</button>
-        <span id="ingest-result"></span>
-        <div style="margin-top:0.5rem;">
-          <button onclick="deleteSymbol()">Delete symbol data</button>
-          <button onclick="deleteAll()">Delete ALL data</button>
+      <header>
+        <h1>Local Stock Price Database</h1>
+        <div class="row" style="gap:0.75rem; margin-top:0.35rem;">
+          <span class="badge">Alpaca feed: {settings.alpaca_feed}</span>
+          <span class="badge">DuckDB: {settings.duckdb_path}</span>
         </div>
-      </section>
+      </header>
+      <main>
+        <section>
+          <h3>Ingest</h3>
+          <div class="row">
+            <label>Symbol</label><input id="symbol" placeholder="e.g. AAPL" />
+            <label>Lookback (years)</label><input id="lookback-years" type="number" value="1" step="0.25" min="0.1" style="width:8ch" />
+            <label>Start (ISO)</label><input id="start" placeholder="optional" style="width:18ch" />
+            <label>End (ISO)</label><input id="end" placeholder="optional" style="width:18ch" />
+            <button onclick="ingest()">Start ingest</button>
+            <span id="ingest-result"></span>
+          </div>
+          <div class="row" style="margin-top:0.5rem;">
+            <button onclick="deleteSymbol()">Delete symbol data</button>
+            <button onclick="deleteAll()">Delete ALL data</button>
+          </div>
+          <div class="row" style="margin-top:0.5rem;">
+            <label for="alpaca-debug">Alpaca raw debug</label>
+            <input type="checkbox" id="alpaca-debug" onchange="toggleAlpacaDebug(this.checked)" />
+            <span id="alpaca-debug-state" class="badge"></span>
+          </div>
+        </section>
 
-      <section>
-        <h3>Agent status</h3>
-        <button onclick="refreshStatus()">Refresh</button>
-        <ul id="status-list"></ul>
-        <h4>Server logs</h4>
-        <pre id="logs-box" style="background:#f7f7f7; padding:0.5rem; max-height:240px; overflow:auto;"></pre>
-      </section>
+        <section>
+          <h3>Agent status & Logs</h3>
+          <div class="row"><button onclick="refreshStatus()">Refresh</button></div>
+          <ul id="status-list"></ul>
+          <h4>Server logs</h4>
+          <pre id="logs-box"></pre>
+        </section>
 
-      <section>
-        <h3>Latest bars</h3>
-        <input id="bars-symbol" placeholder="symbol" />
-        <input id="bars-limit" type="number" value="20" min="1" max="1000" />
-        <button onclick="loadBars(0)">Load</button>
-        <button onclick="barsFirst()">First</button>
-        <button onclick="barsPrev()">Prev</button>
-        <button onclick="barsNext()">Next</button>
-        <button onclick="barsLast()">Last</button>
-        <span id="bars-page-info"></span>
-        <table id="bars-table">
-          <thead></thead>
-          <tbody></tbody>
-        </table>
-      </section>
+        <section>
+          <h3>Latest bars</h3>
+          <div class="row">
+            <input id="bars-symbol" placeholder="symbol" />
+            <input id="bars-limit" type="number" value="20" min="1" max="1000" />
+            <button onclick="loadBars(0)">Load</button>
+            <button onclick="barsFirst()">First</button>
+            <button onclick="barsPrev()">Prev</button>
+            <button onclick="barsNext()">Next</button>
+            <button onclick="barsLast()">Last</button>
+            <span id="bars-page-info"></span>
+          </div>
+          <table id="bars-table"><thead></thead><tbody></tbody></table>
+        </section>
 
-      <section>
-        <h3>Tables</h3>
-        <button onclick="loadTables()">Refresh tables</button>
-        <ul id="tables-list"></ul>
-        <div>
-          <strong>Browse table</strong>
-          <input id="table-name" placeholder="table name" />
-          <input id="table-limit" type="number" value="20" min="1" max="1000" />
-          <button onclick="loadTableRows(0)">Load</button>
-          <button onclick="tableFirst()">First</button>
-          <button onclick="tablePrev()">Prev</button>
-          <button onclick="tableNext()">Next</button>
-          <button onclick="tableLast()">Last</button>
-          <span id="table-page-info"></span>
-          <table id="table-rows">
-            <thead></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
+        <section>
+          <h3>Tables</h3>
+          <div class="row">
+            <button onclick="loadTables()">Refresh tables</button>
+            <ul id="tables-list"></ul>
+          </div>
+          <div class="row" style="margin-top:0.5rem;">
+            <input id="table-name" placeholder="table name" />
+            <input id="table-limit" type="number" value="20" min="1" max="1000" />
+            <button onclick="loadTableRows(0)">Load</button>
+            <button onclick="tableFirst()">First</button>
+            <button onclick="tablePrev()">Prev</button>
+            <button onclick="tableNext()">Next</button>
+            <button onclick="tableLast()">Last</button>
+            <span id="table-page-info"></span>
+          </div>
+          <table id="table-rows"><thead></thead><tbody></tbody></table>
+        </section>
+      </main>
+
       <script>
-        function isoFromLookbackYears(years) {
-          if (!years || isNaN(years) || years <= 0) return null;
-          const now = new Date();
-          const d = new Date(now);
-          d.setFullYear(d.getFullYear() - years);
-          return d.toISOString();
-        }
+        function isoFromLookbackYears(years) {{ if (!years || isNaN(years) || years <= 0) return null; const d = new Date(); d.setFullYear(d.getFullYear() - years); return d.toISOString(); }}
 
-        async function ingest() {
+        async function ingest() {{
           const symbol = document.getElementById("symbol").value.trim();
-          const startManualEl = document.getElementById("start");
-          const endEl = document.getElementById("end");
-          const startManual = startManualEl ? startManualEl.value.trim() : "";
-          const end = endEl ? endEl.value.trim() : "";
+          const startManual = document.getElementById("start").value.trim();
+          const end = document.getElementById("end").value.trim();
           const lookback = parseFloat(document.getElementById("lookback-years").value);
-          if (!symbol) { alert("Enter a symbol"); return; }
+          if (!symbol) {{ alert("Enter a symbol"); return; }}
           const qs = new URLSearchParams();
           const startFromLookback = startManual || isoFromLookbackYears(lookback);
           if (startFromLookback) qs.append("start", startFromLookback);
           if (end) qs.append("end", end);
-          try {
-            console.log("ingest request", { symbol, start: startFromLookback, end });
-            const res = await fetch(`/ingest/${symbol}?` + qs.toString(), { method: "POST" });
-            const data = await res.json();
-            document.getElementById("ingest-result").textContent = JSON.stringify(data);
-          } catch (e) {
-            console.error("ingest error", e);
-            document.getElementById("ingest-result").textContent = "error: " + e;
-          }
-          refreshStatus();
-        }
-
-        async function refreshStatus() {
-          const res = await fetch("/status");
+          const res = await fetch(`/ingest/${symbol}?` + qs.toString(), {{ method: "POST" }});
           const data = await res.json();
-          const list = document.getElementById("status-list");
-          list.innerHTML = "";
-          data.forEach(s => {
-            const li = document.createElement("li");
-            li.textContent = `${s.symbol}: ${s.state}` + (s.last_update ? ` @ ${s.last_update}` : "");
-            if (s.error_message) {
-              const err = document.createElement("div");
-              err.style.color = "red";
-              err.textContent = `error: ${s.error_message}`;
-              li.appendChild(err);
-            }
-            list.appendChild(li);
-          });
-        }
+          document.getElementById("ingest-result").textContent = JSON.stringify(data);
+          refreshStatus();
+        }}
 
-        let barsState = {offset: 0, total: 0, limit: 20, symbol: ""};
-        let tableState = {offset: 0, total: 0, limit: 20, table: ""};
+        async function deleteSymbol() {{
+          const symbol = document.getElementById("symbol").value.trim();
+          if (!symbol) {{ alert("Enter a symbol"); return; }}
+          if (!confirm(`Delete data for ${symbol}?`)) return;
+          await fetch(`/bars/${symbol}`, {{ method: "DELETE" }});
+          refreshStatus(); loadTables();
+        }}
 
-        async function loadBars(offsetOverride) {
+        async function deleteAll() {{
+          if (!confirm("Delete ALL data?")) return;
+          await fetch(`/bars`, {{ method: "DELETE" }});
+          refreshStatus(); loadTables();
+        }}
+
+        let barsState = {{offset: 0, total: 0, limit: 20, symbol: ""}};
+        let tableState = {{offset: 0, total: 0, limit: 20, table: ""}};
+
+        async function loadBars(offsetOverride) {{
           const symbol = document.getElementById("bars-symbol").value.trim();
           const limit = parseInt(document.getElementById("bars-limit").value, 10);
-          if (!symbol) { alert("Enter a symbol"); return; }
+          if (!symbol) {{ alert("Enter a symbol"); return; }}
           const offset = offsetOverride ?? barsState.offset;
           const res = await fetch(`/bars/${symbol}?limit=${limit}&offset=${offset}`);
           const data = await res.json();
-          barsState = {offset: data.offset, total: data.total, limit: data.limit, symbol};
-          const table = document.getElementById("bars-table");
-          table.querySelector("thead").innerHTML = "<tr><th>ts</th><th>open</th><th>high</th><th>low</th><th>close</th><th>volume</th></tr>";
-          const tbody = table.querySelector("tbody");
-          tbody.innerHTML = "";
-          data.rows.forEach(r => {
-            const tr = document.createElement("tr");
-            tr.innerHTML = `<td>${r.ts}</td><td>${r.open}</td><td>${r.high}</td><td>${r.low}</td><td>${r.close}</td><td>${r.volume}</td>`;
-            tbody.appendChild(tr);
-          });
-          document.getElementById("bars-page-info").textContent = `Showing ${offset + 1} to ${offset + data.rows.length} of ${data.total} rows`;
-        }
+          barsState = {{offset: data.offset, total: data.total, limit: data.limit, symbol}};
+          const head = document.querySelector("#bars-table thead");
+          const body = document.querySelector("#bars-table tbody");
+          head.innerHTML = ""; body.innerHTML = "";
+          if (!data.rows || data.rows.length === 0) {{ body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("bars-page-info").textContent = ""; return; }}
+          const cols = Object.keys(data.rows[0]);
+          const trHead = document.createElement("tr"); cols.forEach(c => {{ const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }}); head.appendChild(trHead);
+          data.rows.forEach(row => {{ const tr = document.createElement("tr"); cols.forEach(c => {{ const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }}); body.appendChild(tr); }});
+          const end = Math.min(barsState.offset + barsState.limit, barsState.total);
+          document.getElementById("bars-page-info").textContent = `Rows ${barsState.offset + 1}-${end} of ${barsState.total}`;
+        }}
+        function barsFirst() {{ loadBars(0); }}
+        function barsPrev() {{ loadBars(Math.max(0, barsState.offset - barsState.limit)); }}
+        function barsNext() {{ const o = barsState.offset + barsState.limit; if (o < barsState.total) loadBars(o); }}
+        function barsLast() {{ loadBars(Math.max(0, barsState.total - barsState.limit)); }}
 
-        async function loadTables() {
+        async function loadTables() {{
           const res = await fetch("/tables");
           const data = await res.json();
           const list = document.getElementById("tables-list");
           list.innerHTML = "";
-          data.forEach(t => {
+          data.forEach(t => {{
             const li = document.createElement("li");
-            li.textContent = t;
+            const btn = document.createElement("button");
+            btn.textContent = t;
+            btn.onclick = () => {{ document.getElementById("table-name").value = t; loadTableRows(0); }};
+            li.appendChild(btn);
             list.appendChild(li);
-          });
-        }
+          }});
+        }}
 
-        async function loadTableRows(offsetOverride) {
+        async function loadTableRows(offsetOverride) {{
           const table = document.getElementById("table-name").value.trim();
           const limit = parseInt(document.getElementById("table-limit").value, 10);
-          if (!table) { alert("Enter a table name"); return; }
+          if (!table) {{ alert("Enter a table name"); return; }}
           const offset = offsetOverride ?? tableState.offset;
           const res = await fetch(`/tables/${table}/rows?limit=${limit}&offset=${offset}`);
+          if (res.status === 404) {{ alert("Table not found"); return; }}
           const data = await res.json();
-          tableState = {offset: data.offset, total: data.total, limit: data.limit, table};
-          const tableEl = document.getElementById("table-rows");
-          tableEl.querySelector("thead").innerHTML = "";
-          const tbody = tableEl.querySelector("tbody");
-          tbody.innerHTML = "";
-          if (data.rows.length > 0) {
-            Object.keys(data.rows[0]).forEach(key => {
-              const th = document.createElement("th");
-              th.textContent = key;
-              tableEl.querySelector("thead").appendChild(th);
-            });
-            data.rows.forEach(r => {
-              const tr = document.createElement("tr");
-              Object.values(r).forEach(v => {
-                const td = document.createElement("td");
-                td.textContent = v;
-                tr.appendChild(td);
-              });
-              tbody.appendChild(tr);
-            });
-            document.getElementById("table-page-info").textContent = `Showing ${offset + 1} to ${offset + data.rows.length} of ${data.total} rows`;
-          } else {
-            document.getElementById("table-page-info").textContent = "No rows found";
-          }
-        }
+          tableState = {{offset: data.offset, total: data.total, limit: data.limit, table}};
+          const head = document.querySelector("#table-rows thead");
+          const body = document.querySelector("#table-rows tbody");
+          head.innerHTML = ""; body.innerHTML = "";
+          if (!data.rows || data.rows.length === 0) {{ body.innerHTML = "<tr><td>No data</td></tr>"; document.getElementById("table-page-info").textContent = ""; return; }}
+          const cols = Object.keys(data.rows[0]);
+          const trHead = document.createElement("tr"); cols.forEach(c => {{ const th = document.createElement("th"); th.textContent = c; trHead.appendChild(th); }}); head.appendChild(trHead);
+          data.rows.forEach(row => {{ const tr = document.createElement("tr"); cols.forEach(c => {{ const td = document.createElement("td"); td.textContent = row[c]; tr.appendChild(td); }}); body.appendChild(tr); }});
+          const end = Math.min(tableState.offset + tableState.limit, tableState.total);
+          document.getElementById("table-page-info").textContent = `Rows ${tableState.offset + 1}-${end} of ${tableState.total}`;
+        }}
+        function tableFirst() {{ loadTableRows(0); }}
+        function tablePrev() {{ loadTableRows(Math.max(0, tableState.offset - tableState.limit)); }}
+        function tableNext() {{ const o = tableState.offset + tableState.limit; if (o < tableState.total) loadTableRows(o); }}
+        function tableLast() {{ loadTableRows(Math.max(0, tableState.total - tableState.limit)); }}
 
-        function barsFirst() {
-          loadBars(0);
-        }
+        async function refreshStatus() {{
+          const res = await fetch("/status");
+          const data = await res.json();
+          const list = document.getElementById("status-list");
+          list.innerHTML = "";
+          data.forEach(s => {{
+            const li = document.createElement("li");
+            li.textContent = `${s.symbol}: ${s.state}` + (s.last_update ? ` @ ${s.last_update}` : "");
+            if (s.error_message) {{ const err = document.createElement("div"); err.style.color = "red"; err.textContent = `error: ${s.error_message}`; li.appendChild(err); }}
+            list.appendChild(li);
+          }});
+        }}
 
-        function barsPrev() {
-          loadBars(barsState.offset - barsState.limit);
-        }
+        async function refreshLogs() {{
+          const res = await fetch("/logs?limit=200");
+          const data = await res.json();
+          const box = document.getElementById("logs-box");
+          box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
+          box.scrollTop = box.scrollHeight;
+        }}
 
-        function barsNext() {
-          loadBars(barsState.offset + barsState.limit);
-        }
+        async function loadDebugToggle() {{
+          const res = await fetch("/debug/alpaca/raw");
+          const data = await res.json();
+          const cb = document.getElementById("alpaca-debug");
+          const badge = document.getElementById("alpaca-debug-state");
+          cb.checked = !!data.alpaca_debug_raw;
+          badge.textContent = `alpaca_debug_raw=${data.alpaca_debug_raw}`;
+        }}
 
-        function barsLast() {
-          loadBars(Math.floor((barsState.total - 1) / barsState.limit) * barsState.limit);
-        }
+        async function toggleAlpacaDebug(enabled) {{
+          await fetch(`/debug/alpaca/raw?enabled=${enabled}`, {{ method: "POST" }});
+          loadDebugToggle();
+        }}
 
-        function tableFirst() {
-          loadTableRows(0);
-        }
-
-        function tablePrev() {
-          loadTableRows(tableState.offset - tableState.limit);
-        }
-
-        function tableNext() {
-          loadTableRows(tableState.offset + tableState.limit);
-        }
-
-        function tableLast() {
-          loadTableRows(Math.floor((tableState.total - 1) / tableState.limit) * tableState.limit);
-        }
-
-        async function refreshLogs() {
-          try {
-            const res = await fetch("/logs?limit=100");
-            const data = await res.json();
-            const box = document.getElementById("logs-box");
-            box.textContent = data.map(l => `[${l.level}] ${l.message}`).join("\\n");
-            box.scrollTop = box.scrollHeight;
-          } catch (e) {
-            console.error("log fetch failed", e);
-          }
-        }
-
-         setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
-         refreshStatus();
-         refreshLogs();
-         loadTables();
-
-         async function deleteSymbol() {
-          const symbol = document.getElementById("symbol").value.trim();
-          if (!symbol) { alert("Enter a symbol"); return; }
-          if (!confirm(`Delete data for ${symbol}?`)) return;
-          await fetch(`/bars/${symbol}`, { method: "DELETE" });
-          refreshStatus(); loadTables();
-        }
-
-        async function deleteAll() {
-          if (!confirm("Delete ALL data?")) return;
-          await fetch(`/bars`, { method: "DELETE" });
-          refreshStatus(); loadTables();
-        }
+        setInterval(() => {{ refreshStatus(); refreshLogs(); }}, 3000);
+        refreshStatus(); refreshLogs(); loadTables(); loadDebugToggle();
       </script>
     </body>
     </html>
