@@ -301,7 +301,22 @@ async def index():
                         const tr = document.createElement('tr');
                         cols.forEach(c => {
                             const td = document.createElement('td');
-                            td.innerText = r[c];
+                            if (c === 'options') {
+                                const details = document.createElement('details');
+                                const summary = document.createElement('summary');
+                                summary.innerText = '{...}';
+                                summary.style.cursor = 'pointer';
+                                summary.style.color = '#94a3b8';
+                                details.appendChild(summary);
+                                const pre = document.createElement('pre');
+                                pre.innerText = r[c];
+                                pre.style.margin = '0.5rem 0 0 0';
+                                pre.style.whiteSpace = 'pre-wrap';
+                                details.appendChild(pre);
+                                td.appendChild(details);
+                            } else {
+                                td.innerText = r[c];
+                            }
                             tr.appendChild(td);
                         });
                         tbody.appendChild(tr);
