@@ -52,6 +52,20 @@ def fetch_bars(src_conn: duckdb.DuckDBPyConnection, symbol: str) -> pd.DataFrame
     ).fetch_df()
 
 
+def fetch_earnings(src_conn: duckdb.DuckDBPyConnection, symbol: str) -> pd.DataFrame:
+    if not _has_table(src_conn, "earnings"):
+        return pd.DataFrame()
+    return src_conn.execute(
+        """
+        SELECT announce_date
+        FROM earnings
+        WHERE symbol = ?
+        ORDER BY announce_date
+        """,
+        [symbol],
+    ).fetch_df()
+
+
 def clean_bars(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -171,8 +185,35 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
         out["day_of_month"] = 0
         out["month"] = 0
 
-    # Placeholder for future enrichment; set NaN for now
-    out["days_until_earnings"] = pd.Series(np.nan, index=out.index, dtype="float64")
+    # Earnings features
+    earnings_df = opts.get("earnings_df")
+    if earnings_df is not None and not earnings_df.empty:
+        # Prepare earnings timestamps (midnight UTC)
+        # Handle potential date objects or strings
+        earnings_ts = pd.to_datetime(earnings_df["announce_date"])
+        if earnings_ts.dt.tz is None:
+            earnings_ts = earnings_ts.dt.tz_localize("UTC")
+        else:
+            earnings_ts = earnings_ts.dt.tz_convert("UTC")
+            
+        earnings_lookup = pd.DataFrame({"earnings_ts": earnings_ts})
+        earnings_lookup = earnings_lookup.sort_values("earnings_ts")
+        
+        # Use merge_asof to find the next earnings date
+        # direction='forward' finds the first row in right where right_on >= left_on
+        merged = pd.merge_asof(
+            out,
+            earnings_lookup,
+            left_on="ts",
+            right_on="earnings_ts",
+            direction="forward"
+        )
+        
+        # Calculate difference in days
+        diff = merged["earnings_ts"] - merged["ts"]
+        out["days_until_earnings"] = diff.dt.total_seconds() / 86400.0
+    else:
+        out["days_until_earnings"] = np.nan
 
     # Carry forward VWAP; ensure non-null if present
     out["vwap"] = out["vwap"].ffill()
@@ -370,8 +411,16 @@ def run_pipeline(
             if df.empty:
                 logger.info("no source bars", extra={"symbol": sym})
                 continue
+            
+            # Fetch earnings and inject into options for calculation
+            earnings_df = fetch_earnings(src_conn, sym)
+            calc_options = (options or {}).copy()
+            calc_options["earnings_df"] = earnings_df
+
             cleaned = clean_bars(df)
-            featured = engineer_features(cleaned, options)
+            featured = engineer_features(cleaned, calc_options)
+            
+            # Pass original options to write_features (excludes earnings_df)
             inserted = write_features(dest_conn, featured, sym, dest_parquet, options)
             totals_inserted += inserted
             logger.info(

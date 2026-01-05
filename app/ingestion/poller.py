@@ -133,3 +133,29 @@ class IngestPoller:
             except Exception as exc:
                 log.exception("live batch failure", extra={"symbol": sym, "error": str(exc)})
         return {"symbols": len(symbols), "inserted": total_inserted, "ts": datetime.now(timezone.utc).isoformat()}
+
+    async def run_earnings(self, symbol: str) -> dict:
+        inserted = 0
+        log.info("backfill earnings start", extra={"symbol": symbol})
+        
+        # Currently only IEX implemented for earnings
+        if settings.iex_token:
+            client = get_iex_client()
+            try:
+                # Fetch last 20 quarters (~5 years) of earnings
+                df = await client.fetch_earnings(symbol, last=20)
+                if not df.empty:
+                    inserted = self.db.insert_earnings(df, symbol)
+                    log.info("ingested earnings", extra={"symbol": symbol, "rows": len(df)})
+                else:
+                    log.warning("no earnings data found", extra={"symbol": symbol})
+            except Exception as e:
+                log.exception("earnings fetch failed", extra={"symbol": symbol, "error": str(e)})
+                raise
+            finally:
+                await client.aclose()
+        else:
+            log.warning("no earnings provider configured (requires IEX token)")
+            return {"symbol": symbol, "inserted": 0, "status": "no_provider", "ts": datetime.now(timezone.utc).isoformat()}
+            
+        return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}

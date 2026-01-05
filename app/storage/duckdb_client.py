@@ -47,6 +47,39 @@ class DuckDBClient:
             merged.to_parquet(file_path, index=False)
         return len(df)
 
+    def insert_earnings(self, df: pd.DataFrame, symbol: str) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        df["symbol"] = symbol
+        # Ensure columns match schema
+        # symbol, announce_date, report_time, fiscal_period, fiscal_end_date, actual_eps, estimated_eps
+        
+        # Fill missing columns with None/NaN
+        expected_cols = ["announce_date", "report_time", "fiscal_period", "fiscal_end_date", "actual_eps", "estimated_eps"]
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = None
+                
+        cols = ["symbol"] + expected_cols
+        df = df[cols].drop_duplicates(subset=["symbol", "announce_date"])
+        
+        self.conn.register("tmp_earnings", df)
+        self.conn.execute(
+            """
+            INSERT INTO earnings
+            SELECT * FROM tmp_earnings
+            ON CONFLICT (symbol, announce_date) DO UPDATE SET
+                report_time = EXCLUDED.report_time,
+                fiscal_period = EXCLUDED.fiscal_period,
+                fiscal_end_date = EXCLUDED.fiscal_end_date,
+                actual_eps = EXCLUDED.actual_eps,
+                estimated_eps = EXCLUDED.estimated_eps
+            """
+        )
+        self.conn.unregister("tmp_earnings")
+        return len(df)
+
     def latest_bars(self, symbol: str, limit: int = 100) -> pd.DataFrame:
         return self.conn.execute(
             """

@@ -25,5 +25,18 @@ CREATE TABLE IF NOT EXISTS feature_metadata (
 );
 """
 
+EARNINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS earnings (
+    symbol TEXT,
+    announce_date DATE,
+    report_time TEXT,
+    fiscal_period TEXT,
+    fiscal_end_date DATE,
+    actual_eps DOUBLE,
+    estimated_eps DOUBLE,
+    PRIMARY KEY(symbol, announce_date)
+);
+"""
+
 def table_blueprints() -> list[str]:
-    return [RAW_BARS_TABLE, FEATURE_META_TABLE]
+    return [RAW_BARS_TABLE, FEATURE_META_TABLE, EARNINGS_TABLE]

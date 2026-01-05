@@ -196,6 +196,23 @@ async def ingest_symbol(symbol: str, start: str | None = None, end: str | None =
     asyncio.create_task(task())
     return IngestResponse(symbol=symbol, inserted=0, ts="queued")
 
+@app.post("/ingest/earnings/{symbol}")
+async def ingest_earnings_endpoint(symbol: str):
+    logger.info("ingest earnings queued", extra={"symbol": symbol})
+    agent_status[symbol] = Status(symbol=symbol, state="earnings_queued", last_update=None)
+    
+    async def task():
+        agent_status[symbol] = Status(symbol=symbol, state="earnings_running", last_update=None)
+        try:
+            result = await poller.run_earnings(symbol)
+            agent_status[symbol] = Status(symbol=symbol, state="earnings_succeeded", last_update=result["ts"])
+        except Exception as exc:
+            logger.exception("ingest earnings failed", extra={"symbol": symbol})
+            agent_status[symbol] = Status(symbol=symbol, state="earnings_failed", last_update=None, error_message=str(exc))
+    
+    asyncio.create_task(task())
+    return {"status": "queued", "symbol": symbol}
+
 @app.get("/status", response_model=list[Status])
 async def status():
     return list(agent_status.values())
@@ -315,6 +332,15 @@ async def dashboard():
         </section>
 
         <section>
+          <h3>Ingest Earnings (IEX)</h3>
+          <div class="row">
+             <label>Symbol</label><input id="earnings-symbol" placeholder="e.g. AAPL" />
+             <button onclick="ingestEarnings()">Get Earnings History</button>
+             <span id="earnings-result"></span>
+          </div>
+        </section>
+
+        <section>
           <h3>Agent status & Logs</h3>
           <div class="row">
             <button onclick="refreshStatus()">Refresh</button>
@@ -385,6 +411,15 @@ async def dashboard():
 
       <script>
         function isoFromLookbackYears(years) { if (!years || isNaN(years) || years <= 0) return null; const d = new Date(); d.setFullYear(d.getFullYear() - years); return d.toISOString(); }
+
+        async function ingestEarnings() {
+          const symbol = document.getElementById("earnings-symbol").value.trim();
+          if (!symbol) { alert("Enter a symbol"); return; }
+          const res = await fetch(`/ingest/earnings/${symbol}`, { method: "POST" });
+          const data = await res.json();
+          document.getElementById("earnings-result").innerText = JSON.stringify(data);
+          refreshStatus();
+        }
 
         async function ingest() {
           const symbol = document.getElementById("symbol").value.trim();
