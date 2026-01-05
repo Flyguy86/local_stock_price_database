@@ -1,287 +1,9 @@
-from __future__ import annotations
-import asyncio
-import logging
-import threading
-import contextlib
-import importlib.util
-import shlex
-import sys
-from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from ..config import settings
-from ..logging import configure_json_logger
-from ..storage.duckdb_client import DuckDBClient
-from ..ingestion.poller import IngestPoller
-from ..ingestion.alpaca_client import get_alpaca_client
 
-logger = configure_json_logger(settings.log_level)
-LOG_BUFFER_MAX = 200
-log_buffer: list[dict] = []
-log_lock = threading.Lock()
+import os
 
-class InMemoryHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        payload = {
-            "ts": getattr(record, "ts", None) or getattr(record, "created", None),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-        }
-        if hasattr(record, "raw"):
-            payload["raw"] = record.raw
-        with log_lock:
-            log_buffer.append(payload)
-            if len(log_buffer) > LOG_BUFFER_MAX:
-                del log_buffer[: len(log_buffer) - LOG_BUFFER_MAX]
+MAIN_PATH = "/workspaces/local_stock_price_database/app/api/main.py"
 
-logger.addHandler(InMemoryHandler())
-db = DuckDBClient(settings.duckdb_path, settings.parquet_dir)
-poller = IngestPoller(db)
-app = FastAPI(title="local_stock_price_database")
-
-class IngestResponse(BaseModel):
-    symbol: str
-    inserted: int
-    ts: str
-
-class Status(BaseModel):
-    symbol: str
-    state: str
-    last_update: str | None = None
-    error_message: str | None = None
-
-class TestRunRequest(BaseModel):
-    expression: str | None = None
-
-    def targets(self) -> list[str]:
-        if not self.expression:
-            return []
-        try:
-            return shlex.split(self.expression)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"invalid test expression: {exc}") from exc
-
-
-TEST_MAX_OUTPUT = 20_000
-
-
-def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
-
-# In-memory agent status
-agent_status: dict[str, Status] = {}
-test_state_lock = asyncio.Lock()
-test_state: dict[str, object] = {
-    "status": "idle",
-    "targets": [],
-    "started_at": None,
-    "completed_at": None,
-    "returncode": None,
-    "stdout": "",
-    "stderr": "",
-}
-current_test_task: asyncio.Task | None = None
-
-
-def _truncate_output(text: str) -> str:
-  if len(text) <= TEST_MAX_OUTPUT:
-    return text
-  return text[-TEST_MAX_OUTPUT:]
-
-
-async def _run_tests_task(targets: list[str]) -> None:
-  global current_test_task
-  if importlib.util.find_spec("pytest") is None:
-    message = "pytest is not installed. Install dev extras with 'pip install -e .[dev]' or 'poetry install --with dev'."
-    async with test_state_lock:
-      test_state.update(
-        {
-          "status": "error",
-          "completed_at": _now_iso(),
-          "returncode": None,
-          "stdout": "",
-          "stderr": message,
-        }
-      )
-      current_test_task = None
-    logger.warning("pytest missing for test run")
-    return
-  cmd = [sys.executable, "-m", "pytest", *targets]
-  logger.info("test run started", extra={"cmd": cmd})
-  status = "failed"
-  returncode: int | None = None
-  stdout_text = ""
-  stderr_text = ""
-  try:
-    proc = await asyncio.create_subprocess_exec(
-      *cmd,
-      stdout=asyncio.subprocess.PIPE,
-      stderr=asyncio.subprocess.PIPE,
-    )
-    stdout_bytes, stderr_bytes = await proc.communicate()
-    returncode = proc.returncode
-    stdout_text = stdout_bytes.decode(errors="replace")
-    stderr_text = stderr_bytes.decode(errors="replace")
-    status = "passed" if returncode == 0 else "failed"
-  except Exception as exc:  # pragma: no cover - defensive
-    logger.exception("test run crashed")
-    stderr_text = f"Test runner error: {exc}"
-    status = "error"
-  stdout_text = _truncate_output(stdout_text)
-  stderr_text = _truncate_output(stderr_text)
-  async with test_state_lock:
-    test_state.update(
-      {
-        "status": status,
-        "completed_at": _now_iso(),
-        "returncode": returncode,
-        "stdout": stdout_text,
-        "stderr": stderr_text,
-      }
-    )
-    current_test_task = None
-  logger.info("test run finished", extra={"status": status, "returncode": returncode})
-
-
-def _tests_snapshot() -> dict[str, object]:
-  return {key: test_state.get(key) for key in test_state}
-
-
-@app.get("/tests")
-async def get_tests_state():
-  async with test_state_lock:
-    return _tests_snapshot()
-
-
-@app.post("/tests/run")
-async def trigger_tests(request: TestRunRequest):
-  targets = request.targets()
-  async with test_state_lock:
-    global current_test_task
-    if test_state["status"] == "running":
-      raise HTTPException(status_code=409, detail="test run already in progress")
-    test_state.update(
-      {
-        "status": "running",
-        "targets": targets,
-        "started_at": _now_iso(),
-        "completed_at": None,
-        "returncode": None,
-        "stdout": "",
-        "stderr": "",
-      }
-    )
-    current_test_task = asyncio.create_task(_run_tests_task(targets))
-    snapshot = _tests_snapshot()
-  return snapshot
-
-@app.post("/ingest/{symbol}", response_model=IngestResponse)
-async def ingest_symbol(symbol: str, start: str | None = None, end: str | None = None):
-    if not ((settings.alpaca_key_id and settings.alpaca_secret_key) or settings.iex_token):
-        raise HTTPException(status_code=400, detail="Missing provider credentials: set Alpaca keys or IEX token")
-    logger.info("ingest request queued", extra={"symbol": symbol, "start": start, "end": end})
-    agent_status[symbol] = Status(symbol=symbol, state="queued", last_update=None)
-    async def task():
-        agent_status[symbol] = Status(symbol=symbol, state="running", last_update=None)
-        logger.info("ingest task started", extra={"symbol": symbol, "start": start, "end": end})
-        try:
-            # 1. Run price history backfill
-            result = await poller.run_history(symbol, start=start, end=end)
-            
-            # 2. Run earnings fetch (best effort)
-            try:
-                await poller.run_earnings(symbol)
-            except Exception as e:
-                logger.warning("earnings fetch failed during ingest", extra={"symbol": symbol, "error": str(e)})
-
-            agent_status[symbol] = Status(symbol=symbol, state="succeeded", last_update=result["ts"])
-            logger.info("ingest task succeeded", extra={"symbol": symbol, "inserted": result["inserted"], "ts": result["ts"]})
-        except Exception as exc:
-            logger.exception("ingest failed", extra={"symbol": symbol})
-            agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None, error_message=str(exc))
-    asyncio.create_task(task())
-    return IngestResponse(symbol=symbol, inserted=0, ts="queued")
-
-@app.post("/ingest/earnings/{symbol}")
-async def ingest_earnings_endpoint(symbol: str):
-    logger.info("ingest earnings queued", extra={"symbol": symbol})
-    agent_status[symbol] = Status(symbol=symbol, state="earnings_queued", last_update=None)
-    
-    async def task():
-        agent_status[symbol] = Status(symbol=symbol, state="earnings_running", last_update=None)
-        try:
-            result = await poller.run_earnings(symbol)
-            agent_status[symbol] = Status(symbol=symbol, state="earnings_succeeded", last_update=result["ts"])
-        except Exception as exc:
-            logger.exception("ingest earnings failed", extra={"symbol": symbol})
-            agent_status[symbol] = Status(symbol=symbol, state="earnings_failed", last_update=None, error_message=str(exc))
-    
-    asyncio.create_task(task())
-    return {"status": "queued", "symbol": symbol}
-
-@app.get("/status", response_model=list[Status])
-async def status():
-    return list(agent_status.values())
-
-@app.get("/bars/{symbol}")
-async def get_bars(symbol: str, limit: int = 100, offset: int = 0):
-    if limit <= 0 or limit > 1000:
-        raise HTTPException(status_code=400, detail="limit must be 1..1000")
-    if offset < 0:
-        raise HTTPException(status_code=400, detail="offset must be >= 0")
-    df, total = db.bars_page(symbol, limit, offset)
-    return {"rows": df.to_dict(orient="records"), "total": total, "limit": limit, "offset": offset}
-
-@app.get("/symbols")
-async def symbols():
-    return db.list_symbols()
-
-@app.get("/tables")
-async def tables():
-    return db.list_tables()
-
-@app.get("/tables/{table}/rows")
-async def table_rows(table: str, limit: int = 100, offset: int = 0):
-    if limit <= 0 or limit > 1000:
-        raise HTTPException(status_code=400, detail="limit must be 1..1000")
-    if offset < 0:
-        raise HTTPException(status_code=400, detail="offset must be >= 0")
-    try:
-        df, total = db.table_page(table, limit, offset)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="table not found")
-    return {"rows": df.to_dict(orient="records"), "total": total, "limit": limit, "offset": offset}
-
-@app.get("/logs")
-async def logs(limit: int = 100):
-    if limit <= 0:
-        raise HTTPException(status_code=400, detail="limit must be positive")
-    with log_lock:
-        return log_buffer[-limit:]
-
-@app.delete("/bars/{symbol}")
-async def delete_bars_symbol(symbol: str):
-    deleted = db.delete_symbol(symbol)
-    return {"symbol": symbol, "deleted": deleted}
-
-@app.delete("/bars")
-async def delete_all_bars():
-    db.delete_all()
-    return {"deleted": "all"}
-
-@app.get("/debug/alpaca/raw")
-async def get_alpaca_raw_debug():
-    return {"alpaca_debug_raw": settings.alpaca_debug_raw}
-
-@app.post("/debug/alpaca/raw")
-async def set_alpaca_raw_debug(enabled: bool):
-    settings.alpaca_debug_raw = enabled
-    logger.info("alpaca raw debug toggled", extra={"enabled": enabled})
-    return {"alpaca_debug_raw": settings.alpaca_debug_raw}
-
-@app.get("/", response_class=HTMLResponse)
+NEW_DASHBOARD_CODE = r'''@app.get("/", response_class=HTMLResponse)
 async def dashboard():
     base = """
     <!doctype html>
@@ -369,6 +91,9 @@ async def dashboard():
         .tab { padding: 0.5rem 0; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; transition: all 0.2s; }
         .tab:hover { color: var(--text); }
         .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+        details > summary { list-style: none; }
+        details > summary::-webkit-details-marker { display: none; }
       </style>
     </head>
     <body>
@@ -381,7 +106,6 @@ async def dashboard():
             <div class="row">
                 <div class="badge">Feed: <span>__ALPACA_FEED__</span></div>
                 <div class="badge">DB: <span>__DUCKDB_PATH__</span></div>
-                <a href="/docs" target="_blank" class="badge" style="text-decoration:none; cursor:pointer;">API Docs &#8599;</a>
             </div>
         </header>
         
@@ -434,6 +158,28 @@ async def dashboard():
                 <div id="status-grid" class="status-grid"></div>
             </section>
 
+             <!-- Tests Section -->
+            <section class="full-width">
+                <h2>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    Test Runner
+                </h2>
+                <div class="row">
+                    <input id="tests-expression" placeholder="pytest matching..." style="flex: 1; background: rgba(0,0,0,0.2); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; color: var(--text);">
+                    <button onclick="runAllTests()">Run All</button>
+                    <button class="secondary" onclick="runSelectedTests()">Run Selected</button>
+                </div>
+                <div class="row" style="margin-top: 0.5rem;">
+                     <span id="tests-status" class="badge"></span>
+                     <span id="tests-meta" style="font-size: 0.75rem; color: var(--text-muted);"></span>
+                </div>
+                <details style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 0.5rem; margin-top:0.5rem;">
+                    <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Output (stdout/stderr)</summary>
+                    <pre id="tests-stdout" style="margin-top: 0.5rem; max-height: 200px; color: #cbd5e1;"></pre>
+                    <pre id="tests-stderr" style="margin-top: 0.5rem; max-height: 200px; color: #fca5a5;"></pre>
+                </details>
+            </section>
+
             <!-- Data Viewer -->
             <section class="full-width" style="min-height: 400px;">
                 <div class="row" style="border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 0;">
@@ -474,28 +220,6 @@ async def dashboard():
                 </div>
             </section>
             
-            <!-- Tests Section -->
-            <section class="full-width">
-                <h2>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    Test Runner
-                </h2>
-                <div class="row">
-                    <input id="tests-expression" placeholder="pytest matching..." style="flex: 1; background: rgba(0,0,0,0.2); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; color: var(--text);">
-                    <button onclick="runAllTests()">Run All</button>
-                    <button class="secondary" onclick="runSelectedTests()">Run Selected</button>
-                </div>
-                <div class="row" style="margin-top: 0.5rem;">
-                     <span id="tests-status" class="badge"></span>
-                     <span id="tests-meta" style="font-size: 0.75rem; color: var(--text-muted);"></span>
-                </div>
-                <details style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 0.5rem; margin-top:0.5rem;">
-                    <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Output (stdout/stderr)</summary>
-                    <pre id="tests-stdout" style="margin-top: 0.5rem; max-height: 200px; color: #cbd5e1;"></pre>
-                    <pre id="tests-stderr" style="margin-top: 0.5rem; max-height: 200px; color: #fca5a5;"></pre>
-                </details>
-            </section>
-            
             <!-- Logs -->
             <section class="full-width">
                 <h2>
@@ -533,9 +257,9 @@ async def dashboard():
              loadTablesList();
              loadData();
              loadDebugToggle();
-             // Auto-refresh status
+             // Auto-refresh
              setInterval(refreshStatus, 5000);
-             setInterval(refreshTests, 5000);
+             setInterval(refreshTests, 5000); 
         };
 
         // Actions
@@ -559,7 +283,7 @@ async def dashboard():
             } catch(e) {
                 alert('Ingest failed: ' + e);
             } finally {
-               $('ingest-button').disabled = false;
+               if($('ingest-button')) $('ingest-button').disabled = false;
             }
         }
         
@@ -581,6 +305,50 @@ async def dashboard():
             if(!confirm('NUKE THE DATABASE?')) return;
             await fetch('/bars', {method: 'DELETE'});
             refreshStatus(); loadData();
+        }
+        
+        // Tests
+        async function runTests(expression) {
+          const payload = expression ? { expression } : {};
+          try {
+            $('tests-status').innerText = "Running...";
+            $('tests-status').className = "badge";
+            const res = await fetch("/tests/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+               const err = await res.json().catch(() => ({}));
+               alert(err.detail || "Failed");
+               return;
+            }
+            const data = await res.json();
+            renderTests(data);
+          } catch (err) { alert("Test start failed"); }
+        }
+        function runAllTests() { runTests(null); }
+        function runSelectedTests() {
+          const expr = $('tests-expression').value.trim();
+          if (!expr) return alert("Enter target");
+          runTests(expr);
+        }
+        async function refreshTests() {
+            try {
+                const res = await fetch("/tests");
+                if(res.ok) renderTests(await res.json());
+            } catch(e) {}
+        }
+        function renderTests(st) {
+            const status = $('tests-status');
+            status.innerText = st.status || "unknown";
+            status.className = `badge ${st.status === "passed" ? "green" : st.status === "failed" ? "red" : ""}`;
+            
+            $('tests-meta').innerText = 
+               [st.started_at ? `Start: ${st.started_at}` : "", st.returncode !== null ? `Exit: ${st.returncode}` : ""].join(' • ');
+            
+            $('tests-stdout').innerText = st.stdout || "";
+            $('tests-stderr').innerText = st.stderr || "";
         }
         
         // Data Viewing
@@ -662,50 +430,6 @@ async def dashboard():
              loadData();
         }
         
-        // Tests
-        async function runTests(expression) {
-          const payload = expression ? { expression } : {};
-          try {
-            $('tests-status').innerText = "Running...";
-            $('tests-status').className = "badge";
-            const res = await fetch("/tests/run", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            if (!res.ok) {
-               const err = await res.json().catch(() => ({}));
-               alert(err.detail || "Failed");
-               return;
-            }
-            const data = await res.json();
-            renderTests(data);
-          } catch (err) { alert("Test start failed"); }
-        }
-        function runAllTests() { runTests(null); }
-        function runSelectedTests() {
-          const expr = $('tests-expression').value.trim();
-          if (!expr) return alert("Enter target");
-          runTests(expr);
-        }
-        async function refreshTests() {
-            try {
-                const res = await fetch("/tests");
-                if(res.ok) renderTests(await res.json());
-            } catch(e) {}
-        }
-        function renderTests(st) {
-            const status = $('tests-status');
-            status.innerText = st.status || "unknown";
-            status.className = `badge ${st.status === "passed" ? "green" : st.status === "failed" ? "red" : ""}`;
-            
-            $('tests-meta').innerText = 
-               [st.started_at ? `Start: ${st.started_at}` : "", st.returncode !== null ? `Exit: ${st.returncode}` : ""].join(' • ');
-            
-            $('tests-stdout').innerText = st.stdout || "";
-            $('tests-stderr').innerText = st.stderr || "";
-        }
-        
         // System Status
         async function refreshStatus() {
             const res = await fetch('/status');
@@ -751,65 +475,33 @@ async def dashboard():
     </html>
     """
     html = base.replace("__ALPACA_FEED__", str(settings.alpaca_feed)).replace("__DUCKDB_PATH__", str(settings.duckdb_path))
-    return HTMLResponse(html)
+    return HTMLResponse(html)'''
 
-live_task: asyncio.Task | None = None
+with open(MAIN_PATH, "r") as f:
+    content = f.read()
 
-async def live_updater():
-    if not (settings.alpaca_key_id and settings.alpaca_secret_key):
-        logger.info("live updater disabled; missing alpaca credentials")
-        return
-    client = get_alpaca_client()
-    try:
-        while True:
-            try:
-                clock = await client.get_clock()
-                is_open = clock.get("is_open", False)
-                next_open = clock.get("next_open")
-                next_close = clock.get("next_close")
-                if not is_open:
-                    sleep_for = 60
-                    if next_open:
-                        try:
-                            ts = datetime.fromisoformat(next_open.replace("Z", "+00:00"))
-                            delta = (ts - datetime.now(timezone.utc)).total_seconds()
-                            sleep_for = max(30, min(delta, 600)) if delta > 0 else 60
-                        except Exception:
-                            sleep_for = 60
-                    logger.info("market closed; sleeping", extra={"sleep_seconds": sleep_for, "next_open": next_open})
-                    await asyncio.sleep(sleep_for)
-                    continue
-                symbols = db.list_symbols()
-                if symbols:
-                    result = await poller.run_live_batch(symbols)
-                    logger.info("live batch complete", extra={"symbols": result["symbols"], "inserted": result["inserted"]})
-                else:
-                    logger.info("live batch skipped; no symbols")
-                if next_close:
-                    try:
-                        ts_close = datetime.fromisoformat(next_close.replace("Z", "+00:00"))
-                        if ts_close < datetime.now(timezone.utc):
-                            await asyncio.sleep(60)
-                            continue
-                    except Exception:
-                        pass
-                await asyncio.sleep(60)
-            except Exception:
-                logger.exception("live updater loop error")
-                await asyncio.sleep(60)
-    finally:
-        await client.aclose()
+# Find start
+start_marker = '@app.get("/", response_class=HTMLResponse)\nasync def dashboard():'
+start_idx = content.find(start_marker)
 
-@app.on_event("startup")
-async def _startup():
-    global live_task
-    live_task = asyncio.create_task(live_updater())
+if start_idx == -1:
+    print("Could not find start marker")
+    exit(1)
 
-@app.on_event("shutdown")
-async def _shutdown():
-    global live_task
-    if live_task:
-        live_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-      await live_task
-    live_task = None
+# Find end
+end_marker = 'live_task: asyncio.Task | None = None'
+end_idx = content.find(end_marker)
+
+if end_idx == -1:
+    print("Could not find end marker")
+    exit(1)
+
+original_segment = content[start_idx:end_idx]
+print(f"Replacing {len(original_segment)} chars...")
+
+new_content = content[:start_idx] + NEW_DASHBOARD_CODE + "\n\n" + content[end_idx:]
+
+with open(MAIN_PATH, "w") as f:
+    f.write(new_content)
+
+print("Done V2!")
