@@ -55,6 +55,13 @@ Stock price database
 - Run: `docker-compose up`
 - API available at `http://localhost:8000`
 
+## Feature Builder (terminal)
+- Install deps (from repo root): `pip install -e .`
+- Optional env to override paths: `SOURCE_DUCKDB_PATH`, `DEST_DUCKDB_PATH`, `DEST_PARQUET_DIR`.
+- Run all symbols from the source DB: `python -m feature_service.main`
+- Run selected symbols: `python -m feature_service.main SPY QQQ`
+- In docker-compose (override command): `docker-compose run --rm feature_builder python -m feature_service.main SPY`
+
 ## Environment variables (.env example)
 Create a `.env` in the repo root:
 ```

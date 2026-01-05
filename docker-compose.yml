@@ -10,3 +10,18 @@ services:
       - ./data:/app/data
     ports:
       - "8000:8000"
+
+  feature_builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.feature
+    environment:
+      SOURCE_DUCKDB_PATH: ${SOURCE_DUCKDB_PATH:-/app/data/duckdb/local.db}
+      DEST_DUCKDB_PATH: ${DEST_DUCKDB_PATH:-/app/data/duckdb/features.db}
+      DEST_PARQUET_DIR: ${DEST_PARQUET_DIR:-/app/data/features_parquet}
+      LOG_LEVEL: ${FEATURE_BUILDER_LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+    command: ["uvicorn", "feature_service.web:app", "--host", "0.0.0.0", "--port", "8100"]
+    ports:
+      - "8100:8100"

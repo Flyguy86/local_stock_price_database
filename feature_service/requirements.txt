@@ -1,0 +1,5 @@
+duckdb==0.10.2
+pandas==2.1.4
+pyarrow==14.0.2
+fastapi==0.110.2
+uvicorn==0.23.2
