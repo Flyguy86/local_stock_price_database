@@ -10,6 +10,7 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+poetry.lock
 
 # Editor/IDE
 .vscode/

@@ -3,6 +3,9 @@ import asyncio
 import logging
 import threading
 import contextlib
+import shlex
+import sys
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -48,8 +51,115 @@ class Status(BaseModel):
     last_update: str | None = None
     error_message: str | None = None
 
+class TestRunRequest(BaseModel):
+    expression: str | None = None
+
+    def targets(self) -> list[str]:
+        if not self.expression:
+            return []
+        try:
+            return shlex.split(self.expression)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid test expression: {exc}") from exc
+
+
+TEST_MAX_OUTPUT = 20_000
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
 # In-memory agent status
 agent_status: dict[str, Status] = {}
+test_state_lock = asyncio.Lock()
+test_state: dict[str, object] = {
+    "status": "idle",
+    "targets": [],
+    "started_at": None,
+    "completed_at": None,
+    "returncode": None,
+    "stdout": "",
+    "stderr": "",
+}
+current_test_task: asyncio.Task | None = None
+
+
+def _truncate_output(text: str) -> str:
+  if len(text) <= TEST_MAX_OUTPUT:
+    return text
+  return text[-TEST_MAX_OUTPUT:]
+
+
+async def _run_tests_task(targets: list[str]) -> None:
+  global current_test_task
+  cmd = [sys.executable, "-m", "pytest", *targets]
+  logger.info("test run started", extra={"cmd": cmd})
+  status = "failed"
+  returncode: int | None = None
+  stdout_text = ""
+  stderr_text = ""
+  try:
+    proc = await asyncio.create_subprocess_exec(
+      *cmd,
+      stdout=asyncio.subprocess.PIPE,
+      stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    returncode = proc.returncode
+    stdout_text = stdout_bytes.decode(errors="replace")
+    stderr_text = stderr_bytes.decode(errors="replace")
+    status = "passed" if returncode == 0 else "failed"
+  except Exception as exc:  # pragma: no cover - defensive
+    logger.exception("test run crashed")
+    stderr_text = f"Test runner error: {exc}"
+    status = "error"
+  stdout_text = _truncate_output(stdout_text)
+  stderr_text = _truncate_output(stderr_text)
+  async with test_state_lock:
+    test_state.update(
+      {
+        "status": status,
+        "completed_at": _now_iso(),
+        "returncode": returncode,
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+      }
+    )
+    current_test_task = None
+  logger.info("test run finished", extra={"status": status, "returncode": returncode})
+
+
+def _tests_snapshot() -> dict[str, object]:
+  return {key: test_state.get(key) for key in test_state}
+
+
+@app.get("/tests")
+async def get_tests_state():
+  async with test_state_lock:
+    return _tests_snapshot()
+
+
+@app.post("/tests/run")
+async def trigger_tests(request: TestRunRequest):
+  targets = request.targets()
+  async with test_state_lock:
+    global current_test_task
+    if test_state["status"] == "running":
+      raise HTTPException(status_code=409, detail="test run already in progress")
+    test_state.update(
+      {
+        "status": "running",
+        "targets": targets,
+        "started_at": _now_iso(),
+        "completed_at": None,
+        "returncode": None,
+        "stdout": "",
+        "stderr": "",
+      }
+    )
+    current_test_task = asyncio.create_task(_run_tests_task(targets))
+    snapshot = _tests_snapshot()
+  return snapshot
 
 @app.post("/ingest/{symbol}", response_model=IngestResponse)
 async def ingest_symbol(symbol: str, start: str | None = None, end: str | None = None):
@@ -198,6 +308,27 @@ async def dashboard():
            <h4>Server logs</h4>
           <div id="logs-container" style="display:block;">
             <div id="logs-box"></div>
+          </div>
+        </section>
+
+        <section>
+          <h3>Tests</h3>
+          <div class="row">
+            <input id="tests-expression" placeholder="pytest targets (optional)" style="flex:1; min-width:200px;" />
+            <button onclick="runAllTests()">Run all tests</button>
+            <button onclick="runSelectedTests()">Run selection</button>
+            <span id="tests-status" class="badge"></span>
+          </div>
+          <div style="margin-top:0.5rem;">
+            <div id="tests-meta" style="font-size:0.85rem; color:#475569;"></div>
+            <details open style="margin-top:0.5rem;">
+              <summary>stdout</summary>
+              <pre id="tests-stdout"></pre>
+            </details>
+            <details style="margin-top:0.5rem;">
+              <summary>stderr</summary>
+              <pre id="tests-stderr"></pre>
+            </details>
           </div>
         </section>
 
@@ -380,6 +511,65 @@ async def dashboard():
           container.style.display = container.style.display === "none" ? "block" : "none";
         }
 
+        function renderTests(state) {
+          const statusBadge = document.getElementById("tests-status");
+          statusBadge.textContent = state.status || "unknown";
+          statusBadge.style.background = state.status === "passed" ? "#dcfce7" : state.status === "failed" || state.status === "error" ? "#fee2e2" : "#e0f2fe";
+          statusBadge.style.color = state.status === "passed" ? "#166534" : state.status === "failed" || state.status === "error" ? "#b91c1c" : "#075985";
+          const meta = document.getElementById("tests-meta");
+          const targets = state.targets && state.targets.length ? state.targets.join(" ") : "all";
+          const started = state.started_at ? `started: ${state.started_at}` : "";
+          const completed = state.completed_at ? `finished: ${state.completed_at}` : "";
+          const rc = state.returncode !== null && state.returncode !== undefined ? `exit code: ${state.returncode}` : "";
+          meta.textContent = [targets ? `targets: ${targets}` : "", started, completed, rc].filter(Boolean).join(" • ");
+          document.getElementById("tests-stdout").textContent = state.stdout || "";
+          document.getElementById("tests-stderr").textContent = state.stderr || "";
+        }
+
+        async function refreshTests() {
+          try {
+            const res = await fetch("/tests");
+            if (!res.ok) return;
+            const data = await res.json();
+            renderTests(data);
+          } catch (err) {
+            console.error("failed to refresh tests", err);
+          }
+        }
+
+        async function runTests(expression) {
+          const payload = expression ? { expression } : {};
+          try {
+            const res = await fetch("/tests/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+              const detail = await res.json().catch(() => ({}));
+              alert(detail.detail || "Failed to start tests");
+              return;
+            }
+            const data = await res.json();
+            renderTests(data);
+          } catch (err) {
+            alert("Unable to start tests");
+          }
+        }
+
+        function runAllTests() {
+          runTests(null);
+        }
+
+        function runSelectedTests() {
+          const expr = document.getElementById("tests-expression").value.trim();
+          if (!expr) {
+            alert("Enter pytest targets to run selection");
+            return;
+          }
+          runTests(expr);
+        }
+
         async function loadDebugToggle() {
           const res = await fetch("/debug/alpaca/raw");
           const data = await res.json();
@@ -394,8 +584,8 @@ async def dashboard():
           loadDebugToggle();
         }
 
-        setInterval(() => { refreshStatus(); refreshLogs(); }, 3000);
-        refreshStatus(); refreshLogs(); loadTables(); loadDebugToggle();
+        setInterval(() => { refreshStatus(); refreshLogs(); refreshTests(); }, 3000);
+        refreshStatus(); refreshLogs(); refreshTests(); loadTables(); loadDebugToggle();
       </script>
     </body>
     </html>

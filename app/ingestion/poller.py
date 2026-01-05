@@ -19,7 +19,8 @@ class IngestPoller:
         inserted = 0
         target_start = pd.to_datetime(start, utc=True) if start else None
         current_end = pd.to_datetime(end, utc=True) if end else pd.Timestamp.now(tz=timezone.utc)
-        window = pd.Timedelta(days=180)
+        alpaca_window = pd.Timedelta(days=7)
+        iex_window = pd.Timedelta(days=180)
         log.info(
             "backfill start",
             extra={
@@ -52,6 +53,7 @@ class IngestPoller:
         if settings.alpaca_key_id and settings.alpaca_secret_key:
             client = get_alpaca_client()
             try:
+                window = alpaca_window
                 while True:
                     window_start = current_end - window
                     if target_start:
@@ -66,6 +68,8 @@ class IngestPoller:
                         timeframe="1Min",
                         start=window_start.isoformat(),
                         end=current_end.isoformat(),
+                        limit=3000,
+                        adjustments="all",
                     ):
                         got_any = True
                         earliest = await process_frame(df, "alpaca")
@@ -88,6 +92,7 @@ class IngestPoller:
             client = get_iex_client()
             try:
                 current_end = pd.to_datetime(end, utc=True) if end else pd.Timestamp.now(tz=timezone.utc)
+                window = iex_window
                 while True:
                     window_start = current_end - window
                     if target_start:

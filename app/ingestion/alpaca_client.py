@@ -39,7 +39,8 @@ class AlpacaClient:
         timeframe: str = "1Min",
         start: str | None = None,
         end: str | None = None,
-        limit: int = 10000,
+        limit: int = 3000,
+        adjustments: str | None = "all",
     ) -> AsyncIterator[pd.DataFrame]:
         next_page = None
         backoff = 1.0
@@ -49,6 +50,8 @@ class AlpacaClient:
                 params["page_token"] = next_page
             if self.feed:
                 params["feed"] = self.feed
+            if adjustments:
+                params["adjustment"] = adjustments
             if start:
                 params["start"] = start
             if end:
