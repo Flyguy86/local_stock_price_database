@@ -118,7 +118,7 @@ async def index():
           tbody.innerHTML = '';
           data.forEach(sym => {{
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td><input type="checkbox" value="${sym}" /></td><td>${sym}</td>`;
+            tr.innerHTML = `<td><input type="checkbox" value="${{sym}}" /></td><td>${{sym}}</td>`;
             tbody.appendChild(tr);
           }});
         }}
