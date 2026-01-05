@@ -100,218 +100,236 @@ async def index():
       <meta charset="utf-8" />
       <title>Feature Builder</title>
       <style>
-        body { font-family: 'Inter', system-ui, sans-serif; margin: 0; background: #0b1224; color: #e2e8f0; }
-        header { padding: 1rem 1.5rem; background: #111827; display:flex; justify-content: space-between; align-items:center; }
-        h1 { margin: 0; font-size: 1.2rem; }
-        main { padding: 1rem 1.5rem; display: grid; gap: 1rem; }
-        section { background: #111827; border-radius: 12px; padding: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.35); }
-        button { background: #22c55e; color: #0b1224; border: none; border-radius: 8px; padding: 0.5rem 0.75rem; cursor: pointer; font-weight: 700; }
-        button:hover { background: #16a34a; }
-        .ghost { background: #1f2937; color: #e2e8f0; }
-        table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
-        th, td { border-bottom: 1px solid #1f2937; padding: 0.5rem; font-size: 0.95rem; }
-        .badge { background: #1f2937; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.85rem; }
-        .pass { background: #14532d; color: #bef264; }
-        .fail { background: #7f1d1d; color: #fecaca; }
-        .pending { background: #1f2937; color: #e2e8f0; }
-        pre { background: #0b172f; border-radius: 10px; padding: 0.75rem; max-height: 320px; overflow: auto; }
-        .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-        a { color: #38bdf8; }
-        .step { display: grid; gap: 0.5rem; }
-        .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; }
+        body { font-family: 'Inter', system-ui, sans-serif; margin: 0; background: #0b1224; color: #e2e8f0; font-size: 0.9rem; }
+        header { padding: 0.75rem 1rem; background: #111827; display:flex; justify-content: space-between; align-items:center; border-bottom: 1px solid #1f2937; }
+        h1 { margin: 0; font-size: 1.1rem; }
+        main { padding: 1rem; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        section { background: #111827; border-radius: 8px; padding: 0.75rem; border: 1px solid #1f2937; }
+        section.full-width { grid-column: 1 / -1; }
+        h3 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #94a3b8; }
+        button { background: #2563eb; color: white; border: none; border-radius: 4px; padding: 0.35rem 0.6rem; cursor: pointer; font-size: 0.85rem; }
+        button:hover { background: #1d4ed8; }
+        button.ghost { background: #374151; }
+        button.ghost:hover { background: #4b5563; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        th, td { border-bottom: 1px solid #1f2937; padding: 0.35rem; text-align: left; }
+        th { color: #94a3b8; font-weight: 600; }
+        .badge { background: #1f2937; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem; color: #94a3b8; }
+        .pass { background: #064e3b; color: #6ee7b7; }
+        .fail { background: #7f1d1d; color: #fca5a5; }
+        pre { background: #0f172a; border-radius: 4px; padding: 0.5rem; max-height: 150px; overflow: auto; font-size: 0.75rem; margin: 0; }
+        .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+        .split { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+        input[type="checkbox"] { accent-color: #2563eb; }
       </style>
     </head>
     <body>
       <header>
         <h1>Feature Builder</h1>
-        <div class="row"> <span class="badge">Source DB: __SOURCE_DB__</span> <span class="badge">Dest DB: __DEST_DB__</span></div>
+        <div class="row" style="margin:0"> <span class="badge">Src: __SOURCE_DB__</span> <span class="badge">Dst: __DEST_DB__</span></div>
       </header>
       <main>
-        <section class="step">
-          <h3>Step 1: Load unique tickers</h3>
+        <section>
+          <h3>1. Load Tickers</h3>
           <div class="row">
-            <button onclick="loadSymbols()">Test: load tickers</button>
-            <span id="step1-badge" class="badge pending">pending</span>
+            <button onclick="loadSymbols()">Load</button>
+            <span id="step1-badge" class="badge">pending</span>
           </div>
-          <div class="split">
-            <div>
-              <strong>Raw before</strong>
-              <pre id="step1-before">[]</pre>
-            </div>
-            <div>
-              <strong>Raw after</strong>
-              <pre id="step1-after">[]</pre>
-            </div>
-          </div>
-          <table id="symbols-table"><thead><tr><th></th><th>Symbol</th></tr></thead><tbody></tbody></table>
-        </section>
-
-        <section class="step">
-          <h3>Step 2: Select tickers</h3>
-          <div class="row">
-            <button class="ghost" onclick="selectAll()">Select all</button>
-            <button class="ghost" onclick="clearSelection()">Clear</button>
-            <button onclick="testSelection()">Test selection</button>
-            <span id="step2-badge" class="badge pending">pending</span>
-          </div>
-          <div class="split">
-            <div>
-              <strong>Raw before</strong>
-              <pre id="step2-before">[]</pre>
-            </div>
-            <div>
-              <strong>Raw after</strong>
-              <pre id="step2-after">[]</pre>
-            </div>
-          </div>
-        </section>
-
-        <section class="step">
-          <h3>Step 3: Generate features</h3>
-          <div class="row">
-            <button onclick="runSelected()">Test: run feature generation</button>
-            <span id="step3-badge" class="badge pending">pending</span>
-          </div>
-          <div class="split">
-            <div>
-              <strong>Raw before</strong>
-              <pre id="step3-before">{ symbols: [] }</pre>
-            </div>
-            <div>
-              <strong>Raw after</strong>
-              <pre id="step3-after">{}</pre>
-            </div>
+          <div style="max-height: 200px; overflow-y: auto; border: 1px solid #1f2937; border-radius: 4px;">
+            <table id="symbols-table"><thead><tr><th width="30"><input type="checkbox" onclick="toggleAll(this)"></th><th>Symbol</th></tr></thead><tbody></tbody></table>
           </div>
         </section>
 
         <section>
-          <h3>Run status</h3>
-          <div class="row"><span id="status-badge" class="badge pending">idle</span></div>
-          <div id="status-json" class="badge"></div>
-          <details open style="margin-top:0.5rem;"><summary>Result</summary><pre id="result-box"></pre></details>
+          <h3>2. Generate</h3>
+          <div class="row">
+            <button onclick="runSelected()">Run Selected</button>
+            <span id="step3-badge" class="badge">idle</span>
+          </div>
+          <div class="split">
+             <div><small>Status</small><pre id="status-json">{}</pre></div>
+             <div><small>Result</small><pre id="result-box">{}</pre></div>
+          </div>
+        </section>
+
+        <section class="full-width">
+          <h3>Database Viewer (feature_bars)</h3>
+          <div class="row">
+            <button class="ghost" onclick="firstPage()">First</button>
+            <button class="ghost" onclick="prevPage()">Prev</button>
+            <span id="page-info" class="badge">0-0 of 0</span>
+            <button class="ghost" onclick="nextPage()">Next</button>
+            <button class="ghost" onclick="lastPage()">Last</button>
+            <button onclick="loadRows(pageState.offset)">Refresh</button>
+          </div>
+          <div style="overflow-x: auto;">
+            <table id="features-table"><thead></thead><tbody></tbody></table>
+          </div>
         </section>
       </main>
       <script>
-        let lastSymbols = [];
-        let lastSelection = [];
-        let lastRunSymbols = [];
+        let pageState = { offset: 0, limit: 15, total: 0 };
 
         function setBadge(id, state, text) {
           const el = document.getElementById(id);
           if (!el) return;
-          el.classList.remove('pass', 'fail', 'pending');
-          if (state === 'pass') {
-            el.classList.add('pass');
-            el.innerText = text || 'pass';
-          } else if (state === 'fail') {
-            el.classList.add('fail');
-            el.innerText = text || 'fail';
-          } else {
-            el.classList.add('pending');
-            el.innerText = text || 'pending';
-          }
+          el.className = 'badge ' + (state === 'pass' ? 'pass' : state === 'fail' ? 'fail' : '');
+          el.innerText = text || state;
         }
 
         async function loadSymbols() {
-          const beforePayload = { endpoint: '/symbols', previous: lastSymbols };
-          document.getElementById('step1-before').innerText = JSON.stringify(beforePayload, null, 2);
           try {
             const res = await fetch('/symbols');
-            if (!res.ok) {
-              const text = await res.text();
-              throw new Error('status ' + res.status + ' body: ' + text.slice(0, 400));
-            }
             const data = await res.json();
-            lastSymbols = data;
-            document.getElementById('step1-after').innerText = JSON.stringify(data, null, 2);
             const tbody = document.querySelector('#symbols-table tbody');
             tbody.innerHTML = '';
             data.forEach(sym => {
               const tr = document.createElement('tr');
-              tr.innerHTML = '<td><input type="checkbox" value="' + sym + '" /></td><td>' + sym + '</td>';
+              tr.innerHTML = `<td><input type="checkbox" value="${sym}"></td><td>${sym}</td>`;
               tbody.appendChild(tr);
             });
-            setBadge('step1-badge', 'pass', data.length ? 'pass' : 'empty');
+            setBadge('step1-badge', 'pass', `${data.length} loaded`);
           } catch (err) {
-            document.getElementById('step1-after').innerText = String(err);
-            setBadge('step1-badge', 'fail', 'fail');
+            setBadge('step1-badge', 'fail', 'error');
           }
         }
 
-        function selectAll() { document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = true); }
-        function clearSelection() { document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = false); }
-
-        function testSelection() {
-          document.getElementById('step2-before').innerText = JSON.stringify({ selected: lastSelection }, null, 2);
-          const all = Array.from(document.querySelectorAll('#symbols-table tbody input'));
-          const selected = all.filter(cb => cb.checked).map(cb => cb.value);
-          document.getElementById('step2-after').innerText = JSON.stringify(selected, null, 2);
-          lastSelection = selected;
-          if (all.length === 0) {
-            setBadge('step2-badge', 'fail', 'no symbols loaded');
-            return;
-          }
-          if (selected.length === 0) {
-            setBadge('step2-badge', 'fail', 'no selection');
-            return;
-          }
-          setBadge('step2-badge', 'pass', selected.length === all.length ? 'all selected' : 'partial');
+        function toggleAll(source) {
+            document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = source.checked);
         }
 
         async function runSelected() {
           const symbols = Array.from(document.querySelectorAll('#symbols-table tbody input:checked')).map(cb => cb.value);
-          document.getElementById('step3-before').innerText = JSON.stringify({ symbols: symbols }, null, 2);
-          lastRunSymbols = symbols;
-          const payload = symbols.length ? { symbols: symbols } : {};
+          const payload = symbols.length ? { symbols } : {};
           try {
-            const res = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            if (!res.ok) {
-              const text = await res.text();
-              throw new Error('status ' + res.status + ' body: ' + text.slice(0, 400));
-            }
-            const data = await res.json();
-            document.getElementById('step3-after').innerText = JSON.stringify({ run: data, sample: 'pending' }, null, 2);
+            await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             setBadge('step3-badge', 'pass', 'queued');
             pollStatus();
           } catch (err) {
-            document.getElementById('step3-after').innerText = String(err);
-            setBadge('step3-badge', 'fail', 'fail');
+            setBadge('step3-badge', 'fail', 'error');
           }
         }
 
         async function pollStatus() {
           const res = await fetch('/status');
           const data = await res.json();
-          document.getElementById('status-badge').innerText = data.state;
           document.getElementById('status-json').innerText = JSON.stringify(data, null, 2);
-          document.getElementById('result-box').innerText = JSON.stringify(data.result, null, 2);
-
-          if (data.state === 'succeeded' && lastRunSymbols.length) {
-            try {
-              const sym = lastRunSymbols[0];
-              const sampRes = await fetch('/features_sample?symbol=' + encodeURIComponent(sym) + '&limit=3');
-              if (sampRes.ok) {
-                const sample = await sampRes.json();
-                document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample }, null, 2);
-              } else {
-                document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample_error: 'status ' + sampRes.status }, null, 2);
-              }
-            } catch (e) {
-              document.getElementById('step3-after').innerText = JSON.stringify({ result: data.result, sample_error: String(e) }, null, 2);
-            }
+          if (data.result) document.getElementById('result-box').innerText = JSON.stringify(data.result, null, 2);
+          
+          if (data.state === 'running') setTimeout(pollStatus, 1000);
+          else if (data.state === 'succeeded') {
+             setBadge('step3-badge', 'pass', 'done');
+             loadRows(0);
           }
-
-          if (data.state === 'running') { setTimeout(pollStatus, 1500); }
         }
+
+        async function loadRows(offset) {
+            if (offset < 0) offset = 0;
+            try {
+                const res = await fetch(`/features/rows?limit=${pageState.limit}&offset=${offset}`);
+                const data = await res.json();
+                pageState.offset = data.offset;
+                pageState.total = data.total;
+                
+                const thead = document.querySelector('#features-table thead');
+                const tbody = document.querySelector('#features-table tbody');
+                thead.innerHTML = '';
+                tbody.innerHTML = '';
+
+                if (data.rows && data.rows.length > 0) {
+                    const cols = Object.keys(data.rows[0]);
+                    const trH = document.createElement('tr');
+                    cols.forEach(c => {
+                        const th = document.createElement('th');
+                        th.innerText = c;
+                        trH.appendChild(th);
+                    });
+                    thead.appendChild(trH);
+
+                    data.rows.forEach(r => {
+                        const tr = document.createElement('tr');
+                        cols.forEach(c => {
+                            const td = document.createElement('td');
+                            td.innerText = r[c];
+                            tr.appendChild(td);
+                        });
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td>No data</td></tr>';
+                }
+                
+                const end = Math.min(pageState.offset + pageState.limit, pageState.total);
+                document.getElementById('page-info').innerText = `${pageState.offset + 1}-${end} of ${pageState.total}`;
+
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function firstPage() { loadRows(0); }
+        function prevPage() { loadRows(pageState.offset - pageState.limit); }
+        function nextPage() { if (pageState.offset + pageState.limit < pageState.total) loadRows(pageState.offset + pageState.limit); }
+        function lastPage() { loadRows(Math.max(0, pageState.total - pageState.limit)); }
 
         loadSymbols();
         pollStatus();
+        loadRows(0);
       </script>
     </body>
     </html>
     """
     html = html.replace("__SOURCE_DB__", str(cfg.source_db)).replace("__DEST_DB__", str(cfg.dest_db))
     return HTMLResponse(content=html)
+
+
+@app.get("/features/rows")
+async def get_feature_rows(limit: int = 20, offset: int = 0):
+    conn = None
+    tmpdir = None
+    try:
+        tmpdir = tempfile.TemporaryDirectory()
+        tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
+        if not cfg.dest_db.exists():
+             return {"rows": [], "total": 0, "offset": offset, "limit": limit}
+        
+        shutil.copy2(cfg.dest_db, tmp_dest)
+        wal_src = cfg.dest_db.with_suffix(cfg.dest_db.suffix + ".wal")
+        if wal_src.exists():
+            wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
+            shutil.copy2(wal_src, wal_dst)
+        
+        conn = duckdb.connect(str(tmp_dest), read_only=True)
+        
+        try:
+            conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
+        except duckdb.Error:
+             return {"rows": [], "total": 0, "offset": offset, "limit": limit}
+
+        total = conn.execute("SELECT COUNT(*) FROM feature_bars").fetchone()[0]
+        df = conn.execute(
+            "SELECT * FROM feature_bars ORDER BY ts DESC LIMIT ? OFFSET ?",
+            [limit, offset]
+        ).fetch_df()
+        
+        df = df.fillna("")
+        for col in df.select_dtypes(include=['datetime64[ns, UTC]', 'datetime64[ns]']).columns:
+            df[col] = df[col].astype(str)
+
+        return {
+            "rows": df.to_dict(orient="records"),
+            "total": total,
+            "offset": offset,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error("failed to fetch rows", extra={"error": str(e)})
+        return {"rows": [], "total": 0, "offset": offset, "limit": limit, "error": str(e)}
+    finally:
+        if conn:
+            conn.close()
+        if tmpdir:
+            tmpdir.cleanup()
 
 
 @app.get("/symbols")
