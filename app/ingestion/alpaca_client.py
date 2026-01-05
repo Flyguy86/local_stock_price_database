@@ -42,6 +42,18 @@ class AlpacaClient:
                 params["start"] = start
             if end:
                 params["end"] = end
+            log.info(
+                "alpaca request",
+                extra={
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "feed": self.feed,
+                    "start": start,
+                    "end": end,
+                    "limit": limit,
+                    "page_token": next_page,
+                },
+            )
             resp = await self._client.get(f"/v2/stocks/{symbol}/bars", params=params)
             if resp.status_code == 429:
                 log.warning("rate limited; sleeping %.1fs", backoff)

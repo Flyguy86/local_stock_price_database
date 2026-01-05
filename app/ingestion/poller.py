@@ -20,6 +20,15 @@ class IngestPoller:
         target_start = pd.to_datetime(start, utc=True) if start else None
         current_end = pd.to_datetime(end, utc=True) if end else pd.Timestamp.now(tz=timezone.utc)
         window = pd.Timedelta(days=180)
+        log.info(
+            "backfill start",
+            extra={
+                "symbol": symbol,
+                "target_start": target_start.isoformat() if target_start is not None else None,
+                "target_end": current_end.isoformat(),
+                "source": "alpaca" if settings.alpaca_key_id and settings.alpaca_secret_key else "iex",
+            },
+        )
 
         async def process_frame(df: pd.DataFrame, source: str):
             nonlocal inserted
@@ -48,7 +57,9 @@ class IngestPoller:
                     if target_start:
                         window_start = max(window_start, target_start)
                     if window_start >= current_end:
+                        log.info("stop: window_start >= current_end", extra={"symbol": symbol, "window_start": window_start.isoformat(), "current_end": current_end.isoformat()})
                         break
+                    log.info("requesting window", extra={"symbol": symbol, "start": window_start.isoformat(), "end": current_end.isoformat(), "source": "alpaca"})
                     got_any = False
                     async for df in client.fetch_bars(
                         symbol,
@@ -61,8 +72,10 @@ class IngestPoller:
                         if earliest is not None:
                             current_end = earliest - pd.Timedelta(minutes=1)
                     if not got_any:
+                        log.info("stop: no data returned for window", extra={"symbol": symbol, "start": window_start.isoformat(), "end": current_end.isoformat(), "source": "alpaca"})
                         break
                     if target_start and current_end <= target_start:
+                        log.info("stop: reached target_start", extra={"symbol": symbol, "current_end": current_end.isoformat(), "target_start": target_start.isoformat()})
                         break
                 return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
             except HTTPStatusError as exc:
@@ -80,7 +93,9 @@ class IngestPoller:
                     if target_start:
                         window_start = max(window_start, target_start)
                     if window_start >= current_end:
+                        log.info("stop: window_start >= current_end", extra={"symbol": symbol, "window_start": window_start.isoformat(), "current_end": current_end.isoformat(), "source": "iex"})
                         break
+                    log.info("requesting window", extra={"symbol": symbol, "start": window_start.isoformat(), "end": current_end.isoformat(), "source": "iex"})
                     got_any = False
                     async for df in client.fetch_bars(symbol):
                         got_any = True
@@ -88,8 +103,10 @@ class IngestPoller:
                         if earliest is not None:
                             current_end = earliest - pd.Timedelta(minutes=1)
                     if not got_any:
+                        log.info("stop: no data returned for window", extra={"symbol": symbol, "start": window_start.isoformat(), "end": current_end.isoformat(), "source": "iex"})
                         break
                     if target_start and current_end <= target_start:
+                        log.info("stop: reached target_start", extra={"symbol": symbol, "current_end": current_end.isoformat(), "target_start": target_start.isoformat(), "source": "iex"})
                         break
                 return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
             finally:
