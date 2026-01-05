@@ -5,6 +5,7 @@ from typing import Optional
 import tempfile
 import shutil
 import duckdb
+import pandas as pd
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
@@ -20,6 +21,30 @@ cfg.ensure_paths()
 logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
 logger = logging.getLogger("feature_service.web")
 app = FastAPI(title="Feature Builder Service")
+
+
+def _parquet_sample(symbol: str, limit: int) -> list[dict]:
+  sym_root = cfg.dest_parquet / symbol
+  if not sym_root.exists():
+    logger.warning("parquet path missing for symbol", extra={"symbol": symbol, "parquet_root": str(sym_root)})
+    return []
+  # Pick the latest dated partition and read from its parquet file
+  dt_dirs = sorted([p for p in sym_root.glob("dt=*") if p.is_dir()], reverse=True)
+  for dt_dir in dt_dirs:
+    parquet_files = list(dt_dir.glob("*.parquet"))
+    if not parquet_files:
+      continue
+    try:
+      df = pd.read_parquet(parquet_files[0])
+      if df.empty:
+        continue
+      df = df.sort_values("ts", ascending=False).head(limit)
+      return df.to_dict(orient="records")
+    except Exception as exc:  # pragma: no cover
+      logger.warning("failed to read parquet sample", extra={"symbol": symbol, "partition": str(dt_dir), "error": str(exc)})
+      continue
+  logger.info("no parquet data for symbol", extra={"symbol": symbol})
+  return []
 
 status: dict[str, object] = {
     "state": "idle",
@@ -310,33 +335,39 @@ async def symbols():
             tmpdir.cleanup()
 
 
-    @app.get("/features_sample")
-    async def features_sample(symbol: str, limit: int = 3):
-      conn = None
-      tmpdir = None
-      try:
+@app.get("/features_sample")
+async def features_sample(symbol: str, limit: int = 3):
+    conn = None
+    tmpdir = None
+    try:
         tmpdir = tempfile.TemporaryDirectory()
         tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
         shutil.copy2(cfg.dest_db, tmp_dest)
         wal_src = cfg.dest_db.with_suffix(cfg.dest_db.suffix + ".wal")
         if wal_src.exists():
-          wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
-          shutil.copy2(wal_src, wal_dst)
+            wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
+            shutil.copy2(wal_src, wal_dst)
         conn = duckdb.connect(str(tmp_dest), read_only=True)
+        # Return from DuckDB when the table and rows exist; otherwise fall back to parquet partitions
         try:
           conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
         except duckdb.Error:
-          return []
+          logger.warning("feature_bars table missing in dest db", extra={"dest_db": str(cfg.dest_db)})
+          return _parquet_sample(symbol, limit)
+
         df = conn.execute(
           "SELECT * FROM feature_bars WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
           [symbol, limit],
         ).fetch_df()
-        return df.to_dict(orient="records")
-      finally:
+        if not df.empty:
+          return df.to_dict(orient="records")
+        logger.info("no feature_bars rows for symbol; checking parquet", extra={"symbol": symbol})
+        return _parquet_sample(symbol, limit)
+    finally:
         if conn:
-          conn.close()
+            conn.close()
         if tmpdir:
-          tmpdir.cleanup()
+            tmpdir.cleanup()
 
 
 class RunRequest(BaseModel):
@@ -356,3 +387,9 @@ async def run_features(request: RunRequest, background: BackgroundTasks):
 async def get_status():
     async with status_lock:
         return dict(status)
+
+
+@app.on_event("startup")
+async def log_routes() -> None:
+    route_paths = [getattr(route, "path", "?") for route in app.routes]
+    logger.info("registered routes", extra={"routes": route_paths})
