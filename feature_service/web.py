@@ -156,7 +156,7 @@ async def index():
 async def symbols():
     conn = None
     try:
-        conn = __import__("duckdb").connect(str(cfg.source_db))
+        conn = __import__("duckdb").connect(str(cfg.source_db), read_only=True)
         return list_symbols_from_db(conn)
     finally:
         if conn:
