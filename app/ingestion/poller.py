@@ -7,6 +7,7 @@ from ..storage.duckdb_client import DuckDBClient
 from ..config import settings
 from .alpaca_client import get_alpaca_client
 from .iex_client import get_iex_client
+from .yahoo_client import get_yahoo_client
 import pandas as pd
 
 log = logging.getLogger("app.poller")
@@ -138,7 +139,7 @@ class IngestPoller:
         inserted = 0
         log.info("backfill earnings start", extra={"symbol": symbol})
         
-        # Currently only IEX implemented for earnings
+        # Primary: IEX
         if settings.iex_token:
             client = get_iex_client()
             try:
@@ -146,16 +147,23 @@ class IngestPoller:
                 df = await client.fetch_earnings(symbol, last=20)
                 if not df.empty:
                     inserted = self.db.insert_earnings(df, symbol)
-                    log.info("ingested earnings", extra={"symbol": symbol, "rows": len(df)})
+                    log.info("ingested earnings from iex", extra={"symbol": symbol, "rows": len(df)})
+                    return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
                 else:
-                    log.warning("no earnings data found", extra={"symbol": symbol})
+                    log.warning("no earnings data found in iex", extra={"symbol": symbol})
             except Exception as e:
-                log.exception("earnings fetch failed", extra={"symbol": symbol, "error": str(e)})
-                raise
+                log.exception("iex earnings fetch failed", extra={"symbol": symbol, "error": str(e)})
             finally:
                 await client.aclose()
+        
+        # Fallback: Yahoo Finance
+        log.info("attempting yahoo finance earnings", extra={"symbol": symbol})
+        yahoo = get_yahoo_client()
+        df = await yahoo.fetch_earnings(symbol)
+        if not df.empty:
+            inserted = self.db.insert_earnings(df, symbol)
+            log.info("ingested earnings from yahoo", extra={"symbol": symbol, "rows": len(df)})
         else:
-            log.warning("no earnings provider configured (requires IEX token)")
-            return {"symbol": symbol, "inserted": 0, "status": "no_provider", "ts": datetime.now(timezone.utc).isoformat()}
+            log.warning("no earnings data found in yahoo", extra={"symbol": symbol})
             
         return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}

@@ -15,7 +15,8 @@ dependencies = [
   "black>=24.4", 
   "ruff>=0.6", 
   "pytest>=8.3", 
-  "pytest-asyncio>=0.23"
+  "pytest-asyncio>=0.23",
+  "yfinance>=0.2.40"
 ]
 
 [tool.setuptools.packages.find]
