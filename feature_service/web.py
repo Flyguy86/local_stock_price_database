@@ -85,9 +85,14 @@ async def index():
         table {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; }}
         th, td {{ border-bottom: 1px solid #1f2937; padding: 0.5rem; font-size: 0.95rem; }}
         .badge {{ background: #1f2937; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.85rem; }}
+        .pass {{ background: #14532d; color: #bef264; }}
+        .fail {{ background: #7f1d1d; color: #fecaca; }}
+        .pending {{ background: #1f2937; color: #e2e8f0; }}
         pre {{ background: #0b172f; border-radius: 10px; padding: 0.75rem; max-height: 320px; overflow: auto; }}
         .row {{ display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }}
         a {{ color: #38bdf8; }}
+        .step {{ display: grid; gap: 0.5rem; }}
+        .split {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.5rem; }}
       </style>
     </head>
     <body>
@@ -96,17 +101,64 @@ async def index():
         <div class=\"row\"> <span class=\"badge\">Source DB: {cfg.source_db}</span> <span class=\"badge\">Dest DB: {cfg.dest_db}</span></div>
       </header>
       <main>
-        <section>
-          <h3>Symbols</h3>
+        <section class=\"step\">
+          <h3>Step 1: Load unique tickers</h3>
           <div class=\"row\">
-            <button onclick=\"loadSymbols()\">Refresh list</button>
-            <button class=\"ghost\" onclick=\"selectAll()\">Select all</button>
-            <button class=\"ghost\" onclick=\"clearSelection()\">Clear</button>
-            <button onclick=\"runSelected()\">Generate features</button>
-            <span id=\"status-badge\" class=\"badge\"></span>
+            <button onclick=\"loadSymbols()\">Test: load tickers</button>
+            <span id=\"step1-badge\" class=\"badge pending\">pending</span>
+          </div>
+          <div class=\"split\">
+            <div>
+              <strong>Raw before</strong>
+              <pre id=\"step1-before\">[]</pre>
+            </div>
+            <div>
+              <strong>Raw after</strong>
+              <pre id=\"step1-after\">[]</pre>
+            </div>
           </div>
           <table id=\"symbols-table\"><thead><tr><th></th><th>Symbol</th></tr></thead><tbody></tbody></table>
         </section>
+
+          <div class="row"><span id="status-badge" class="badge pending">idle</span></div>
+          <div id="status-json" class="badge"></div>
+          <h3>Step 2: Select tickers</h3>
+          <div class=\"row\">
+            <button class=\"ghost\" onclick=\"selectAll()\">Select all</button>
+            <button class=\"ghost\" onclick=\"clearSelection()\">Clear</button>
+            <button onclick=\"testSelection()\">Test selection</button>
+            <span id=\"step2-badge\" class=\"badge pending\">pending</span>
+          </div>
+          <div class=\"split\">
+            <div>
+              <strong>Raw before</strong>
+              <pre id=\"step2-before\">[]</pre>
+            </div>
+            <div>
+              <strong>Raw after</strong>
+              <pre id=\"step2-after\">[]</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class=\"step\">
+          <h3>Step 3: Generate features</h3>
+          <div class=\"row\">
+            <button onclick=\"runSelected()\">Test: run feature generation</button>
+            <span id=\"step3-badge\" class=\"badge pending\">pending</span>
+          </div>
+          <div class=\"split\">
+            <div>
+              <strong>Raw before</strong>
+              <pre id=\"step3-before\">{{ symbols: [] }}</pre>
+            </div>
+            <div>
+              <strong>Raw after</strong>
+              <pre id=\"step3-after\">{{}}</pre>
+            </div>
+          </div>
+        </section>
+
         <section>
           <h3>Run status</h3>
           <div id=\"status-json\" class=\"badge\"></div>
@@ -114,26 +166,81 @@ async def index():
         </section>
       </main>
       <script>
+        let lastSymbols = [];
+        let lastSelection = [];
+
+        function setBadge(id, state, text) {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.classList.remove('pass', 'fail', 'pending');
+          if (state === 'pass') {
+            el.classList.add('pass');
+            el.innerText = text || 'pass';
+          } else if (state === 'fail') {
+            el.classList.add('fail');
+            el.innerText = text || 'fail';
+          } else {
+            el.classList.add('pending');
+            el.innerText = text || 'pending';
+          }
+        }
+
         async function loadSymbols() {{
-          const res = await fetch('/symbols');
-          const data = await res.json();
-          const tbody = document.querySelector('#symbols-table tbody');
-          tbody.innerHTML = '';
-          data.forEach(sym => {{
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td><input type="checkbox" value="${{sym}}" /></td><td>${{sym}}</td>`;
-            tbody.appendChild(tr);
-          }});
+          const before = JSON.stringify(lastSymbols, null, 2);
+          document.getElementById('step1-before').innerText = before;
+          try {
+            const res = await fetch('/symbols');
+            if (!res.ok) throw new Error(`status ${res.status}`);
+            const data = await res.json();
+            lastSymbols = data;
+            document.getElementById('step1-after').innerText = JSON.stringify(data, null, 2);
+            const tbody = document.querySelector('#symbols-table tbody');
+            tbody.innerHTML = '';
+            data.forEach(sym => {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td><input type="checkbox" value="${sym}" /></td><td>${sym}</td>`;
+              tbody.appendChild(tr);
+            });
+            setBadge('step1-badge', 'pass', 'pass');
+          } catch (err) {
+            document.getElementById('step1-after').innerText = String(err);
+            setBadge('step1-badge', 'fail', 'fail');
+          }
         }}
 
         function selectAll() {{ document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = true); }}
         function clearSelection() {{ document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = false); }}
 
+        function testSelection() {
+          document.getElementById('step2-before').innerText = JSON.stringify(lastSelection, null, 2);
+          const all = Array.from(document.querySelectorAll('#symbols-table tbody input'));
+          const selected = all.filter(cb => cb.checked).map(cb => cb.value);
+          document.getElementById('step2-after').innerText = JSON.stringify(selected, null, 2);
+          lastSelection = selected;
+          if (all.length === 0) {
+            setBadge('step2-badge', 'fail', 'no symbols loaded');
+            return;
+          }
+          if (selected.length === 0) {
+            setBadge('step2-badge', 'fail', 'no selection');
+            return;
+          }
+          setBadge('step2-badge', 'pass', selected.length === all.length ? 'all selected' : 'partial');
+        }
+
         async function runSelected() {{
           const symbols = Array.from(document.querySelectorAll('#symbols-table tbody input:checked')).map(cb => cb.value);
+          document.getElementById('step3-before').innerText = JSON.stringify({ symbols }, null, 2);
           const payload = symbols.length ? {{ symbols }} : {{}};
-          const res = await fetch('/run', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify(payload) }});
-          if (!res.ok) {{ alert('failed to start run'); return; }}
+          const res = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+          if (!res.ok) {
+            document.getElementById('step3-after').innerText = `failed: ${res.status}`;
+            setBadge('step3-badge', 'fail', 'fail');
+            return;
+          }
+          const data = await res.json();
+          document.getElementById('step3-after').innerText = JSON.stringify(data, null, 2);
+          setBadge('step3-badge', 'pass', 'queued');
           pollStatus();
         }}
 
