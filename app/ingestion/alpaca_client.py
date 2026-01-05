@@ -31,11 +31,12 @@ class AlpacaClient:
         end: str | None = None,
         limit: int = 10000,
     ) -> AsyncIterator[pd.DataFrame]:
-        # Placeholder multi-page iterator with naive backoff; replace with real Alpaca endpoint paths.
         next_page = None
         backoff = 1.0
         while True:
-            params = {"timeframe": timeframe, "limit": limit, "page_token": next_page}
+            params = {"timeframe": timeframe, "limit": limit}
+            if next_page is not None:
+                params["page_token"] = next_page
             if self.feed:
                 params["feed"] = self.feed
             if start:
@@ -52,6 +53,7 @@ class AlpacaClient:
                     "end": end,
                     "limit": limit,
                     "page_token": next_page,
+                    "url": f"{self.base_url}/v2/stocks/{symbol}/bars",
                 },
             )
             resp = await self._client.get(f"/v2/stocks/{symbol}/bars", params=params)
@@ -64,6 +66,19 @@ class AlpacaClient:
             payload = resp.json()
             bars = payload.get("bars", [])
             if not bars:
+                log.warning(
+                    "alpaca empty page",
+                    extra={
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "feed": self.feed,
+                        "start": start,
+                        "end": end,
+                        "limit": limit,
+                        "page_token": next_page,
+                        "response_keys": list(payload.keys()),
+                    },
+                )
                 break
             df = pd.DataFrame(bars)
             if "t" in df.columns:
