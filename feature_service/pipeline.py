@@ -2,6 +2,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Iterable
+import tempfile
+import shutil
 
 import duckdb
 import pandas as pd
@@ -173,7 +175,9 @@ def run_pipeline(
     dest_parquet: Path,
     symbols: Iterable[str] | None = None,
 ) -> dict:
-    src_conn = duckdb.connect(str(source_db), read_only=True)
+    tmp_src = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".duckdb").name)
+    shutil.copy2(source_db, tmp_src)
+    src_conn = duckdb.connect(str(tmp_src), read_only=True)
     dest_conn = duckdb.connect(str(dest_db))
     try:
         symbol_list = list(symbols) if symbols is not None else list_symbols(src_conn)
@@ -204,3 +208,4 @@ def run_pipeline(
             dest_conn.close()
         finally:
             src_conn.close()
+            tmp_src.unlink(missing_ok=True)

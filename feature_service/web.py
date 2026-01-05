@@ -2,11 +2,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional
+import tempfile
+import shutil
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .config import Config
 from .pipeline import run_pipeline, list_symbols as list_symbols_from_db
@@ -155,12 +158,17 @@ async def index():
 @app.get("/symbols")
 async def symbols():
     conn = None
+    tmp_src = None
     try:
-        conn = __import__("duckdb").connect(str(cfg.source_db), read_only=True)
+        tmp_src = Path(tempfile.NamedTemporaryFile(delete=False, suffix=".duckdb").name)
+        shutil.copy2(cfg.source_db, tmp_src)
+        conn = __import__("duckdb").connect(str(tmp_src), read_only=True)
         return list_symbols_from_db(conn)
     finally:
         if conn:
             conn.close()
+        if tmp_src:
+            tmp_src.unlink(missing_ok=True)
 
 
 class RunRequest(BaseModel):
