@@ -54,9 +54,29 @@ class AlpacaClient:
                     "limit": limit,
                     "page_token": next_page,
                     "url": f"{self.base_url}/v2/stocks/{symbol}/bars",
+                    "params": params if settings.alpaca_debug_raw else None,
                 },
             )
             resp = await self._client.get(f"/v2/stocks/{symbol}/bars", params=params)
+            if settings.alpaca_debug_raw:
+                log.info(
+                    "alpaca raw response",
+                    extra={
+                        "status_code": resp.status_code,
+                        "headers": dict(resp.headers),
+                        "text": resp.text[:2000],
+                    },
+                )
+            if resp.status_code >= 400:
+                log.error(
+                    "alpaca error response",
+                    extra={
+                        "status_code": resp.status_code,
+                        "text": resp.text[:500],
+                        "headers": dict(resp.headers),
+                        "params": params,
+                    },
+                )
             if resp.status_code == 429:
                 log.warning("rate limited; sleeping %.1fs", backoff)
                 await asyncio.sleep(backoff)
@@ -77,6 +97,8 @@ class AlpacaClient:
                         "limit": limit,
                         "page_token": next_page,
                         "response_keys": list(payload.keys()),
+                        "raw_snippet": str(payload)[:500],
+                        "headers": dict(resp.headers),
                     },
                 )
                 break

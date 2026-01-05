@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ALPACA_BASE_URL", "ALPACA_API_BASE_URL"),
     )
     alpaca_feed: str = "iex"
+    alpaca_debug_raw: bool = False
     iex_token: str | None = None
     iex_base_url: str = "https://cloud.iexapis.com"
     data_dir: Path = Path("data")
