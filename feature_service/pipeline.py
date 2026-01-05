@@ -221,6 +221,15 @@ def engineer_features(df: pd.DataFrame, options: dict | None = None) -> pd.DataF
 
 
 def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
+    # Check if we need to migrate schema (add options to PK)
+    try:
+        dest_conn.execute("SELECT options FROM feature_bars LIMIT 0")
+    except duckdb.Error:
+        # If table exists but options column is missing, drop it to recreate with new PK
+        if _has_table(dest_conn, "feature_bars"):
+            logger.warning("Dropping feature_bars to update schema with options in PK")
+            dest_conn.execute("DROP TABLE feature_bars")
+
     dest_conn.execute(
         """
         CREATE TABLE IF NOT EXISTS feature_bars (
@@ -250,14 +259,11 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             month INTEGER,
             days_until_earnings DOUBLE,
             data_split VARCHAR,
-            PRIMARY KEY (symbol, ts)
+            options VARCHAR,
+            PRIMARY KEY (symbol, ts, options)
         );
         """
     )
-    try:
-        dest_conn.execute("ALTER TABLE feature_bars ADD COLUMN IF NOT EXISTS data_split VARCHAR")
-    except duckdb.Error:
-        pass
 
 
 def ensure_metadata_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
@@ -308,6 +314,7 @@ def write_features(
     df: pd.DataFrame,
     symbol: str,
     parquet_root: Path,
+    options: dict | None = None,
 ) -> int:
     if df.empty:
         return 0
@@ -316,6 +323,10 @@ def write_features(
     # Ensure symbol column exists
     if "symbol" not in df.columns:
         df["symbol"] = symbol
+
+    # Add options column for uniqueness
+    opts_str = json.dumps(options or {}, sort_keys=True)
+    df["options"] = opts_str
 
     dest_conn.register("features_df", df)
     dest_conn.execute("INSERT OR REPLACE INTO feature_bars BY NAME SELECT * FROM features_df")
@@ -361,7 +372,7 @@ def run_pipeline(
                 continue
             cleaned = clean_bars(df)
             featured = engineer_features(cleaned, options)
-            inserted = write_features(dest_conn, featured, sym, dest_parquet)
+            inserted = write_features(dest_conn, featured, sym, dest_parquet, options)
             totals_inserted += inserted
             logger.info(
                 "feature_build_complete",
