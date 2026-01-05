@@ -1,5 +1,8 @@
 from __future__ import annotations
+import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 import tempfile
@@ -83,54 +86,91 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(0.0)
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
+def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     out = df.copy()
     out = out.sort_values("ts")
 
+    # Feature toggles
+    use_sma = opts.get("use_sma", True)
+    use_bb = opts.get("use_bb", True)
+    use_rsi = opts.get("use_rsi", True)
+    use_macd = opts.get("use_macd", True)
+    use_atr = opts.get("use_atr", True)
+    use_vol = opts.get("use_vol", True)
+    use_time = opts.get("use_time", True)
+
     # Returns and moving averages
     out["return_1m"] = out["close"].pct_change().fillna(0.0)
-    out["sma_close_5"] = out["close"].rolling(window=5, min_periods=1).mean()
-    out["sma_close_20"] = out["close"].rolling(window=20, min_periods=1).mean()
+    
+    if use_sma:
+        out["sma_close_5"] = out["close"].rolling(window=5, min_periods=1).mean()
+        out["sma_close_20"] = out["close"].rolling(window=20, min_periods=1).mean()
+    else:
+        out["sma_close_5"] = np.nan
+        out["sma_close_20"] = np.nan
 
     # Bollinger Bands
-    rolling_mean_20 = out["close"].rolling(window=20, min_periods=1).mean()
-    rolling_std_20 = out["close"].rolling(window=20, min_periods=1).std(ddof=0)
-    out["bb_upper_20_2"] = rolling_mean_20 + 2 * rolling_std_20
-    out["bb_lower_20_2"] = rolling_mean_20 - 2 * rolling_std_20
+    if use_bb:
+        rolling_mean_20 = out["close"].rolling(window=20, min_periods=1).mean()
+        rolling_std_20 = out["close"].rolling(window=20, min_periods=1).std(ddof=0)
+        out["bb_upper_20_2"] = rolling_mean_20 + 2 * rolling_std_20
+        out["bb_lower_20_2"] = rolling_mean_20 - 2 * rolling_std_20
+    else:
+        out["bb_upper_20_2"] = np.nan
+        out["bb_lower_20_2"] = np.nan
 
     # RSI
-    out["rsi_14"] = _rsi(out["close"], period=14)
+    if use_rsi:
+        out["rsi_14"] = _rsi(out["close"], period=14)
+    else:
+        out["rsi_14"] = np.nan
 
     # MACD
-    ema12 = out["close"].ewm(span=12, adjust=False).mean()
-    ema26 = out["close"].ewm(span=26, adjust=False).mean()
-    out["macd_line"] = ema12 - ema26
-    out["macd_signal"] = out["macd_line"].ewm(span=9, adjust=False).mean()
-    out["macd_hist"] = out["macd_line"] - out["macd_signal"]
+    if use_macd:
+        ema12 = out["close"].ewm(span=12, adjust=False).mean()
+        ema26 = out["close"].ewm(span=26, adjust=False).mean()
+        out["macd_line"] = ema12 - ema26
+        out["macd_signal"] = out["macd_line"].ewm(span=9, adjust=False).mean()
+        out["macd_hist"] = out["macd_line"] - out["macd_signal"]
+    else:
+        out["macd_line"] = np.nan
+        out["macd_signal"] = np.nan
+        out["macd_hist"] = np.nan
 
     # ATR
-    prev_close = out["close"].shift(1)
-    tr = pd.concat(
-        [
-            out["high"] - out["low"],
-            (out["high"] - prev_close).abs(),
-            (out["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    out["atr_14"] = tr.rolling(window=14, min_periods=1).mean()
+    if use_atr:
+        prev_close = out["close"].shift(1)
+        tr = pd.concat(
+            [
+                out["high"] - out["low"],
+                (out["high"] - prev_close).abs(),
+                (out["low"] - prev_close).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        out["atr_14"] = tr.rolling(window=14, min_periods=1).mean()
+    else:
+        out["atr_14"] = np.nan
 
     # Volume features
-    out["vol_sma_20"] = out["volume"].rolling(window=20, min_periods=1).mean()
+    if use_vol:
+        out["vol_sma_20"] = out["volume"].rolling(window=20, min_periods=1).mean()
+    else:
+        out["vol_sma_20"] = np.nan
 
     # Time-based features
-    ts = pd.to_datetime(out["ts"], utc=True)
-    out["time_of_day_min"] = (ts.dt.hour * 60 + ts.dt.minute).astype("int64")
-    out["day_of_week"] = ts.dt.dayofweek.astype("int64")
-    out["day_of_month"] = ts.dt.day.astype("int64")
-    out["month"] = ts.dt.month.astype("int64")
+    if use_time:
+        ts = pd.to_datetime(out["ts"], utc=True)
+        out["time_of_day_min"] = (ts.dt.hour * 60 + ts.dt.minute).astype("int64")
+        out["day_of_week"] = ts.dt.dayofweek.astype("int64")
+        out["day_of_month"] = ts.dt.day.astype("int64")
+        out["month"] = ts.dt.month.astype("int64")
+    else:
+        out["time_of_day_min"] = 0
+        out["day_of_week"] = 0
+        out["day_of_month"] = 0
+        out["month"] = 0
+
     # Placeholder for future enrichment; set NaN for now
     out["days_until_earnings"] = pd.Series(np.nan, index=out.index, dtype="float64")
 
@@ -140,6 +180,42 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     # Round all float columns to 5 decimal places
     float_cols = out.select_dtypes(include=['float64', 'float32']).columns
     out[float_cols] = out[float_cols].round(5)
+
+    return out
+
+
+def engineer_features(df: pd.DataFrame, options: dict | None = None) -> pd.DataFrame:
+    if df.empty:
+        return df
+    
+    opts = options or {}
+    enable_segmentation = opts.get("enable_segmentation", False)
+    train_window = int(opts.get("train_window", 30))
+    test_window = int(opts.get("test_window", 5))
+    segment_size = train_window + test_window
+    
+    if enable_segmentation and segment_size > 0:
+        # Create segments
+        df = df.copy()
+        df = df.sort_values("ts")
+        df["_seg_id"] = np.arange(len(df)) // segment_size
+        
+        results = []
+        for seg_id, group in df.groupby("_seg_id"):
+            # Calculate features for this group
+            res = _calculate_features_for_chunk(group, opts)
+            
+            # Add split label
+            n = len(res)
+            splits = ["train"] * min(n, train_window) + ["test"] * max(0, n - train_window)
+            res["data_split"] = splits[:n]
+            results.append(res)
+            
+        out = pd.concat(results)
+        out = out.drop(columns=["_seg_id"], errors="ignore")
+    else:
+        out = _calculate_features_for_chunk(df, opts)
+        out["data_split"] = "train"
 
     return out
 
@@ -173,9 +249,57 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             day_of_month INTEGER,
             month INTEGER,
             days_until_earnings DOUBLE,
+            data_split VARCHAR,
             PRIMARY KEY (symbol, ts)
         );
         """
+    )
+    try:
+        dest_conn.execute("ALTER TABLE feature_bars ADD COLUMN IF NOT EXISTS data_split VARCHAR")
+    except duckdb.Error:
+        pass
+
+
+def ensure_metadata_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
+    dest_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS feature_runs (
+            run_id VARCHAR,
+            ts TIMESTAMP WITH TIME ZONE,
+            symbols VARCHAR,
+            options VARCHAR,
+            inserted_rows BIGINT,
+            PRIMARY KEY (run_id)
+        );
+        """
+    )
+
+
+def log_run_metadata(
+    dest_conn: duckdb.DuckDBPyConnection,
+    symbols_arg: Iterable[str] | None,
+    options: dict | None,
+    inserted_rows: int
+) -> None:
+    ensure_metadata_schema(dest_conn)
+    
+    run_id = str(uuid.uuid4())
+    ts = datetime.now(tz=timezone.utc)
+    
+    if symbols_arg is None:
+        symbols_str = "ALL"
+    else:
+        s_list = list(symbols_arg)
+        if len(s_list) > 20:
+             symbols_str = f"{','.join(s_list[:20])},... ({len(s_list)} total)"
+        else:
+             symbols_str = ",".join(s_list)
+
+    options_json = json.dumps(options or {})
+    
+    dest_conn.execute(
+        "INSERT INTO feature_runs (run_id, ts, symbols, options, inserted_rows) VALUES (?, ?, ?, ?, ?)",
+        [run_id, ts, symbols_str, options_json, inserted_rows]
     )
 
 
@@ -212,6 +336,7 @@ def run_pipeline(
     dest_db: Path,
     dest_parquet: Path,
     symbols: Iterable[str] | None = None,
+    options: dict | None = None,
 ) -> dict:
     tmpdir = tempfile.TemporaryDirectory()
     tmp_src = Path(tmpdir.name) / source_db.name
@@ -235,7 +360,7 @@ def run_pipeline(
                 logger.info("no source bars", extra={"symbol": sym})
                 continue
             cleaned = clean_bars(df)
-            featured = engineer_features(cleaned)
+            featured = engineer_features(cleaned, options)
             inserted = write_features(dest_conn, featured, sym, dest_parquet)
             totals_inserted += inserted
             logger.info(
@@ -248,6 +373,8 @@ def run_pipeline(
                     "inserted": inserted,
                 },
             )
+        
+        log_run_metadata(dest_conn, symbols, options, totals_inserted)
         return {"symbols": len(symbol_list), "inserted": totals_inserted}
     finally:
         try:

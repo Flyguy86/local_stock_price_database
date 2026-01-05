@@ -57,7 +57,7 @@ status: dict[str, object] = {
 status_lock = asyncio.Lock()
 
 
-async def _run(symbols: Optional[list[str]]) -> None:
+async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> None:
     async with status_lock:
         status.update(
             {
@@ -70,7 +70,7 @@ async def _run(symbols: Optional[list[str]]) -> None:
             }
         )
     try:
-        result = await asyncio.to_thread(run_pipeline, cfg.source_db, cfg.dest_db, cfg.dest_parquet, symbols)
+        result = await asyncio.to_thread(run_pipeline, cfg.source_db, cfg.dest_db, cfg.dest_parquet, symbols, options)
         async with status_lock:
             status.update(
                 {
@@ -141,7 +141,26 @@ async def index():
         </section>
 
         <section>
-          <h3>2. Generate</h3>
+          <h3>2. Configure & Generate</h3>
+          <div style="margin-bottom: 0.5rem; border: 1px solid #1f2937; padding: 0.5rem; border-radius: 4px;">
+            <div class="row">
+                <label><input type="checkbox" id="opt-sma" checked> SMA</label>
+                <label><input type="checkbox" id="opt-bb" checked> Bollinger</label>
+                <label><input type="checkbox" id="opt-rsi" checked> RSI</label>
+                <label><input type="checkbox" id="opt-macd" checked> MACD</label>
+                <label><input type="checkbox" id="opt-atr" checked> ATR</label>
+                <label><input type="checkbox" id="opt-vol" checked> Volume</label>
+                <label><input type="checkbox" id="opt-time" checked> Time</label>
+            </div>
+            <hr style="border: 0; border-top: 1px solid #1f2937; margin: 0.5rem 0;">
+            <div class="row">
+                <label><input type="checkbox" id="opt-segmentation" onchange="toggleSeg(this)"> Episode Mode</label>
+            </div>
+            <div id="seg-options" class="row" style="display:none; margin-left: 1rem;">
+                <label>Train: <input type="number" id="opt-train" value="30" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
+                <label>Test: <input type="number" id="opt-test" value="5" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
+            </div>
+          </div>
           <div class="row">
             <button onclick="runSelected()">Run Selected</button>
             <span id="step3-badge" class="badge">idle</span>
@@ -212,9 +231,27 @@ async def index():
             document.querySelectorAll('#symbols-table tbody input').forEach(cb => cb.checked = source.checked);
         }
 
+        function toggleSeg(cb) {
+            document.getElementById('seg-options').style.display = cb.checked ? 'flex' : 'none';
+        }
+
         async function runSelected() {
           const symbols = Array.from(document.querySelectorAll('#symbols-table tbody input:checked')).map(cb => cb.value);
-          const payload = symbols.length ? { symbols } : {};
+          
+          const options = {
+              use_sma: document.getElementById('opt-sma').checked,
+              use_bb: document.getElementById('opt-bb').checked,
+              use_rsi: document.getElementById('opt-rsi').checked,
+              use_macd: document.getElementById('opt-macd').checked,
+              use_atr: document.getElementById('opt-atr').checked,
+              use_vol: document.getElementById('opt-vol').checked,
+              use_time: document.getElementById('opt-time').checked,
+              enable_segmentation: document.getElementById('opt-segmentation').checked,
+              train_window: parseInt(document.getElementById('opt-train').value),
+              test_window: parseInt(document.getElementById('opt-test').value)
+          };
+
+          const payload = { symbols: symbols.length ? symbols : null, options: options };
           try {
             await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             setBadge('step3-badge', 'pass', 'queued');
@@ -427,6 +464,7 @@ async def features_sample(symbol: str, limit: int = 3):
 
 class RunRequest(BaseModel):
     symbols: Optional[list[str]] = None
+    options: Optional[dict] = None
 
 
 @app.post("/run")
@@ -434,7 +472,8 @@ async def run_features(request: RunRequest, background: BackgroundTasks):
     if status["state"] == "running":
         raise HTTPException(status_code=409, detail="run already in progress")
     symbols = request.symbols
-    background.add_task(_run, symbols)
+    options = request.options
+    background.add_task(_run, symbols, options)
     return {"state": "queued"}
 
 
