@@ -187,7 +187,15 @@ async def ingest_symbol(symbol: str, start: str | None = None, end: str | None =
         agent_status[symbol] = Status(symbol=symbol, state="running", last_update=None)
         logger.info("ingest task started", extra={"symbol": symbol, "start": start, "end": end})
         try:
+            # 1. Run price history backfill
             result = await poller.run_history(symbol, start=start, end=end)
+            
+            # 2. Run earnings fetch (best effort)
+            try:
+                await poller.run_earnings(symbol)
+            except Exception as e:
+                logger.warning("earnings fetch failed during ingest", extra={"symbol": symbol, "error": str(e)})
+
             agent_status[symbol] = Status(symbol=symbol, state="succeeded", last_update=result["ts"])
             logger.info("ingest task succeeded", extra={"symbol": symbol, "inserted": result["inserted"], "ts": result["ts"]})
         except Exception as exc:
