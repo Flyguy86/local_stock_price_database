@@ -13,6 +13,10 @@ log = logging.getLogger("training.api")
 
 app = FastAPI(title="Training Service")
 
+@app.get("/")
+def index():
+    return {"service": "training_service", "status": "ok"}
+
 class TrainRequest(BaseModel):
     symbol: str
     algorithm: str
