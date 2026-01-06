@@ -27,3 +27,15 @@ services:
     command: ["uvicorn", "feature_service.web:app", "--host", "0.0.0.0", "--port", "8100"]
     ports:
       - "8100:8100"
+
+  training_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    environment:
+      LOG_LEVEL: INFO
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    ports:
+      - "8200:8200"

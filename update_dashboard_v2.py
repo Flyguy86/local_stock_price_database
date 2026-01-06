@@ -180,26 +180,32 @@ async def dashboard():
                 </details>
             </section>
 
-            <!-- Data Viewer -->
-            <section class="full-width" style="min-height: 400px;">
-                <div class="row" style="border-bottom: 1px solid var(--border); padding-bottom: 1rem; margin-bottom: 0;">
-                    <div class="tabs" style="margin: 0; border: none;">
-                        <div class="tab active" onclick="setMode('bars', this)">Price Bars</div>
-                        <div class="tab" onclick="setMode('tables', this)">Tables</div>
-                    </div>
-                    <div style="margin-left: auto;" class="row">
-                         <div class="group" id="bars-controls">
-                            <label>Sym</label>
-                            <input id="bars-symbol" placeholder="AAPL" value="AAPL" onchange="loadData()">
-                         </div>
-                         <div class="group" id="tables-controls" style="display:none;">
-                            <select id="tables-select" onchange="loadData()"></select>
-                         </div>
-                         <div class="group">
-                            <label>Limit</label>
-                            <input id="limit" type="number" value="20" onchange="loadData()">
-                         </div>
-                    </div>
+            <!-- Training Section -->
+            <section class="full-width">
+                <h2>
+                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    Model Training
+                </h2>
+                <div class="row">
+                   <div class="group">
+                        <label>Algorithm</label>
+                        <select id="train-algo"></select>
+                   </div>
+                   <div class="group">
+                        <label>Symbol</label>
+                         <input id="train-symbol" placeholder="e.g. NVDA" style="width: 80px; text-transform:uppercase;">
+                   </div>
+                   <button onclick="startTraining()">Start Training</button>
+                   <button class="secondary" onclick="refreshModels()">Refresh List</button>
+                </div>
+                
+                <div class="table-container" style="margin-top: 1rem;">
+                    <table id="models-table">
+                        <thead><tr><th>ID</th><th>Symbol</th><th>Algo</th><th>Status</th><th>Created</th><th>Metrics</th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
                 </div>
                 
                 <div class="table-container" style="flex: 1;">
@@ -257,10 +263,71 @@ async def dashboard():
              loadTablesList();
              loadData();
              loadDebugToggle();
+             loadAlgorithms();
+             refreshModels();
              // Auto-refresh
              setInterval(refreshStatus, 5000);
              setInterval(refreshTests, 5000); 
+             setInterval(refreshModels, 5000);
         };
+
+        // Training
+        const TRAINING_API = "http://localhost:8200"; // Assuming accessed from browser same host, exposed port
+        // Note: localhost inside fetch in browser refers to user's machine. 
+        // If accessed via codespaces port forwarding, relative paths won't work for different port service unless proxied by main API.
+        // Quick fix: We need main API to proxy requests or we use absolute URL if known.
+        // Actually, main.py is on 8000. training is 8200.
+        // Let's add proxy endpoints to update_dashboard.py/main.py or just use direct fetch if CODESPACES handles it.
+        // Better: Add proxy in app/api/main.py to training service.
+        
+        async function loadAlgorithms() {
+            try {
+                const res = await fetch("/training/algorithms");
+                const algos = await res.json();
+                $('train-algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
+            } catch(e) { console.error(e); }
+        }
+        
+        async function startTraining() {
+            const symbol = $('train-symbol').value.trim().toUpperCase();
+            const algo = $('train-algo').value;
+            if(!symbol) return alert("Symbol required");
+            
+            try {
+                const res = await fetch("/training/train", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({symbol, algorithm: algo})
+                });
+                if(!res.ok) {
+                    const err = await res.json();
+                    alert("Error: " + err.detail);
+                }
+                refreshModels();
+            } catch(e) { alert("Training start failed: " + e); }
+        }
+        
+        async function refreshModels() {
+            try {
+                 const res = await fetch("/training/models");
+                 const models = await res.json();
+                 const tbody = $('models-table').querySelector('tbody');
+                 if(!models.length) {
+                     tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color: var(--text-muted)">No models</td></tr>`;
+                     return;
+                 }
+                 tbody.innerHTML = models.map(m => `
+                    <tr>
+                        <td><span class="badge" title="${m.id}">${m.id.substring(0,8)}...</span></td>
+                        <td>${m.symbol}</td>
+                        <td>${m.algorithm}</td>
+                        <td><span class="badge ${m.status === 'completed' ? 'green' : m.status === 'failed' ? 'red' : ''}">${m.status}</span></td>
+                        <td>${m.created_at.replace('T', ' ').split('.')[0]}</td>
+                        <td style="font-size:0.75rem">${m.metrics || '-'}</td>
+                    </tr>
+                 `).join('');
+            } catch(e) { console.error(e); }
+        }
 
         // Actions
         async function ingest() {

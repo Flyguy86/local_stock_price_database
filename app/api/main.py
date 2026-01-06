@@ -149,6 +149,44 @@ def _tests_snapshot() -> dict[str, object]:
   return {key: test_state.get(key) for key in test_state}
 
 
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+
+# ... (rest of imports)
+
+# Proxy for Training Service (since CORS/Codespaces might complicate direct access)
+TRAINING_SERVICE_URL = "http://training_service:8200"
+
+@app.get("/training/algorithms")
+async def proxy_training_algos():
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{TRAINING_SERVICE_URL}/algorithms")
+            return resp.json()
+        except Exception as e:
+            return []
+
+@app.get("/training/models")
+async def proxy_training_models():
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{TRAINING_SERVICE_URL}/models")
+            return resp.json()
+        except Exception as e:
+            return []
+
+@app.post("/training/train")
+async def proxy_training_train(req: Request):
+    body = await req.json()
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(f"{TRAINING_SERVICE_URL}/train", json=body)
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=resp.status_code, detail=resp.text)
+            return resp.json()
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=503, detail=f"Training service unavailable: {e}")
+
 @app.get("/tests")
 async def get_tests_state():
   async with test_state_lock:
