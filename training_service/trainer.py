@@ -104,22 +104,96 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                  y = (df["target"] > 0).astype(int)
 
         # Split Data (Custom Column or Time-based)
+        is_cv = False
+        cv_metrics = []
+        X_train_final, y_train_final = None, None
+        X_test_final, y_test_final = None, None
+        
         if split_col_name:
             log.info(f"Splitting data using column: {split_col_name}")
             # Aligned split values
             split_vals = df.loc[X.index, split_col_name].astype(str).str.lower()
             
-            train_mask = split_vals == 'train'
-            test_mask = split_vals == 'test'
+            # Detect Blocks for Potential CV
+            # Create a group ID that increments every time the value changes (e.g. train -> test -> train)
+            # This identifies contiguous chunks
+            block_ids = (split_vals != split_vals.shift()).cumsum()
+            blocks = split_vals.groupby(block_ids)
             
-            X_train = X[train_mask]
-            X_test = X[test_mask]
-            y_train = y[train_mask]
-            y_test = y[test_mask]
+            unique_blocks = list(blocks.groups.keys())
             
-            if X_train.empty or X_test.empty:
-                log.warning(f"Split column resulted in empty train/test. Train: {len(X_train)}, Test: {len(X_test)}. Falling back to time-based.")
-                split_col_name = None # Trigger fallback
+            # If we have repeated train/test patterns (e.g., T, T, T, t, t, T, T...), we treat it as CV
+            # We look for (Train -> Test) pairs.
+            folds = []
+            current_train_idx = None
+            
+            # Iterate through blocks to find T -> t sequences
+            for bid in unique_blocks:
+                idx = blocks.groups[bid]
+                val = split_vals.loc[idx[0]]
+                if val == 'train':
+                    current_train_idx = idx
+                elif val == 'test' and current_train_idx is not None:
+                    folds.append((current_train_idx, idx))
+                    current_train_idx = None # Consume the train block
+            
+            if len(folds) > 1:
+                log.info(f"Detected {len(folds)} folds. enabling Cross-Validation loop.")
+                is_cv = True
+                
+                # CV Loop
+                for i, (tr_idx, te_idx) in enumerate(folds):
+                    f_X_train, f_X_test = X.loc[tr_idx], X.loc[te_idx]
+                    f_y_train, f_y_test = y.loc[tr_idx], y.loc[te_idx]
+                    
+                    # Impute
+                    if f_X_train.isna().any().any() or f_X_test.isna().any().any():
+                         imp = SimpleImputer(strategy='mean')
+                         f_X_train = imp.fit_transform(f_X_train)
+                         f_X_test = imp.transform(f_X_test)
+
+                    # Train Fold
+                    ModelClass = ALGORITHMS.get(algorithm)
+                    f_model = ModelClass(**params)
+                    f_model.fit(f_X_train, f_y_train)
+                    
+                    # Eval Fold
+                    f_preds = f_model.predict(f_X_test)
+                    
+                    f_met = {}
+                    if "regressor" in algorithm or "regression" in algorithm:
+                        f_mse = mean_squared_error(f_y_test, f_preds)
+                        f_met["mse"] = f_mse
+                        f_met["rmse"] = float(f_mse ** 0.5)
+                    else:
+                        f_acc = accuracy_score(f_y_test, f_preds)
+                        f_met["accuracy"] = f_acc
+                    cv_metrics.append(f_met)
+                    log.info(f"Fold {i+1} metrics: {f_met}")
+
+                # Prepare Final Dataset: Use ALL train/test rows found for the final model
+                # This ensures we include even orphan train blocks (e.g. latest data without a test set yet)
+                train_mask = split_vals == 'train'
+                test_mask = split_vals == 'test'
+                
+                X_train = X[train_mask]
+                X_test = X[test_mask]
+                y_train = y[train_mask]
+                y_test = y[test_mask]
+                
+            else:
+                # Standard Single Split logic (if only 1 Pair found, or scrambled data)
+                train_mask = split_vals == 'train'
+                test_mask = split_vals == 'test'
+                
+                X_train = X[train_mask]
+                X_test = X[test_mask]
+                y_train = y[train_mask]
+                y_test = y[test_mask]
+                
+                if X_train.empty or X_test.empty:
+                    log.warning(f"Split column resulted in empty train/test. Train: {len(X_train)}, Test: {len(X_test)}. Falling back to time-based.")
+                    split_col_name = None # Trigger fallback
 
         if not split_col_name:
             # Simple time-based split (80/20)
@@ -129,27 +203,27 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
             y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
         
-        # 3. Impute Missing Values in Features (Mean Strategy)
+        # 3. Impute Missing Values in Features (Mean Strategy) - Final Model
         # This fills gaps (e.g. from indicators) without dropping data
         if X_train.isna().any().any() or X_test.isna().any().any():
-            log.info("Imputing missing feature values with mean")
+            log.info("Imputing missing feature values with mean (Final Model)")
             imputer = SimpleImputer(strategy='mean')
             # Fit on train, transform both
             X_train = imputer.fit_transform(X_train)
             X_test = imputer.transform(X_test)
             # Note: X_train/X_test are now numpy arrays, which SKLearn accepts fine
             
-        # 3. Initialize Model
+        # 3. Initialize Final Model
         ModelClass = ALGORITHMS.get(algorithm)
         if not ModelClass:
             raise ValueError(f"Unknown algorithm: {algorithm}")
             
         model = ModelClass(**params)
         
-        # 4. Train
+        # 4. Train Final Model
         model.fit(X_train, y_train)
         
-        # 5. Evaluate
+        # 5. Evaluate Final Model (for feature analysis and legacy metric report)
         preds = model.predict(X_test)
         
         metrics = {}
@@ -157,13 +231,26 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             metrics["dropped_cols"] = dropped_feature_cols
         metrics["features_count"] = len(feature_cols_used)
         
-        if "regressor" in algorithm or "regression" in algorithm:
-            mse = mean_squared_error(y_test, preds)
-            metrics["mse"] = mse
-            metrics["rmse"] = float(mse ** 0.5)
+        if is_cv:
+            # Process CV metrics
+            if "accuracy" in cv_metrics[0]:
+                mean_acc = sum(m["accuracy"] for m in cv_metrics) / len(cv_metrics)
+                metrics["accuracy"] = mean_acc
+                metrics["cv_folds"] = len(cv_metrics)
+                metrics["cv_detail"] = cv_metrics
+            if "mse" in cv_metrics[0]:
+                mean_mse = sum(m["mse"] for m in cv_metrics) / len(cv_metrics)
+                metrics["mse"] = mean_mse
+                metrics["rmse"] = float(mean_mse ** 0.5)
+                metrics["cv_folds"] = len(cv_metrics)
         else:
-            acc = accuracy_score(y_test, preds)
-            metrics["accuracy"] = acc
+            if "regressor" in algorithm or "regression" in algorithm:
+                mse = mean_squared_error(y_test, preds)
+                metrics["mse"] = mse
+                metrics["rmse"] = float(mse ** 0.5)
+            else:
+                acc = accuracy_score(y_test, preds)
+                metrics["accuracy"] = acc
 
         # Initialize detailed feature info
         feature_details = {col: {} for col in feature_cols_used}
