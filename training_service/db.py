@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS models (
     status VARCHAR,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     artifact_path VARCHAR,
-    error_message VARCHAR
+    error_message VARCHAR,
+    data_options VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS features_log (
@@ -35,13 +36,18 @@ class MetadataDB:
     def _init_db(self):
         with duckdb.connect(self.path) as conn:
             conn.execute(INIT_SQL)
+            # Migration for existing tables: add data_options if missing
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN data_options VARCHAR")
+            except:
+                pass
 
     def get_connection(self):
         return duckdb.connect(self.path)
 
     def list_models(self):
         with self.get_connection() as conn:
-            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at"]
+            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options"]
             return conn.execute(f"SELECT {', '.join(cols)} FROM models ORDER BY created_at DESC").fetch_df().to_dict(orient="records")
 
     def get_model(self, model_id: str):
@@ -58,7 +64,7 @@ class MetadataDB:
         with self.get_connection() as conn:
             conn.execute(query, values)
             
-    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error: str | None = None):
+    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error: str | None = None, feature_cols: str | None = None):
         updates = ["status = ?"]
         params = [status]
         
@@ -71,6 +77,9 @@ class MetadataDB:
         if error:
             updates.append("error_message = ?")
             params.append(error)
+        if feature_cols:
+            updates.append("feature_cols = ?")
+            params.append(feature_cols)
             
         params.append(model_id)
         query = f"UPDATE models SET {', '.join(updates)} WHERE id = ?"
