@@ -39,9 +39,22 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         # 1. Load Data
         df = load_training_data(symbol, target_col=target_col, options_filter=data_options)
         
+        # 1a. Detect Split Column (Train/Test)
+        split_col_name = None
+        for col in df.columns:
+            if df[col].dtype == object or isinstance(df[col].dtype, pd.CategoricalDtype):
+                unique_vals = set(df[col].dropna().astype(str).str.lower().unique())
+                if "train" in unique_vals and "test" in unique_vals:
+                    split_col_name = col
+                    log.info(f"Found existing split column: {split_col_name}")
+                    break
+        
         # 2. Prepare Features
         # Drop metadata columns and target
         drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted"]
+        if split_col_name:
+            drop_cols.append(split_col_name)
+            
         # Filter for numeric columns only to be safe
         df_numeric = df.select_dtypes(include=[np.number])
         feature_cols = [c for c in df_numeric.columns if c not in drop_cols]
@@ -90,12 +103,31 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                  log.warning(f"Target column {target_col} not found for direction calc. Using > 0 check.")
                  y = (df["target"] > 0).astype(int)
 
-        # Simple time-based split (80/20)
-        split_idx = int(len(X) * 0.8)
-        
-        # Split
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        # Split Data (Custom Column or Time-based)
+        if split_col_name:
+            log.info(f"Splitting data using column: {split_col_name}")
+            # Aligned split values
+            split_vals = df.loc[X.index, split_col_name].astype(str).str.lower()
+            
+            train_mask = split_vals == 'train'
+            test_mask = split_vals == 'test'
+            
+            X_train = X[train_mask]
+            X_test = X[test_mask]
+            y_train = y[train_mask]
+            y_test = y[test_mask]
+            
+            if X_train.empty or X_test.empty:
+                log.warning(f"Split column resulted in empty train/test. Train: {len(X_train)}, Test: {len(X_test)}. Falling back to time-based.")
+                split_col_name = None # Trigger fallback
+
+        if not split_col_name:
+            # Simple time-based split (80/20)
+            split_idx = int(len(X) * 0.8)
+            
+            # Split
+            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+            y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
         
         # 3. Impute Missing Values in Features (Mean Strategy)
         # This fills gaps (e.g. from indicators) without dropping data
