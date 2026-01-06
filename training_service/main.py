@@ -214,7 +214,43 @@ def dashboard():
             }
 
             // Feature Importance
-            if(metrics.feature_importance) {
+            if(metrics.feature_details) {
+                html += `<h3>Feature Analysis</h3>
+                <div style="overflow-x:auto;">
+                <table style="width:100%; font-size:0.9rem; border-collapse: collapse;">
+                    <thead>
+                        <tr style="background:rgba(255,255,255,0.05)">
+                            <th style="padding:0.5rem; text-align:left">Feature</th>
+                            <th style="padding:0.5rem; text-align:right" title="Mean Absolute SHAP Value">SHAP</th>
+                            <th style="padding:0.5rem; text-align:right" title="Permutation Importance">Permutation</th>
+                            <th style="padding:0.5rem; text-align:right" title="Coefficient or Tree Importance">Coeff / Imp</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+                
+                const rows = Object.entries(metrics.feature_details).map(([feat, det]) => {
+                    // determine sort key (shap > perm > coeff)
+                    const shap = det.shap_mean_abs || 0;
+                    const perm = det.permutation_mean || 0;
+                    const coeff = det.coefficient !== undefined ? det.coefficient : (det.tree_importance || 0);
+                    return {feat, shap, perm, coeff};
+                });
+                
+                // Sort by SHAP desc, then Permutation
+                rows.sort((a,b) => Math.abs(b.shap) - Math.abs(a.shap) || Math.abs(b.perm) - Math.abs(a.perm));
+                
+                rows.slice(0, 50).forEach(r => {
+                    const fmt = n => Math.abs(n) < 0.0001 && n !== 0 ? n.toExponential(2) : n.toFixed(5);
+                    html += `
+                    <tr style="border-bottom:1px solid #334155">
+                        <td style="padding:0.4rem; font-weight:500">${r.feat}</td>
+                        <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.shap > 0 ? '#f472b6' : '#94a3b8'}">${fmt(r.shap)}</td>
+                        <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.perm > 0 ? '#4ade80' : '#94a3b8'}">${fmt(r.perm)}</td>
+                        <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${Math.abs(r.coeff) > 0 ? '#60a5fa' : '#94a3b8'}">${fmt(r.coeff)}</td>
+                    </tr>`;
+                });
+                 html += `</tbody></table></div>`;
+            } else if(metrics.feature_importance) {
                 html += `<h3>Feature Importance</h3>
                 <table style="width:100%; font-size:0.9rem">
                     <thead><tr><th style="padding:0.25rem">Feature</th><th style="padding:0.25rem; text-align:right">Score</th></tr></thead>

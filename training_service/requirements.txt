@@ -8,3 +8,4 @@ pydantic>=2.0
 pydantic-settings>=2.0
 pyarrow>=17.0
 numpy>=1.26
+shap>=0.40.0

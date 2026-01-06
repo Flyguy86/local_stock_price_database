@@ -4,6 +4,12 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
+from sklearn.inspection import permutation_importance
+try:
+    import shap
+except ImportError:
+    shap = None
+
 from sklearn.metrics import mean_squared_error, accuracy_score
 import joblib
 import json
@@ -127,26 +133,79 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             acc = accuracy_score(y_test, preds)
             metrics["accuracy"] = acc
 
-        # Extract Feature Importance
-        importance = {}
+        # Initialize detailed feature info
+        feature_details = {col: {} for col in feature_cols_used}
+
+        # 1. Linear Coefficients / Tree Importance
         try:
             if hasattr(model, "feature_importances_"):
-                # Trees
                 imps = model.feature_importances_
-                importance = dict(zip(feature_cols_used, imps.tolist()))
+                for i, col in enumerate(feature_cols_used):
+                    feature_details[col]["tree_importance"] = float(imps[i])
             elif hasattr(model, "coef_"):
-                # Linear Models
                 coefs = model.coef_
-                # coef_ can be (n_targets, n_features) or (1, n_features) or just (n_features)
-                if coefs.ndim > 1:
-                    coefs = coefs[0]
-                importance = dict(zip(feature_cols_used, coefs.tolist()))
-        except Exception as imp_e:
-            log.warning(f"Could not extract feature importance: {imp_e}")
-            
-        if importance:
+                if coefs.ndim > 1: coefs = coefs[0]
+                for i, col in enumerate(feature_cols_used):
+                    feature_details[col]["coefficient"] = float(coefs[i])
+        except Exception as e:
+            log.warning(f"Error extracting base importance: {e}")
+
+        # 2. Permutation Importance (Model Agnostic)
+        try:
+            # Use specific scorer based on task
+            scorer = 'neg_mean_squared_error' if ("regressor" in algorithm or "regression" in algorithm) else 'accuracy'
+            # Use a sample for speed if needed
+            X_perm = X_test[:500]
+            y_perm = y_test[:500]
+            if len(X_perm) > 10:
+                perm_result = permutation_importance(model, X_perm, y_perm, n_repeats=5, random_state=42, scoring=scorer)
+                for i, col in enumerate(feature_cols_used):
+                    feature_details[col]["permutation_mean"] = float(perm_result.importances_mean[i])
+        except Exception as e:
+             log.warning(f"Error extracting permutation importance: {e}")
+
+        # 3. SHAP Values
+        if shap:
+            try:
+                # Use a small background sample for explainers
+                X_bg = X_train[:100]
+                X_eval = X_test[:100]
+                
+                explainer = None
+                if "Linear" in str(type(model)) or "Logistic" in str(type(model)):
+                     explainer = shap.LinearExplainer(model, X_bg)
+                elif "Forest" in str(type(model)) or "Tree" in str(type(model)):
+                     explainer = shap.TreeExplainer(model)
+                
+                if explainer and len(X_eval) > 0:
+                     shap_vals = explainer.shap_values(X_eval)
+                     # For classification, shap_vals might be a list of arrays (one per class). Take the first (or positive class)
+                     if isinstance(shap_vals, list):
+                         shap_vals = shap_vals[-1] # Positive class
+                         
+                     # Mean Absolute SHAP value per feature
+                     shap_mean = np.mean(np.abs(shap_vals), axis=0)
+                     for i, col in enumerate(feature_cols_used):
+                         feature_details[col]["shap_mean_abs"] = float(shap_mean[i])
+            except Exception as e:
+                log.warning(f"Error extracting SHAP values: {e}")
+
+        metrics["feature_details"] = feature_details
+        
+        # Legacy/Simple Importance (Sort by best available metric for the simple list)
+        # Priority: SHAP > Tree > Permutation > Coeff
+        legacy_imp = {}
+        for col, dets in feature_details.items():
+            val = 0
+            if "shap_mean_abs" in dets: val = dets["shap_mean_abs"]
+            elif "tree_importance" in dets: val = dets["tree_importance"]
+            elif "permutation_mean" in dets: val = dets["permutation_mean"]
+            elif "coefficient" in dets: val = abs(dets["coefficient"])
+            legacy_imp[col] = val
+        
+        if legacy_imp:
              # Sort by absolute value descending
-             metrics["feature_importance"] = dict(sorted(importance.items(), key=lambda item: abs(item[1]), reverse=True))
+             metrics["feature_importance"] = dict(sorted(legacy_imp.items(), key=lambda item: abs(item[1]), reverse=True))
 
         # 6. Save
         joblib.dump(model, model_path)
