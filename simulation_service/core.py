@@ -5,24 +5,74 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np
+import duckdb
 
 log = logging.getLogger("simulation.core")
 
 # Settings / Config from environment or defaults
 MODELS_DIR = Path("/app/data/models")
 FEATURES_PATH = Path("/app/data/features_parquet")
+METADATA_DB_PATH = Path("/app/data/duckdb/models.db")
 
 def get_available_models():
-    """Lists available trained models (.joblib files)."""
+    """Lists available trained models (.joblib files) with metadata."""
     if not MODELS_DIR.exists():
         return []
     
-    models = []
+    # 1. Get physical files
+    model_files = {}
     for p in MODELS_DIR.glob("*.joblib"):
-        # We might want to parse metadata from filename or associated json?
-        # For now just return the filename
-        models.append({"id": p.name, "name": p.stem, "path": str(p)})
-    return models
+        model_files[p.stem] = {"path": str(p), "filename": p.name}
+        
+    if not model_files:
+        return []
+
+    # 2. Get Metadata from DB
+    metadata_map = {}
+    if METADATA_DB_PATH.exists():
+        try:
+            # Connect read-only to avoid locks
+            with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
+                # Check if table exists
+                tables = conn.execute("SHOW TABLES").fetchall()
+                if any(t[0] == 'models' for t in tables):
+                    rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics FROM models").fetchall()
+                    for r in rows:
+                        mid, algo, sym, created, metrics = r
+                        metadata_map[mid] = {
+                            "algorithm": algo,
+                            "symbol": sym,
+                            "created_at": created,
+                            "metrics": metrics
+                        }
+        except Exception as e:
+            log.warning(f"Failed to read metadata DB: {e}")
+
+    # 3. Merge
+    result = []
+    for mid, info in model_files.items():
+        meta = metadata_map.get(mid, {})
+        
+        # Build a nice display name
+        if meta:
+            # Format: Symbol - Algo - Date
+            # e.g. "AAPL - RandomForest - 2023-10-27"
+            date_str = str(meta.get("created_at", ""))[:10]
+            display = f"{meta.get('symbol', '?')} | {meta.get('algorithm', 'Unknown')} | {date_str}"
+        else:
+            display = f"Unknown Model ({mid[:8]})"
+            
+        result.append({
+            "id": mid, # Note: mid is filename stem (uuid)
+            "name": display,
+            "path": info["path"],
+            "metadata": meta
+        })
+        
+    # Sort by creation date if available (or name)
+    result.sort(key=lambda x: x.get("metadata", {}).get("created_at", "") or "", reverse=True)
+    
+    return result
 
 def get_available_tickers():
     """Lists available tickers based on feature directories."""
@@ -200,14 +250,16 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
                 "type": "BUY",
                 "price": price,
                 "shares": shares,
-                "value": shares * price
+                "value": shares * price,
+                "pnl": 0.0,
+                "pnl_pct": 0.0
             })
         elif signal == 0 and shares > 0:
             proceeds = shares * price
             
             # Calculate PnL
             pnl = proceeds - (shares * last_buy_price)
-            pnl_pct = (price - last_buy_price) / last_buy_price
+            pnl_pct = (price - last_buy_price) / last_buy_price * 100
             
             cash = proceeds
             shares = 0
