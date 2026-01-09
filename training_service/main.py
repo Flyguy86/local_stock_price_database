@@ -211,10 +211,28 @@ def dashboard():
             }
 
             let html = `<h3>Performance Metrics</h3><ul>`;
+            
+            const definitions = {
+                'mse': { title: 'Mean Squared Error', desc: 'Average squared difference between predicted and actual values. Lower is better. Punishes large errors heavily.' },
+                'rmse': { title: 'Root Mean Squared Error', desc: 'Square root of MSE. Same unit as the target (e.g. price $). Lower is better. Good/Bad depends on stock price (e.g. RMSE 2.0 is great for NVDA @ 1000, bad for penny stocks).' },
+                'accuracy': { title: 'Accuracy Score', desc: 'Percentage of correct predictions. 0.5 is random guessing for binary. >0.55 is often considered "good" in trading. >0.65 is suspicious (overfitting?).' },
+                'features_count': { title: 'Features Used', desc: 'Number of input variables used by the model.' }
+            };
+
             // Prioritize standard metrics
             const priority = ['mse', 'rmse', 'accuracy', 'features_count'];
             priority.forEach(k => {
-                if(metrics[k] !== undefined) html += `<li><b style="color:var(--text-muted)">${k.toUpperCase()}:</b> <span style="font-family:monospace">${metrics[k].toFixed ? metrics[k].toFixed(5) : metrics[k]}</span></li>`;
+                if(metrics[k] !== undefined) {
+                    const def = definitions[k] || { title: k.toUpperCase(), desc: '' };
+                    html += `
+                    <li style="margin-bottom: 0.5rem">
+                        <div style="display:flex; justify-content:space-between; align-items:baseline">
+                            <b style="color:var(--text-muted)">${def.title}</b>
+                            <span style="font-family:monospace; font-size:1.1em; color:var(--text)">${metrics[k].toFixed ? metrics[k].toFixed(5) : metrics[k]}</span>
+                        </div>
+                        <div style="font-size:0.8rem; color:var(--text-muted); opacity:0.8; margin-top:2px;">${def.desc}</div>
+                    </li>`;
+                }
             });
             html += `</ul>`;
 
