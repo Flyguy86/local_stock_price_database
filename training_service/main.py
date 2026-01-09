@@ -114,7 +114,7 @@ def dashboard():
                 </div>
                 <div class="group">
                      <label>Symbol</label>
-                     <input id="symbol" placeholder="e.g. NVDA" style="text-transform:uppercase;" onchange="loadOptions()">
+                     <input id="symbol" placeholder="e.g. NVDA" style="text-transform:uppercase;">
                 </div>
                 <div class="group">
                      <label>Data Options</label>
@@ -180,20 +180,32 @@ def dashboard():
             const algos = await res.json();
             $('algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
             
+            // Load Data Options (Global)
+            loadOptions();
+
             // Load Models
             loadModels();
         }
         
         async function loadOptions() {
-             const symbol = $('symbol').value.trim().toUpperCase();
-             if(!symbol) {
-                 $('data_options').innerHTML = '<option value="">All / Default</option>';
-                 return;
-             }
              try {
-                const res = await fetch('/data/options/' + symbol);
+                // Fetch global available options so users can select a consistent configuration
+                // (e.g. Train=30, Test=5) across different symbols.
+                const res = await fetch('/data/options');
                 const opts = await res.json();
-                $('data_options').innerHTML = '<option value="">All / Default</option>' + opts.map(o => `<option value='${o}'>${o}</option>`).join('');
+                
+                $('data_options').innerHTML = '<option value="">All / Default</option>' + opts.map(o => {
+                    let label = o;
+                    // Attempt to parse nice label
+                    try {
+                        const j = JSON.parse(o);
+                        // If we have segmentation info, show it clearly
+                        if (j.train_window && j.test_window) {
+                            label = `Train:${j.train_window} Test:${j.test_window} (${JSON.stringify(j).substring(0,25)}...)`; 
+                        }
+                    } catch(e) {}
+                    return `<option value='${o}'>${label}</option>`;
+                }).join('');
              } catch(e) { console.error(e); }
         }
 
@@ -414,6 +426,10 @@ def dashboard():
 @app.get("/algorithms")
 def get_algorithms():
     return list(ALGORITHMS.keys())
+
+@app.get("/data/options")
+def list_global_options():
+    return get_data_options()
 
 @app.get("/data/options/{symbol}")
 def list_options(symbol: str):

@@ -7,19 +7,32 @@ import duckdb
 
 log = logging.getLogger("training.data")
 
-def get_data_options(symbol: str) -> list[str]:
-    symbol_path = settings.features_parquet_dir / symbol
-    if not symbol_path.exists():
+def get_data_options(symbol: str = None) -> list[str]:
+    """
+    Get distinct 'options' strings from parquet files.
+    If symbol is provided, scan only that symbol's folder.
+    If None, scan all features_parquet.
+    """
+    if symbol:
+        base_path = settings.features_parquet_dir / symbol
+    else:
+        base_path = settings.features_parquet_dir
+        
+    if not base_path.exists():
         return []
+    
+    glob_pattern = str(base_path / "**/*.parquet")
     
     try:
         # Check if options column exists first or just try query
         # We select distinct options
-        res = duckdb.query(f"SELECT DISTINCT options FROM '{symbol_path}/**/*.parquet'").fetchall()
+        res = duckdb.query(f"SELECT DISTINCT options FROM '{glob_pattern}'").fetchall()
         # res is list of tuples [(opt_str,), ...]
-        return [r[0] for r in res if r[0] is not None]
+        # Sort for consistent UI
+        options = sorted([r[0] for r in res if r[0] is not None])
+        return options
     except Exception as e:
-        log.warning(f"Could not read options for {symbol}: {e}")
+        log.warning(f"Could not read options from {base_path}: {e}")
         return []
 
 def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None, timeframe: str = "1m") -> pd.DataFrame:
