@@ -55,6 +55,30 @@ Stock price database
 - Run: `docker-compose up`
 - API available at `http://localhost:8000`
 
+## Simulation & Strategy
+The system includes a backtesting simulation engine to evaluate the performance of trained models.
+
+### How it Works
+1.  **Data Loading**: The simulation loads historical feature data (created by the Feature Service) for a specific ticker.
+2.  **Model Prediction**: The selected trained model (from the Training Service) generates predictions for every time step in the simulation period.
+3.  **Signal Generation**:
+    *   **Classifiers**: 
+        *   Prediction `1` (Up) → **Buy Signal**
+        *   Prediction `0` (Down) → **Sell Signal**
+    *   **Regressors**: 
+        *   Prediction `> 0` → **Buy Signal**
+        *   Prediction `<= 0` → **Sell Signal**
+4.  **Trading Execution (Walk-Forward Loop)**:
+    *   The simulation iterates through the data chronologically, maintaining a cash and share balance.
+    *   **Buying**:
+        *   **Trigger**: A **Buy Signal** is received AND the portfolio currently holds **0 shares**.
+        *   **Action**: Buys the maximum number of shares possible with available cash at the current close price.
+    *   **Selling**:
+        *   **Trigger**: A **Sell Signal** is received AND the portfolio currently holds **shares > 0**.
+        *   **Action**: Sells **100%** of the held shares at the current close price.
+    *   **Holding**: If the signal matches the current position (e.g., Buy Signal while holding), no action is taken.
+5.  **Metrics**: The results (Equity Curve, Trades, Returns) are calculated and compared against a "Buy and Hold" benchmark.
+
 ## Feature Builder (terminal)
 - Install deps (from repo root): `pip install -e .`
 - Optional env to override paths: `SOURCE_DUCKDB_PATH`, `DEST_DUCKDB_PATH`, `DEST_PARQUET_DIR`.

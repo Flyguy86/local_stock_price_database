@@ -402,7 +402,7 @@ async def dashboard():
                 <div class="row">
                      <div class="group">
                         <label>Range (Yrs)</label>
-                        <input id="lookback-years" type="number" value="1" step="0.5">
+                        <input id="lookback-years" type="number" value="10" step="0.5">
                     </div>
                     <div class="group" style="flex: 1;">
                          <label>Dates</label>
@@ -413,7 +413,7 @@ async def dashboard():
                 </div>
                 
                 <div class="row" style="margin-top:auto">
-                    <button onclick="ingest()" style="flex:1">Ingest Bars</button>
+                    <button id="ingest-button" onclick="ingest()" style="flex:1">Ingest Bars</button>
                     <button onclick="ingestEarnings()" class="secondary" title="Update Earnings Only">$</button>
                 </div>
                 <div id="ingest-result" style="font-size: 0.8rem; color: var(--success); min-height: 1.2em;"></div>

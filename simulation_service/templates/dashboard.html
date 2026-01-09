@@ -88,27 +88,10 @@
             </div>
         </div>
 
-        <!-- Trades Table -->
-        <div class="card shadow-sm">
-            <div class="card-header bg-white">Trade Log</div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-striped table-hover align-middle">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Date</th>
-                                <th>Type</th>
-                                <th>Price</th>
-                                <th>Shares</th>
-                                <th>Value / Proceed</th>
-                                <th>Profit/Loss</th>
-                            </tr>
-                        </thead>
-                        <tbody id="tradesTable">
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+        <!-- Trades -->
+        <h5 class="mb-3">Trade Log</h5>
+        <div class="accordion mb-4 shadow-sm" id="tradesAccordionContainer">
+             <!-- Populated via JS -->
         </div>
     </div>
 </div>
@@ -328,30 +311,94 @@
         });
 
         // 3. Trades
-        const tbody = document.getElementById('tradesTable');
-        tbody.innerHTML = '';
+        const accordionContainer = document.getElementById('tradesAccordionContainer');
+        accordionContainer.innerHTML = '';
+        
         if (data.trades.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No trades executed</td></tr>';
+            accordionContainer.innerHTML = '<div class="alert alert-light text-center">No trades executed</div>';
         } else {
+            // Group by Month (YYYY-MM)
+            const grouped = {};
             data.trades.forEach(t => {
-                const tr = document.createElement('tr');
-                
-                let pnlHtml = '-';
+                const month = t.ts.substring(0, 7); // YYYY-MM
+                if (!grouped[month]) grouped[month] = { trades: [], pnl: 0, count: 0 };
+                grouped[month].trades.push(t);
+                grouped[month].count++;
                 if (t.type === 'SELL' && t.pnl !== undefined) {
-                    const colorClass = t.pnl >= 0 ? 'text-success' : 'text-danger';
-                    const icon = t.pnl >= 0 ? '▲' : '▼';
-                    pnlHtml = `<span class="${colorClass} fw-bold">${icon} $${t.pnl.toFixed(2)} (${t.pnl_pct.toFixed(2)}%)</span>`;
+                    grouped[month].pnl += t.pnl;
                 }
+            });
 
-                tr.innerHTML = `
-                    <td>${t.ts.substring(0, 19).replace('T', ' ')}</td>
-                    <td><span class="badge ${t.type === 'BUY' ? 'bg-success' : 'bg-danger'}">${t.type}</span></td>
-                    <td>${t.price.toFixed(2)}</td>
-                    <td>${t.shares ? t.shares.toFixed(4) : '-'}</td>
-                    <td>${t.value.toFixed(2)}</td>
-                    <td>${pnlHtml}</td>
+            // Iterate sorted groups
+            Object.keys(grouped).sort().reverse().forEach((month, index) => {
+                const group = grouped[month];
+                const cleanMonth = new Date(month + "-01").toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+                const collapseId = `collapseTrades${index}`;
+                
+                // Header colors
+                const pnlClass = group.pnl >= 0 ? 'text-success' : 'text-danger';
+                const pnlText = (group.pnl >= 0 ? '+' : '') + "$" + group.pnl.toFixed(2);
+
+                // Build Item
+                const item = document.createElement('div');
+                item.className = 'accordion-item';
+                
+                let rows = '';
+                group.trades.forEach(t => {
+                    let pnlHtml = '-';
+                    if (t.type === 'SELL' && t.pnl !== undefined) {
+                         const c = t.pnl >= 0 ? 'text-success' : 'text-danger';
+                         const i = t.pnl >= 0 ? '▲' : '▼';
+                         pnlHtml = `<span class="${c}">${i} $${t.pnl.toFixed(2)} (${t.pnl_pct.toFixed(2)}%)</span>`;
+                    }
+                    
+                    rows += `
+                        <tr>
+                            <td>${t.ts.substring(0, 19).replace('T', ' ')}</td>
+                            <td><span class="badge ${t.type === 'BUY' ? 'bg-success' : 'bg-danger'}">${t.type}</span></td>
+                            <td>${t.price.toFixed(2)}</td>
+                            <td>${t.shares ? t.shares.toFixed(4) : '-'}</td>
+                            <td>${t.value.toFixed(2)}</td>
+                            <td>${pnlHtml}</td>
+                        </tr>
+                    `;
+                });
+
+                item.innerHTML = `
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                            <div class="d-flex w-100 justify-content-between me-3 align-items-center">
+                                <span><strong>${cleanMonth}</strong></span>
+                                <div class="text-end">
+                                    <span class="badge bg-secondary me-2">${group.count} Trades</span>
+                                    <span class="${pnlClass} fw-bold">${pnlText}</span>
+                                </div>
+                            </div>
+                        </button>
+                    </h2>
+                    <div id="${collapseId}" class="accordion-collapse collapse">
+                        <div class="accordion-body p-0">
+                             <div class="table-responsive">
+                                <table class="table table-striped table-hover align-middle mb-0 table-sm">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Type</th>
+                                            <th>Price</th>
+                                            <th>Shares</th>
+                                            <th>Value / Proceed</th>
+                                            <th>Profit/Loss</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${rows}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 `;
-                tbody.appendChild(tr);
+                accordionContainer.appendChild(item);
             });
         }
         
