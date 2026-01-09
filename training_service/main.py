@@ -432,9 +432,28 @@ def dashboard():
                     <td>${statusHtml}</td>
                     <td>${metricsBtn}</td>
                     <td>${m.created_at.replace('T', ' ').split('.')[0]}</td>
-                    <td><button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#fca5a5; border-color:#7f1d1d" onclick="deleteModel('${m.id}')">Delete</button></td>
+                    <td style="display:flex; gap:0.5rem">
+                        <button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#60a5fa; border-color:#1e40af" onclick="retrainModel('${m.id}')">Retrain</button>
+                        <button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#fca5a5; border-color:#7f1d1d" onclick="deleteModel('${m.id}')">Delete</button>
+                    </td>
                 </tr>
             `}).join('');
+        }
+        
+        async function retrainModel(id) {
+            if(!confirm('Start a new training job with the same parameters?')) return;
+            const btn = document.querySelector(`button[onclick="retrainModel('${id}')"]`);
+            if(btn) btn.innerText = '...';
+            
+            try {
+                const res = await fetch('/retrain/' + id, { method: 'POST' });
+                if(res.ok) {
+                    loadModels();
+                } else {
+                    const err = await res.json();
+                    alert('Failed to retrain: ' + err.detail);
+                }
+            } catch(e) { console.error(e); alert('Error: ' + e); }
         }
         
         async function train() {
@@ -551,6 +570,47 @@ def delete_model(model_id: str):
         # We don't fail the request if file is already gone, but good to log it.
         
     return {"status": "deleted", "id": model_id}
+
+@app.post("/retrain/{model_id}")
+async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
+    import json
+    conn = db.get_connection()
+    try:
+        # Fetch original parameters
+        row = conn.execute("SELECT symbol, algorithm, target_col, hyperparameters, data_options, timeframe FROM models WHERE id = ?", [model_id]).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Original model not found")
+        
+        symbol, algo, target, params_json, d_opt, tf = row
+        
+        # Parse params
+        params = {}
+        if params_json:
+            try:
+                params = json.loads(params_json)
+            except:
+                log.warning(f"Could not parse hyperparameters for {model_id}, using empty dict")
+                
+        # Start new training job
+        training_id = start_training(symbol, algo, target, params, d_opt, tf)
+    
+        background_tasks.add_task(
+            train_model_task, 
+            training_id, 
+            symbol, 
+            algo, 
+            target, 
+            params,
+            d_opt,
+            tf
+        )
+        return {"id": training_id, "status": "started", "retrained_from": model_id}
+            
+    except Exception as e:
+        log.error(f"Retrain failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.post("/train")
 async def train(req: TrainRequest, background_tasks: BackgroundTasks):
