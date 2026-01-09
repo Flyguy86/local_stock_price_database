@@ -50,6 +50,10 @@
         </div>
     </div>
 
+    <div id="loadingProgress" class="progress mb-4" style="display: none;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-label="Simulation in progress" style="width: 100%"></div>
+    </div>
+
     <div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
         <strong>Error!</strong> <span id="errorText"></span>
         <button type="button" class="btn-close" aria-label="Close" onclick="this.parentElement.style.display='none'"></button>
@@ -168,9 +172,12 @@
         }
 
         const btn = document.getElementById('runBtn');
+        const progressBar = document.getElementById('loadingProgress');
         const oldText = btn.innerText;
+        
         btn.disabled = true;
         btn.innerText = "Running...";
+        if (progressBar) progressBar.style.display = 'flex';
 
         try {
             const response = await fetch('/api/simulate', {
@@ -203,6 +210,7 @@
         } finally {
             btn.disabled = false;
             btn.innerText = oldText;
+            if (progressBar) progressBar.style.display = 'none';
         }
     }
 
