@@ -119,7 +119,12 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     """
     model_path = MODELS_DIR / model_id
     if not model_path.exists():
-        raise ValueError("Model not found")
+        # Check if extension is missing
+        if not model_id.endswith(".joblib"):
+             model_path = MODELS_DIR / f"{model_id}.joblib"
+
+    if not model_path.exists():
+        raise ValueError(f"Model not found: {model_id}")
         
     log.info(f"Loading model from {model_path}")
     model = joblib.load(model_path)
