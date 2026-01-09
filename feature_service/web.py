@@ -436,6 +436,10 @@ async def symbols():
     conn = None
     tmpdir = None
     try:
+        if not cfg.source_db.exists():
+            logger.warning("source db not found", extra={"path": str(cfg.source_db)})
+            return []
+
         tmpdir = tempfile.TemporaryDirectory()
         tmp_src = Path(tmpdir.name) / cfg.source_db.name
         shutil.copy2(cfg.source_db, tmp_src)
@@ -445,6 +449,9 @@ async def symbols():
             shutil.copy2(wal_src, wal_dst)
         conn = __import__("duckdb").connect(str(tmp_src), read_only=True)
         return list_symbols_from_db(conn)
+    except Exception as e:
+        logger.exception("failed to list symbols")
+        return []
     finally:
         if conn:
             conn.close()

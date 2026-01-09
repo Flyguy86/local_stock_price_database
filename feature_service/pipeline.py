@@ -388,6 +388,10 @@ def run_pipeline(
     symbols: Iterable[str] | None = None,
     options: dict | None = None,
 ) -> dict:
+    if not source_db.exists():
+        logger.error("source db missing", extra={"path": str(source_db)})
+        return {"symbols": 0, "inserted": 0, "error": "source db missing"}
+
     tmpdir = tempfile.TemporaryDirectory()
     tmp_src = Path(tmpdir.name) / source_db.name
     shutil.copy2(source_db, tmp_src)
