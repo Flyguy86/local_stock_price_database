@@ -7,33 +7,55 @@ import duckdb
 
 log = logging.getLogger("training.data")
 
-def get_data_options(symbol: str = None) -> list[str]:
+def get_feature_map() -> dict[str, list[str]]:
     """
-    Get distinct 'options' strings from parquet files.
-    If symbol is provided, scan only that symbol's folder.
-    If None, scan all features_parquet.
+    Scans all feature parquet files to build a map of:
+    Options Config -> List[Symbols]
     """
-    if symbol:
-        base_path = settings.features_parquet_dir / symbol
-    else:
-        base_path = settings.features_parquet_dir
-        
+    base_path = settings.features_parquet_dir
     if not base_path.exists():
-        return []
+        return {}
     
     glob_pattern = str(base_path / "**/*.parquet")
     
+    # We use regex to extract the symbol from the path.
+    # Path structure: .../features_parquet/SYMBOL/dt=...
+    # We assume 'features_parquet/' is part of the path one level above symbols.
+    
+    sql = f"""
+    SELECT 
+        options,
+        array_agg(DISTINCT regexp_extract(filename, 'features_parquet/([^/]+)/', 1)) as symbols
+    FROM read_parquet('{glob_pattern}', filename=true)
+    GROUP BY options
+    """
+    
     try:
-        # Check if options column exists first or just try query
-        # We select distinct options
-        res = duckdb.query(f"SELECT DISTINCT options FROM '{glob_pattern}'").fetchall()
-        # res is list of tuples [(opt_str,), ...]
-        # Sort for consistent UI
-        options = sorted([r[0] for r in res if r[0] is not None])
-        return options
+        res = duckdb.query(sql).fetchall()
+        mapping = {}
+        for row in res:
+            opt = row[0]
+            syms = row[1]
+            if opt:
+                valid_syms = sorted([s for s in syms if s])
+                mapping[opt] = valid_syms
+        return mapping
     except Exception as e:
-        log.warning(f"Could not read options from {base_path}: {e}")
-        return []
+        log.error(f"Failed to scan feature map: {e}")
+        return {}
+
+def get_data_options(symbol: str = None) -> list[str]:
+    """
+    Get distinct 'options' strings from parquet files.
+    """
+    # Use the map to ensure consistency
+    mapping = get_feature_map()
+    
+    if symbol:
+        # Find options where this symbol exists
+        return sorted([k for k, v in mapping.items() if symbol in v])
+    else:
+        return sorted(list(mapping.keys()))
 
 def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None, timeframe: str = "1m") -> pd.DataFrame:
     """

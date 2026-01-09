@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import settings
 from .db import db
 from .trainer import start_training, train_model_task, ALGORITHMS
-from .data import get_data_options
+from .data import get_data_options, get_feature_map
 
 settings.ensure_paths()
 logging.basicConfig(level=settings.log_level)
@@ -113,12 +113,12 @@ def dashboard():
                     <select id="algo"></select>
                 </div>
                 <div class="group">
-                     <label>Symbol</label>
-                     <input id="symbol" placeholder="e.g. NVDA" style="text-transform:uppercase;">
+                     <label>Data Options</label>
+                     <select id="data_options" style="max-width: 300px;" onchange="updateSymbols()"><option value="">Loading...</option></select>
                 </div>
                 <div class="group">
-                     <label>Data Options</label>
-                     <select id="data_options" style="max-width: 200px;"><option value="">All / Default</option></select>
+                     <label>Symbol</label>
+                     <select id="symbol" style="min-width: 120px;"><option value="">Select Config First</option></select>
                 </div>
                 <div class="group">
                      <label>Target</label>
@@ -187,26 +187,55 @@ def dashboard():
             loadModels();
         }
         
+        let featureMap = {};
+
         async function loadOptions() {
              try {
-                // Fetch global available options so users can select a consistent configuration
-                // (e.g. Train=30, Test=5) across different symbols.
-                const res = await fetch('/data/options');
-                const opts = await res.json();
+                const res = await fetch('/data/map');
+                featureMap = await res.json();
                 
-                $('data_options').innerHTML = '<option value="">All / Default</option>' + opts.map(o => {
+                const select = $('data_options');
+                const options = Object.keys(featureMap).sort();
+                
+                if (options.length === 0) {
+                     select.innerHTML = '<option value="">No features found</option>';
+                     return;
+                }
+                
+                select.innerHTML = '<option value="">-- Select Configuration --</option>' + options.map(o => {
                     let label = o;
-                    // Attempt to parse nice label
                     try {
                         const j = JSON.parse(o);
-                        // If we have segmentation info, show it clearly
                         if (j.train_window && j.test_window) {
-                            label = `Train:${j.train_window} Test:${j.test_window} (${JSON.stringify(j).substring(0,25)}...)`; 
+                            label = `Train:${j.train_window} Test:${j.test_window}`; 
                         }
                     } catch(e) {}
+                    if(label.length > 60) label = label.substring(0,57) + '...';
                     return `<option value='${o}'>${label}</option>`;
                 }).join('');
+                
+                updateSymbols();
              } catch(e) { console.error(e); }
+        }
+
+        function updateSymbols() {
+            const opt = $('data_options').value;
+            const symSelect = $('symbol');
+            
+            symSelect.disabled = false;
+            
+            if(!opt) {
+                symSelect.innerHTML = '<option value="">Select Config First</option>';
+                symSelect.disabled = true;
+                return;
+            }
+            
+            const symbols = featureMap[opt] || [];
+            if (symbols.length === 0) {
+                symSelect.innerHTML = '<option value="">No symbols found</option>';
+            } else {
+                symSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+            }
         }
 
         function showReport(id) {
@@ -434,6 +463,10 @@ def list_global_options():
 @app.get("/data/options/{symbol}")
 def list_options(symbol: str):
     return get_data_options(symbol)
+
+@app.get("/data/map")
+def get_map():
+    return get_feature_map()
 
 class TrainRequest(BaseModel):
     symbol: str
