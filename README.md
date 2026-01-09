@@ -16,6 +16,7 @@ Stock price database
 - Web input for ticker; history agent pulls multi-page Alpaca data, checks existence, creates tables if absent, inserts only missing data.
 - Idempotent inserts based on (symbol, timestamp); skip existing rows.
 - Detailed logging around API calls and persistence.
+- **Robustness**: Handles symbols with no data (e.g., VIX) by attempting provider fallbacks (Alpaca -> IEX -> Yahoo). Explicitly marks status as "failed" if no data is returned from any provider.
 
 ## Storage & Schema
 - DuckDB with Parquet tables; columnar layout for raw bars + engineered features.
@@ -23,10 +24,12 @@ Stock price database
 - Companion metadata table: feature_name, version, generation params/hash, created_at.
 - Partition Parquet by symbol/date; indexes on symbol, timestamp, feature groups.
 - Store preprocessing/feature pipeline code references alongside schema for reproducibility.
+- **Locking & Concurrency**: Feature Service reads a temporary snapshot copy of the DuckDB file to avoid contentions with the ingestion writer process.
 
 ## Web/API Layer
 - REST endpoints: queue ingest jobs, check agent status/heartbeats, list symbols, fetch bars/features, trigger feature rebuilds.
 - Dashboard (Streamlit or React+FastAPI): filters, charts, feature previews; show per-agent logs/status/start/stop controls; progress bars.
+- **Feature Builder Viewer**: Inspect generated features with ticker filtering.
 
 ## Logging & Monitoring
 - JSON logs standardized across agents.
@@ -47,10 +50,16 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
 *   **Logic**: Mathematical indicators are calculated on the **entire continuous history** of a ticker *before* any train/test splitting occurs.
     *   This ensures indicators like `SMA_200` are valid immediately at the start of any testing fold (no "warmup" loss).
     *   Since these are "lagged" indicators (using only past data), calculating them globally is not leakage.
+*   **Segmented Data**: Optionally splits data into "Train" and "Test" episodes (e.g. 30 days train, 5 days test) directly in the feature table, simplifying backtesting logic.
 *   **Output**: "Wide" Parquet files containing all possible features.
 
 ### Phase 2: Model Training (Training Service)
 *   **Role**: The "Model" layer. Handles stateless transformations (Imputation, Scaling, Selection).
+*   **Capabilities**:
+    *   **Timeframe Selection**: Train models on resampled bars (e.g., `1h`, `4h`, `8h`) derived from the base 1-minute data. Custom aggregation ensures "Test" data never leaks into "Train" buckets during resampling.
+    *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
+    *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
+    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP), and delete old/unused models.
 *   **Multi-Ticker Support**: You can train on multiple tickers (e.g., `GOOGL,VIX,SPY`).
     *   **Primary Ticker (First)**: Source of `target` variable and base features.
     *   **Context Tickers**: Merged via Inner Join on Timestamp. Columns are automatically renamed (e.g., `close_VIX`, `rsi_14_SPY`).

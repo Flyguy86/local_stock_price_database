@@ -85,18 +85,28 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         
         # Build aggregation dictionary
         agg_dict = {}
+        split_col_found = None
+        
         for col in df.columns:
-            if col == "open": agg_dict[col] = "first"
+             # Identify split column name (usually 'data_split')
+            is_split_col = (col == "data_split") or (col.endswith("_split"))
+            if is_split_col:
+                # Custom aggregator: If ANY record in this bucket is 'test', the whole bucket is 'test'
+                # This is conservative: avoids leaking test data into a 'train' bucket
+                def aggressive_test_label(series):
+                    vals = set(series.astype(str).unique())
+                    if "test" in vals: return "test"
+                    return "train" # fallback
+                agg_dict[col] = aggressive_test_label
+                split_col_found = col
+            elif col == "open": agg_dict[col] = "first"
             elif col == "high": agg_dict[col] = "max"
             elif col == "low": agg_dict[col] = "min"
             elif col == "close": agg_dict[col] = "last"
             elif col == "volume": agg_dict[col] = "sum"
             elif col == "trade_count": agg_dict[col] = "sum"
             elif col == "vwap": agg_dict[col] = "mean" # approximate
-            elif "split" in col and "data_split" not in col: agg_dict[col] = "sum" # Stock splits
             else:
-                # Default for indicators, data_split, options, source etc is 'last'
-                # taking state at end of the bucket
                 agg_dict[col] = "last"
         
         df = df.resample(timeframe).agg(agg_dict)
@@ -116,9 +126,32 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
     # Shift target backward to align "current features" with "future price"
     df["target"] = df[target_col].shift(-lookforward)
     
+    # --- PREVENT DATA LEAKAGE ---
+    # If using segmentation, we must handle the boundary where Train -> Test.
+    # At Row T (Train), the target comes from Row T+1. If T+1 is 'test', then training on Row T
+    # uses 'test' data as a label. This is a leak.
+    
+    # 1. Detect split column again (if not already found during resample loop)
+    split_col = None
+    for c in df.columns:
+        if c == 'data_split' or c.endswith('_split'):
+            split_col = c
+            break
+            
+    if split_col:
+        # Check source of future target
+        future_split = df[split_col].shift(-lookforward)
+        
+        # Identify leak rows: Current is Train, Future is Test
+        # We assume 'train' and 'test' are the string values.
+        is_leak = (df[split_col] == 'train') & (future_split == 'test')
+        leak_count = is_leak.sum()
+        
+        if leak_count > 0:
+            log.warning(f"Dropping {leak_count} rows to prevent Train->Test leakage (Lookforward={lookforward})")
+            df = df[~is_leak] # Drop them
+
     # Drop rows without target (last N rows)
     df = df.dropna(subset=["target"])
     
-    # Drop non-numeric for training (except ts)
-    # We keep 'ts' for splitting but drop it for model input usually
     return df
