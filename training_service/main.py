@@ -117,8 +117,20 @@ def dashboard():
                      <select id="data_options" style="max-width: 300px;" onchange="updateSymbols()"><option value="">Loading...</option></select>
                 </div>
                 <div class="group">
-                     <label>Symbol</label>
+                     <label>Symbol (Target)</label>
                      <select id="symbol" style="min-width: 120px;"><option value="">Select Config First</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 1</label>
+                     <select id="ctx1" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 2</label>
+                     <select id="ctx2" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 3</label>
+                     <select id="ctx3" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
                 </div>
                 <div class="group">
                      <label>Target</label>
@@ -221,21 +233,36 @@ def dashboard():
         function updateSymbols() {
             const opt = $('data_options').value;
             const symSelect = $('symbol');
+            const ctxSelects = document.querySelectorAll('.ctx-select');
             
             symSelect.disabled = false;
             
             if(!opt) {
                 symSelect.innerHTML = '<option value="">Select Config First</option>';
                 symSelect.disabled = true;
+                ctxSelects.forEach(s => {
+                    s.innerHTML = '<option value="">(None)</option>';
+                    s.disabled = true;
+                });
                 return;
             }
             
             const symbols = featureMap[opt] || [];
+            let html = '';
+            
             if (symbols.length === 0) {
-                symSelect.innerHTML = '<option value="">No symbols found</option>';
+                html = '<option value="">No symbols found</option>';
             } else {
-                symSelect.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+                html = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
             }
+            
+            symSelect.innerHTML = html;
+            
+            // Populate context dropdowns
+            ctxSelects.forEach(s => {
+                s.disabled = false;
+                s.innerHTML = '<option value="">(None)</option>' + html;
+            });
         }
 
         function showReport(id) {
@@ -414,6 +441,16 @@ def dashboard():
             const symbol = $('symbol').value.trim().toUpperCase();
             if(!symbol) return alert('Symbol required');
             
+            // Collect context
+            const ctx = [
+                $('ctx1').value,
+                $('ctx2').value,
+                $('ctx3').value
+            ].filter(s => s && s !== symbol); // Remove empty or duplicate of target
+            
+            // Join with comma
+            const fullSymbolString = [symbol, ...ctx].join(',');
+
             const btn = document.querySelector('button');
             btn.disabled = true;
             btn.innerText = 'Starting...';
@@ -423,7 +460,7 @@ def dashboard():
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        symbol,
+                        symbol: fullSymbolString,
                         algorithm: $('algo').value,
                         target_col: $('target').value,
                         data_options: $('data_options').value || null,

@@ -60,10 +60,12 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
     *   **Model Management**: Dashboard to view metrics, feature importance (SHAP), and delete old/unused models.
-*   **Multi-Ticker Support**: You can train on multiple tickers (e.g., `GOOGL,VIX,SPY`).
-    *   **Primary Ticker (First)**: Source of `target` variable and base features.
-    *   **Context Tickers**: Merged via Inner Join on Timestamp. Columns are automatically renamed (e.g., `close_VIX`, `rsi_14_SPY`).
-    *   **Alignment**: Strict 1-minute timestamp locking; missing minutes in any context ticker results in dropped rows to preserve data integrity.
+    *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a configuration is selected, the list of available symbols is automatically filtered to match.
+*   **Multi-Ticker / Context Awareness**:
+    *   **Primary Ticker**: The target symbol you are trying to predict.
+    *   **Context Tickers**: You can select up to 3 additional tickers (e.g., `VIX`, `SPY`, `QQQ`) to feed into the model as features.
+    *   **Integration**: The system performs a strict Inner Join on the 1-minute timestamps.
+    *   **Naming**: Context features are automatically suffixed (e.g., `close_VIX`, `rsi_14_SPY`) to distinguish them from the primary ticker's features.
 *   **Design**: Models should utilize `scikit-learn` Pipelines (`Pipeline([Scaler, Imputer, Model])`) to bundle preprocessing logic into the saved artifact (`.joblib`), ensuring the Simulation Service can ingest raw feature data.
 
 ## Deployment & Local Dev
