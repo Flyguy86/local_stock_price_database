@@ -259,7 +259,6 @@ def engineer_features(df: pd.DataFrame, options: dict | None = None) -> pd.DataF
 
     return out
 
-
 def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
     # Check if we need to migrate schema (add options to PK)
     try:

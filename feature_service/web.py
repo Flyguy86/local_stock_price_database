@@ -179,6 +179,7 @@ async def index():
             <span id="page-info" class="badge">0-0 of 0</span>
             <button class="ghost" onclick="nextPage()">Next</button>
             <button class="ghost" onclick="lastPage()">Last</button>
+            <input type="text" id="filter-symbol" placeholder="Symbol..." style="background: #1f2937; color: white; border: 1px solid #374151; padding: 0.25rem 0.5rem; border-radius: 4px; width: 80px; margin: 0 0.5rem;" onchange="loadRows(0)">
             <button onclick="loadRows(pageState.offset)">Refresh</button>
             <button class="fail" style="background: #7f1d1d; color: #fca5a5;" onclick="deleteAll()">Delete All</button>
           </div>
@@ -277,7 +278,9 @@ async def index():
         async function loadRows(offset) {
             if (offset < 0) offset = 0;
             try {
-                const res = await fetch(`/features/rows?limit=${pageState.limit}&offset=${offset}`);
+                const symFilter = document.getElementById('filter-symbol').value;
+                const qs = `limit=${pageState.limit}&offset=${offset}` + (symFilter ? `&symbol=${symFilter}` : '');
+                const res = await fetch(`/features/rows?${qs}`);
                 const data = await res.json();
                 pageState.offset = data.offset;
                 pageState.total = data.total;
@@ -373,7 +376,7 @@ async def delete_features():
 
 
 @app.get("/features/rows")
-async def get_feature_rows(limit: int = 20, offset: int = 0):
+async def get_feature_rows(limit: int = 20, offset: int = 0, symbol: Optional[str] = None):
     conn = None
     tmpdir = None
     try:
@@ -395,11 +398,18 @@ async def get_feature_rows(limit: int = 20, offset: int = 0):
         except duckdb.Error:
              return {"rows": [], "total": 0, "offset": offset, "limit": limit}
 
-        total = conn.execute("SELECT COUNT(*) FROM feature_bars").fetchone()[0]
-        df = conn.execute(
-            "SELECT * FROM feature_bars ORDER BY ts DESC LIMIT ? OFFSET ?",
-            [limit, offset]
-        ).fetch_df()
+        if symbol:
+            total = conn.execute("SELECT COUNT(*) FROM feature_bars WHERE symbol = ?", [symbol]).fetchone()[0]
+            df = conn.execute(
+                "SELECT * FROM feature_bars WHERE symbol = ? ORDER BY ts DESC LIMIT ? OFFSET ?",
+                [symbol, limit, offset]
+            ).fetch_df()
+        else:
+            total = conn.execute("SELECT COUNT(*) FROM feature_bars").fetchone()[0]
+            df = conn.execute(
+                "SELECT * FROM feature_bars ORDER BY ts DESC LIMIT ? OFFSET ?",
+                [limit, offset]
+            ).fetch_df()
         
         df = df.fillna("")
         for col in df.select_dtypes(include=['datetime64[ns, UTC]', 'datetime64[ns]']).columns:
