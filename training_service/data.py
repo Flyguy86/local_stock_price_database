@@ -22,11 +22,14 @@ def get_data_options(symbol: str) -> list[str]:
         log.warning(f"Could not read options for {symbol}: {e}")
         return []
 
-def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None) -> pd.DataFrame:
+def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None, timeframe: str = "1m") -> pd.DataFrame:
     """
     Load data from Parquet features. 
     Supports multiple tickers via comma-separation (e.g. "GOOGL,VIX").
     First ticker is the PRIMARY (target). Others are merged as features.
+    
+    timeframe: Resample interval (e.g. "1m" (check if null), "10m", "1h", "4h", "8h").
+               Default "1m" means no resampling (assuming source is 1m).
     """
     symbols = [s.strip() for s in symbol.split(",")]
     primary_symbol = symbols[0]
@@ -74,6 +77,33 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # Any minute missing in EITHER dataset is dropped to ensure data integrity
         df = pd.merge(df, ctx_df, on="ts", how="inner")
         log.info(f"Merged {ctx_sym}. Resulting rows: {len(df)}")
+
+    # 3. Resample if needed
+    if timeframe and timeframe != "1m":
+        log.info(f"Resampling data to {timeframe}")
+        df = df.set_index("ts").sort_index()
+        
+        # Build aggregation dictionary
+        agg_dict = {}
+        for col in df.columns:
+            if col == "open": agg_dict[col] = "first"
+            elif col == "high": agg_dict[col] = "max"
+            elif col == "low": agg_dict[col] = "min"
+            elif col == "close": agg_dict[col] = "last"
+            elif col == "volume": agg_dict[col] = "sum"
+            elif col == "trade_count": agg_dict[col] = "sum"
+            elif col == "vwap": agg_dict[col] = "mean" # approximate
+            elif "split" in col and "data_split" not in col: agg_dict[col] = "sum" # Stock splits
+            else:
+                # Default for indicators, data_split, options, source etc is 'last'
+                # taking state at end of the bucket
+                agg_dict[col] = "last"
+        
+        df = df.resample(timeframe).agg(agg_dict)
+        # Drop rows where main cols are NaN (e.g. gaps in trading days)
+        df = df.dropna(subset=["close"])
+        df = df.reset_index()
+        log.info(f"Resampled rows: {len(df)}")
 
     # Create target: Percent change 'lookforward' steps ahead
     # Simple Example: Predict if price goes up (1) or down (0)

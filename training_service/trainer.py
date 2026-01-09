@@ -30,14 +30,14 @@ ALGORITHMS = {
     "random_forest_classifier": RandomForestClassifier
 }
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m"):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
-        log.info(f"Starting training {training_id} for {symbol} using {algorithm}")
+        log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
         
         # 1. Load Data
-        df = load_training_data(symbol, target_col=target_col, options_filter=data_options)
+        df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe)
         
         # 1a. Detect Split Column (Train/Test)
         split_col_name = None
@@ -347,7 +347,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             error=str(e)
         )
 
-def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None):
+def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m"):
     if params is None:
         params = {}
         
@@ -356,7 +356,7 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
     # Init Record
     db.create_model_record({
         "id": training_id,
-        "name": f"{symbol}-{algorithm}-{target_col}-{datetime.now().strftime('%Y%m%d%H%M')}",
+        "name": f"{symbol}-{algorithm}-{target_col}-{timeframe}-{datetime.now().strftime('%Y%m%d%H%M')}",
         "algorithm": algorithm,
         "symbol": symbol,
         "target_col": target_col,
@@ -365,7 +365,8 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
         "status": "running",
         "created_at": datetime.now().isoformat(),
         "metrics": json.dumps({}),
-        "data_options": data_options
+        "data_options": data_options,
+        "timeframe": timeframe
     })
     
     # Run synchronously for now (or convert to background task if using FastAPI BackgroundTasks)

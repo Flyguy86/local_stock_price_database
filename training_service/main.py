@@ -131,6 +131,17 @@ def dashboard():
                         <option value="vwap">VWAP</option>
                      </select>
                 </div>
+                <div class="group">
+                     <label>Timeframe</label>
+                     <select id="timeframe">
+                        <option value="1m">1 min</option>
+                        <option value="10m">10 min</option>
+                        <option value="30m">30 min</option>
+                        <option value="1h">1 hour</option>
+                        <option value="4h">4 hours</option>
+                        <option value="8h">8 hours</option>
+                     </select>
+                </div>
                 <button onclick="train()" style="margin-top:auto">Start Training Job</button>
             </div>
         </section>
@@ -147,6 +158,7 @@ def dashboard():
                         <th>Name</th>
                         <th>Algo</th>
                         <th>Symbol</th>
+                        <th>TF</th>
                         <th>Status</th>
                         <th>Metrics</th>
                         <th>Created</th>
@@ -330,6 +342,7 @@ def dashboard():
                     <td>${m.name}</td>
                     <td>${m.algorithm}</td>
                     <td>${m.symbol}</td>
+                    <td><span style="font-family:monospace; font-size: 0.8em; background: #334155; padding: 2px 4px; border-radius: 3px;">${m.timeframe || '1m'}</span></td>
                     <td>${statusHtml}</td>
                     <td>${metricsBtn}</td>
                     <td>${m.created_at.replace('T', ' ').split('.')[0]}</td>
@@ -354,7 +367,8 @@ def dashboard():
                         symbol,
                         algorithm: $('algo').value,
                         target_col: $('target').value,
-                        data_options: $('data_options').value || null
+                        data_options: $('data_options').value || null,
+                        timeframe: $('timeframe').value
                     })
                 });
                 
@@ -393,6 +407,7 @@ class TrainRequest(BaseModel):
     target_col: str = "close"
     hyperparameters: Optional[Dict[str, Any]] = None
     data_options: Optional[str] = None
+    timeframe: str = "1m"
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -438,7 +453,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     if req.algorithm not in ALGORITHMS:
         raise HTTPException(status_code=400, detail=f"Algorithm must be one of {list(ALGORITHMS.keys())}")
     
-    training_id = start_training(req.symbol, req.algorithm, req.target_col, req.hyperparameters, req.data_options)
+    training_id = start_training(req.symbol, req.algorithm, req.target_col, req.hyperparameters, req.data_options, req.timeframe)
     
     background_tasks.add_task(
         train_model_task, 
@@ -447,7 +462,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.algorithm, 
         req.target_col, 
         req.hyperparameters or {},
-        req.data_options
+        req.data_options,
+        req.timeframe
     )
     
     return {"id": training_id, "status": "started"}
