@@ -40,3 +40,18 @@ services:
     command: ["uvicorn", "training_service.main:app", "--host", "0.0.0.0", "--port", "8200", "--reload"]
     ports:
       - "8200:8200"
+
+  simulation_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulation
+    environment:
+      LOG_LEVEL: INFO
+      MODELS_DIR: /app/data/models
+      FEATURES_PARQUET_DIR: /app/data/features_parquet
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    command: ["uvicorn", "simulation_service.main:app", "--host", "0.0.0.0", "--port", "8300", "--reload"]
+    ports:
+      - "8300:8300"

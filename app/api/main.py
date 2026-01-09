@@ -149,44 +149,6 @@ def _tests_snapshot() -> dict[str, object]:
   return {key: test_state.get(key) for key in test_state}
 
 
-import httpx
-from fastapi import FastAPI, HTTPException, Request
-
-# ... (rest of imports)
-
-# Proxy for Training Service (since CORS/Codespaces might complicate direct access)
-TRAINING_SERVICE_URL = "http://training_service:8200"
-
-@app.get("/training/algorithms")
-async def proxy_training_algos():
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(f"{TRAINING_SERVICE_URL}/algorithms")
-            return resp.json()
-        except Exception as e:
-            return []
-
-@app.get("/training/models")
-async def proxy_training_models():
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(f"{TRAINING_SERVICE_URL}/models")
-            return resp.json()
-        except Exception as e:
-            return []
-
-@app.post("/training/train")
-async def proxy_training_train(req: Request):
-    body = await req.json()
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.post(f"{TRAINING_SERVICE_URL}/train", json=body)
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=resp.status_code, detail=resp.text)
-            return resp.json()
-        except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"Training service unavailable: {e}")
-
 @app.get("/tests")
 async def get_tests_state():
   async with test_state_lock:
@@ -451,7 +413,7 @@ async def dashboard():
                 </div>
                 
                 <div class="row" style="margin-top:auto">
-                    <button id="ingest-button" onclick="ingest()" style="flex:1">Ingest Bars</button>
+                    <button onclick="ingest()" style="flex:1">Ingest Bars</button>
                     <button onclick="ingestEarnings()" class="secondary" title="Update Earnings Only">$</button>
                 </div>
                 <div id="ingest-result" style="font-size: 0.8rem; color: var(--success); min-height: 1.2em;"></div>
@@ -510,6 +472,28 @@ async def dashboard():
                         <button class="sm secondary" onclick="nav('last')">&raquo;</button>
                     </div>
                 </div>
+            </section>
+            
+            <!-- Tests Section -->
+            <section class="full-width">
+                <h2>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    Test Runner
+                </h2>
+                <div class="row">
+                    <input id="tests-expression" placeholder="pytest matching..." style="flex: 1; background: rgba(0,0,0,0.2); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; color: var(--text);">
+                    <button onclick="runAllTests()">Run All</button>
+                    <button class="secondary" onclick="runSelectedTests()">Run Selected</button>
+                </div>
+                <div class="row" style="margin-top: 0.5rem;">
+                     <span id="tests-status" class="badge"></span>
+                     <span id="tests-meta" style="font-size: 0.75rem; color: var(--text-muted);"></span>
+                </div>
+                <details style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 0.5rem; margin-top:0.5rem;">
+                    <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Output (stdout/stderr)</summary>
+                    <pre id="tests-stdout" style="margin-top: 0.5rem; max-height: 200px; color: #cbd5e1;"></pre>
+                    <pre id="tests-stderr" style="margin-top: 0.5rem; max-height: 200px; color: #fca5a5;"></pre>
+                </details>
             </section>
             
             <!-- Logs -->
@@ -674,6 +658,50 @@ async def dashboard():
              else if(dir === 'next') { if(state.offset + state.limit < state.total) state.offset += state.limit; }
              else if(dir === 'last') state.offset = Math.max(0, state.total - state.limit);
              loadData();
+        }
+        
+        // Tests
+        async function runTests(expression) {
+          const payload = expression ? { expression } : {};
+          try {
+            $('tests-status').innerText = "Running...";
+            $('tests-status').className = "badge";
+            const res = await fetch("/tests/run", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+               const err = await res.json().catch(() => ({}));
+               alert(err.detail || "Failed");
+               return;
+            }
+            const data = await res.json();
+            renderTests(data);
+          } catch (err) { alert("Test start failed"); }
+        }
+        function runAllTests() { runTests(null); }
+        function runSelectedTests() {
+          const expr = $('tests-expression').value.trim();
+          if (!expr) return alert("Enter target");
+          runTests(expr);
+        }
+        async function refreshTests() {
+            try {
+                const res = await fetch("/tests");
+                if(res.ok) renderTests(await res.json());
+            } catch(e) {}
+        }
+        function renderTests(st) {
+            const status = $('tests-status');
+            status.innerText = st.status || "unknown";
+            status.className = `badge ${st.status === "passed" ? "green" : st.status === "failed" ? "red" : ""}`;
+            
+            $('tests-meta').innerText = 
+               [st.started_at ? `Start: ${st.started_at}` : "", st.returncode !== null ? `Exit: ${st.returncode}` : ""].join(' • ');
+            
+            $('tests-stdout').innerText = st.stdout || "";
+            $('tests-stderr').innerText = st.stderr || "";
         }
         
         // System Status
