@@ -50,6 +50,11 @@
         </div>
     </div>
 
+    <div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
+        <strong>Error!</strong> <span id="errorText"></span>
+        <button type="button" class="btn-close" aria-label="Close" onclick="this.parentElement.style.display='none'"></button>
+    </div>
+
     <div id="results" style="display: none;">
         <!-- Stats Panel -->
         <div class="row mb-4">
@@ -152,6 +157,11 @@
         const ticker = document.getElementById('tickerSelect').value;
         const initialCash = parseFloat(document.getElementById('initialCash').value);
         
+        // Hide previous errors and results
+        const errorAlert = document.getElementById('errorAlert');
+        if (errorAlert) errorAlert.style.display = 'none';
+        document.getElementById('results').style.display = 'none';
+
         if (!modelId || !ticker || modelId === "Select Model" || ticker === "Select Ticker") {
             alert("Please select both a Model and a Ticker.");
             return;
@@ -168,18 +178,28 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ model_id: modelId, ticker: ticker, initial_cash: initialCash })
             });
+            
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Server error ${response.status}: ${text}`);
+            }
+
             const result = await response.json();
             
             if (result.error) {
-                alert("Simulation Error: " + result.error);
-                return;
+                throw new Error(result.error);
             }
 
             renderResults(result);
 
         } catch (e) {
             console.error(e);
-            alert("Failed to run simulation. Check console for details.");
+            if (errorAlert) {
+                 document.getElementById('errorText').innerText = e.message;
+                 errorAlert.style.display = 'block';
+            } else {
+                 alert("Error: " + e.message);
+            }
         } finally {
             btn.disabled = false;
             btn.innerText = oldText;
