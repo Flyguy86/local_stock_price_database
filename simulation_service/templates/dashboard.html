@@ -92,6 +92,7 @@
                                 <th>Price</th>
                                 <th>Shares</th>
                                 <th>Value / Proceed</th>
+                                <th>Profit/Loss</th>
                             </tr>
                         </thead>
                         <tbody id="tradesTable">
@@ -302,16 +303,25 @@
         const tbody = document.getElementById('tradesTable');
         tbody.innerHTML = '';
         if (data.trades.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No trades executed</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No trades executed</td></tr>';
         } else {
             data.trades.forEach(t => {
                 const tr = document.createElement('tr');
+                
+                let pnlHtml = '-';
+                if (t.type === 'SELL' && t.pnl !== undefined) {
+                    const colorClass = t.pnl >= 0 ? 'text-success' : 'text-danger';
+                    const icon = t.pnl >= 0 ? '▲' : '▼';
+                    pnlHtml = `<span class="${colorClass} fw-bold">${icon} $${t.pnl.toFixed(2)} (${(t.pnl_pct * 100).toFixed(2)}%)</span>`;
+                }
+
                 tr.innerHTML = `
                     <td>${t.ts.substring(0, 19).replace('T', ' ')}</td>
                     <td><span class="badge ${t.type === 'BUY' ? 'bg-success' : 'bg-danger'}">${t.type}</span></td>
                     <td>${t.price.toFixed(2)}</td>
                     <td>${t.shares ? t.shares.toFixed(4) : '-'}</td>
                     <td>${t.value.toFixed(2)}</td>
+                    <td>${pnlHtml}</td>
                 `;
                 tbody.appendChild(tr);
             });

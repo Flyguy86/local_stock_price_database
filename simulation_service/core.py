@@ -173,6 +173,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     shares = 0
     portfolio_values = []
     trades = []
+    last_buy_price = 0.0
     
     # Benchmark: Buy and Hold
     # Start with all cash buying shares at first close
@@ -191,6 +192,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
         action = None
         if signal == 1 and shares == 0:
             shares = cash / price
+            last_buy_price = price
             cash = 0
             action = "BUY"
             trades.append({
@@ -201,7 +203,13 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
                 "value": shares * price
             })
         elif signal == 0 and shares > 0:
-            cash = shares * price
+            proceeds = shares * price
+            
+            # Calculate PnL
+            pnl = proceeds - (shares * last_buy_price)
+            pnl_pct = (price - last_buy_price) / last_buy_price
+            
+            cash = proceeds
             shares = 0
             action = "SELL"
             trades.append({
@@ -209,7 +217,9 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
                 "type": "SELL",
                 "price": price,
                 "shares": shares, # 0
-                "value": cash # realized value
+                "value": cash, # realized value
+                "pnl": pnl,
+                "pnl_pct": pnl_pct
             })
             
         current_val = cash + (shares * price)
