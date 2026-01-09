@@ -356,7 +356,7 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
     # Init Record
     db.create_model_record({
         "id": training_id,
-        "name": f"{symbol}-{algorithm}-{datetime.now().strftime('%Y%m%d%H%M')}",
+        "name": f"{symbol}-{algorithm}-{target_col}-{datetime.now().strftime('%Y%m%d%H%M')}",
         "algorithm": algorithm,
         "symbol": symbol,
         "target_col": target_col,

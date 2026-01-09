@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
+from pathlib import Path
 
 from .config import settings
 from .db import db
@@ -149,6 +150,7 @@ def dashboard():
                         <th>Status</th>
                         <th>Metrics</th>
                         <th>Created</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="models-body"></tbody>
@@ -275,6 +277,18 @@ def dashboard():
             $('report-modal').close();
         }
         
+        async function deleteModel(id) {
+            if(!confirm('Are you sure you want to delete this model?')) return;
+            try {
+                const res = await fetch('/models/' + id, { method: 'DELETE' });
+                if(res.ok) {
+                    loadModels();
+                } else {
+                    alert('Failed to delete');
+                }
+            } catch(e) { console.error(e); }
+        }
+
         async function loadModels() {
             // Keep track of open errors
             const openErrors = new Set();
@@ -287,7 +301,7 @@ def dashboard():
             const tbody = $('models-body');
             
             if(!models.length) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: var(--text-muted)">No models found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color: var(--text-muted)">No models found</td></tr>';
                 return;
             }
             
@@ -319,6 +333,7 @@ def dashboard():
                     <td>${statusHtml}</td>
                     <td>${metricsBtn}</td>
                     <td>${m.created_at.replace('T', ' ').split('.')[0]}</td>
+                    <td><button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#fca5a5; border-color:#7f1d1d" onclick="deleteModel('${m.id}')">Delete</button></td>
                 </tr>
             `}).join('');
         }
@@ -397,6 +412,26 @@ def get_model(model_id: str):
     # Actually, simpler to return as part of list or fix db.py to return dict.
     # For now, let's rely on list_models for UI.
     return {"id": model_id, "data": str(model)}
+
+@app.delete("/models/{model_id}")
+def delete_model(model_id: str):
+    # 1. Get model to find artifact path (optional, or just construct it)
+    # We can query DB or just assume standard path if we want, but better to check DB if we stored custom path.
+    # However, trainer uses consistent naming: {id}.joblib
+    
+    # Delete from DB
+    db.delete_model(model_id)
+    
+    # Delete file
+    try:
+        model_path = settings.models_dir / f"{model_id}.joblib"
+        if model_path.exists():
+            model_path.unlink()
+    except Exception as e:
+        log.error(f"Failed to delete model file {model_id}: {e}")
+        # We don't fail the request if file is already gone, but good to log it.
+        
+    return {"status": "deleted", "id": model_id}
 
 @app.post("/train")
 async def train(req: TrainRequest, background_tasks: BackgroundTasks):
