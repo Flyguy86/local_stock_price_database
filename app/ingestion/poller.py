@@ -82,7 +82,9 @@ class IngestPoller:
                     if target_start and current_end <= target_start:
                         log.info("stop: reached target_start", extra={"symbol": symbol, "current_end": current_end.isoformat(), "target_start": target_start.isoformat()})
                         break
-                return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
+                if inserted > 0:
+                    return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
+                log.warning("alpaca returned no data, attempting IEX", extra={"symbol": symbol})
             except HTTPStatusError as exc:
                 log.warning("alpaca fetch failed, attempting IEX", extra={"symbol": symbol, "status": exc.response.status_code})
             finally:
@@ -114,9 +116,27 @@ class IngestPoller:
                     if target_start and current_end <= target_start:
                         log.info("stop: reached target_start", extra={"symbol": symbol, "current_end": current_end.isoformat(), "target_start": target_start.isoformat(), "source": "iex"})
                         break
-                return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
+                if inserted > 0:
+                    return {"symbol": symbol, "inserted": inserted, "ts": datetime.now(timezone.utc).isoformat()}
+                log.warning("iex returned no data, attempting Yahoo", extra={"symbol": symbol})
             finally:
                 await client.aclose()
+
+        # Yahoo fallback
+        log.info("attempting yahoo finance", extra={"symbol": symbol})
+        try:
+            client = get_yahoo_client()
+            inserted_yahoo = 0
+            async for df in client.fetch_bars(symbol, start=start, end=end):
+                inserted_yahoo += self.db.insert_bars(df, symbol, source="yahoo")
+            
+            if inserted_yahoo > 0:
+                 return {"symbol": symbol, "inserted": inserted_yahoo, "ts": datetime.now(timezone.utc).isoformat()}
+            else:
+                 log.warning("yahoo returned no data", extra={"symbol": symbol})
+
+        except Exception as e:
+             log.warning("yahoo fallback failed", extra={"symbol": symbol, "error": str(e)})
 
         raise RuntimeError("No data provider succeeded for symbol")
 

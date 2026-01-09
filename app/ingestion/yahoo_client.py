@@ -6,11 +6,88 @@ import asyncio
 import httpx
 import io
 
+from typing import AsyncIterator
+
 log = logging.getLogger("app.yahoo")
 
 class YahooClient:
     def __init__(self):
         pass
+
+    async def fetch_bars(self, symbol: str, start: str | None = None, end: str | None = None) -> AsyncIterator[pd.DataFrame]:
+        log.info("fetching bars from yahoo", extra={"symbol": symbol, "start": start, "end": end})
+        try:
+            # yfinance expects YYYY-MM-DD
+            start_date = pd.to_datetime(start).strftime("%Y-%m-%d") if start else None
+            end_date = pd.to_datetime(end).strftime("%Y-%m-%d") if end else None
+            
+            # Use '1d' for longer history as '1m' is limited to 30 days
+            # If we need 1m data for VIX, yfinance might not have it for long periods.
+            interval = "1d" 
+            
+            def _get_history():
+                ticker = yf.Ticker(symbol)
+                # If start/end not provided, fetch max? Or some default?
+                # poller usually provides start/end.
+                if start_date and end_date:
+                    return ticker.history(start=start_date, end=end_date, interval=interval)
+                elif start_date:
+                    return ticker.history(start=start_date, interval=interval)
+                else:
+                    return ticker.history(period="1y", interval=interval)
+
+            df = await asyncio.to_thread(_get_history)
+            
+            if df.empty:
+                log.warning("yahoo history empty", extra={"symbol": symbol})
+                return
+
+            # Reset index to get Date/Datetime as column
+            df = df.reset_index()
+            
+            # yfinance columns: Date (or Datetime), Open, High, Low, Close, Volume, ...
+            # Normalize column names
+            df.columns = [c.lower() for c in df.columns]
+            
+            rename_map = {
+                "date": "ts",
+                "datetime": "ts",
+                "stock splits": "splits"
+            }
+            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+            
+            if "ts" not in df.columns:
+                 # Check if index name was "Date" but didn't come out?
+                 # If reset_index worked, it should be there.
+                 log.warning("missing ts column after reset_index", extra={"cols": list(df.columns)})
+                 return
+
+            # Convert ts to UTC
+            df["ts"] = pd.to_datetime(df["ts"], utc=True)
+            
+            # Ensure required columns
+            required = ["open", "high", "low", "close", "volume"]
+            for col in required:
+                if col not in df.columns:
+                    df[col] = 0.0 # or NaN
+            
+            # Add missing schema columns
+            if "vwap" not in df.columns:
+                df["vwap"] = (df["high"] + df["low"] + df["close"]) / 3
+            if "trade_count" not in df.columns:
+                df["trade_count"] = 0
+                
+            # Filter by requested time range if needed (yfinance includes start, excludes end usually)
+            if start:
+                df = df[df["ts"] >= pd.to_datetime(start, utc=True)]
+            if end:
+                df = df[df["ts"] < pd.to_datetime(end, utc=True)]
+                
+            if not df.empty:
+                yield df
+
+        except Exception as e:
+            log.warning("yahoo history fetch exception", extra={"symbol": symbol, "error": str(e)})
 
     async def fetch_earnings(self, symbol: str) -> pd.DataFrame:
         log.info("fetching earnings from yahoo", extra={"symbol": symbol})
