@@ -235,27 +235,26 @@ def engineer_features(df: pd.DataFrame, options: dict | None = None) -> pd.DataF
     test_window = int(opts.get("test_window", 5))
     segment_size = train_window + test_window
     
+    # 1. Calculate Features Globally (Preserves History for SMAs etc)
+    out = _calculate_features_for_chunk(df, opts)
+
     if enable_segmentation and segment_size > 0:
-        # Create segments
-        df = df.copy()
-        df = df.sort_values("ts")
-        df["_seg_id"] = np.arange(len(df)) // segment_size
+        # 2. THEN Create Segments / Splits
+        out = out.sort_values("ts")
         
-        results = []
-        for seg_id, group in df.groupby("_seg_id"):
-            # Calculate features for this group
-            res = _calculate_features_for_chunk(group, opts)
-            
-            # Add split label
-            n = len(res)
-            splits = ["train"] * min(n, train_window) + ["test"] * max(0, n - train_window)
-            res["data_split"] = splits[:n]
-            results.append(res)
-            
-        out = pd.concat(results)
-        out = out.drop(columns=["_seg_id"], errors="ignore")
+        # Vectorized assignment of split labels
+        # Create an array of indices [0, 1, 2, ...]
+        indices = np.arange(len(out))
+        # Modulo by segment size to get position within segment [0..35]
+        positions = indices % segment_size
+        
+        # Identify which positions are 'test'
+        # Train: 0 to train_window-1
+        # Test: train_window to end
+        is_test = positions >= train_window
+        
+        out["data_split"] = np.where(is_test, "test", "train")
     else:
-        out = _calculate_features_for_chunk(df, opts)
         out["data_split"] = "train"
 
     return out

@@ -135,11 +135,11 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     if df.empty:
         raise ValueError(f"No data for {ticker}")
 
-    # Prepare features for the model
-    # Note: Model expects specific feature columns.
-    # We need to know which columns were used. 
-    # Usually saved with model or we try to use all numeric columns minus target/metadata.
-    # If the model is a pipeline, it might handle selection.
+    # Prepare features for the model.
+    # The application operates as a manual pipeline (Ingestion -> Feature Service -> Training).
+    # Therefore, the model loaded here is likely a raw estimator.
+    # We must manually align the feature columns from the parquet files to match exactly 
+    # what the model expects, as there is no scikit-learn Pipeline object to handle it automatically.
     
     # We'll try to use the same logic as training service roughly:
     drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted", "dt"]
