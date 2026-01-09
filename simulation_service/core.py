@@ -36,15 +36,37 @@ def get_available_models():
                 # Check if table exists
                 tables = conn.execute("SHOW TABLES").fetchall()
                 if any(t[0] == 'models' for t in tables):
-                    rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics FROM models").fetchall()
-                    for r in rows:
-                        mid, algo, sym, created, metrics = r
-                        metadata_map[mid] = {
-                            "algorithm": algo,
-                            "symbol": sym,
-                            "created_at": created,
-                            "metrics": metrics
-                        }
+                    # Fetch extra columns: timeframe, data_options
+                    # We might need to handle schemas where columns don't exist yet via try/except or rigorous selecting
+                    # Using SELECT * is risky if schema changed. Explicit select is better.
+                    # We try to select all including new columns.
+                    try:
+                        rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics, timeframe, data_options FROM models").fetchall()
+                        for r in rows:
+                            mid, algo, sym, created, metrics, tf, d_opt = r
+                            metadata_map[mid] = {
+                                "algorithm": algo,
+                                "symbol": sym, 
+                                "created_at": created,
+                                "metrics": metrics,
+                                "timeframe": tf,
+                                "data_options": d_opt
+                            }
+                    except Exception as e:
+                         log.warning(f"Error reading extended metadata (using fallback): {e}")
+                         # Fallback for old schema
+                         rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics FROM models").fetchall()
+                         for r in rows:
+                            mid, algo, sym, created, metrics = r
+                            metadata_map[mid] = {
+                                "algorithm": algo,
+                                "symbol": sym,
+                                "created_at": created,
+                                "metrics": metrics,
+                                "timeframe": "1m",
+                                "data_options": None
+                            }
+                        
         except Exception as e:
             log.warning(f"Failed to read metadata DB: {e}")
 
@@ -55,10 +77,12 @@ def get_available_models():
         
         # Build a nice display name
         if meta:
-            # Format: Symbol - Algo - Date
-            # e.g. "AAPL - RandomForest - 2023-10-27"
+            # Format: Symbol(TF) - Algo - Date
+            # e.g. "AAPL(1h) - RandomForest - 2023-10-27"
             date_str = str(meta.get("created_at", ""))[:10]
-            display = f"{meta.get('symbol', '?')} | {meta.get('algorithm', 'Unknown')} | {date_str}"
+            tf = meta.get("timeframe", "1m")
+            sym = meta.get("symbol", "?")
+            display = f"{sym} ({tf}) | {meta.get('algorithm', 'Unknown')} | {date_str}"
         else:
             display = f"Unknown Model ({mid[:8]})"
             
@@ -85,63 +109,143 @@ def get_available_tickers():
             tickers.append(p.name)
     return sorted(tickers)
 
-def load_data(ticker: str) -> pd.DataFrame:
-    """Loads feature data for a specific ticker from Parquet."""
-    ticker_path = FEATURES_PATH / ticker
-    if not ticker_path.exists():
-        raise ValueError(f"No data found for {ticker}")
+def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter: str = None) -> pd.DataFrame:
+    """
+    Loads feature data for simulation, replicating logic from training_service/data.py
+    Supports multi-symbol (comma separated), context merging, and resampling.
+    """
+    symbols = [s.strip() for s in symbol_str.split(",")]
+    primary_symbol = symbols[0]
+    context_symbols = symbols[1:]
     
-    # Read Parquet dataset (folder with partitions)
-    try:
-        # Pandas read_parquet handles partitioned datasets (hive style)
-        df = pd.read_parquet(ticker_path)
-    except Exception as e:
-        log.error(f"Error reading parquet for {ticker}: {e}")
-        return pd.DataFrame()
+    # --- Helper to load one symbol ---
+    def _load_single(sym):
+        path = FEATURES_PATH / sym
+        if not path.exists():
+            # In simulation, we might not want to crash if context is missing, but for strictness let's warn and return empty
+            log.warning(f"No features data found for {sym}")
+            return pd.DataFrame()
+            
+        print(f"Loading {sym} from {path}...")
+        query = f"SELECT * FROM '{path}/**/*.parquet'"
+        if options_filter:
+            safe_filter = options_filter.replace("'", "''")
+            query += f" WHERE options = '{safe_filter}'"
+        
+        query += " ORDER BY ts ASC"
+        try:
+            return duckdb.query(query).to_df()
+        except Exception as e:
+            log.error(f"Error loading {sym}: {e}")
+            return pd.DataFrame()
 
+    # 1. Load Primary
+    df = _load_single(primary_symbol)
     if df.empty:
-        return df
+        raise ValueError(f"No data for primary symbol {primary_symbol}")
 
-    # Ensure formatted correctly
-    if "ts" in df.columns:
-        df["ts"] = pd.to_datetime(df["ts"])
-        df = df.sort_values("ts")
-    
+    # 2. Load and Merge Context
+    for ctx_sym in context_symbols:
+        ctx_df = _load_single(ctx_sym)
+        if ctx_df.empty:
+            continue
+            
+        cols_to_rename = {c: f"{c}_{ctx_sym}" for c in ctx_df.columns if c != "ts"}
+        ctx_df = ctx_df.rename(columns=cols_to_rename)
+        
+        df = pd.merge(df, ctx_df, on="ts", how="inner")
+        
+    # 3. Resample
+    if timeframe and timeframe != "1m":
+        df = df.set_index("ts").sort_index()
+        agg_dict = {}
+        for col in df.columns:
+            # Custom aggregator: If ANY record in this bucket is 'test', the whole bucket is 'test'
+            if "split" in col or "data_split" in col:
+                 # Conservative approach for simulation too?
+                 # Actually for simulation we treat all data as 'historical input'
+                 # But we might want to respect the split labels for the chart visualization
+                 def aggressive_test_label(series):
+                    vals = set(series.astype(str).unique())
+                    if "test" in vals: return "test"
+                    return "train"
+                 agg_dict[col] = aggressive_test_label
+            elif "open" in col.lower(): agg_dict[col] = "first"
+            elif "high" in col.lower(): agg_dict[col] = "max"
+            elif "low" in col.lower(): agg_dict[col] = "min"
+            elif "close" in col.lower(): agg_dict[col] = "last"
+            elif "volume" in col.lower(): agg_dict[col] = "sum"
+            elif "trade_count" in col.lower(): agg_dict[col] = "sum"
+            elif "vwap" in col.lower(): agg_dict[col] = "mean"
+            else:
+                agg_dict[col] = "last"
+                
+        df = df.resample(timeframe).agg(agg_dict)
+        # Drop gaps
+        df = df.dropna(subset=[c for c in df.columns if "close" in c][:1]) # Check primary close
+        df = df.reset_index()
+
     return df
 
 def run_simulation(model_id: str, ticker: str, initial_cash: float):
     """
     Runs a backtest simulation.
-    1. Load Model
-    2. Load Data
-    3. Generate Predictions
-    4. Simulate Trading
+    Note: 'ticker' param passed from UI usually overrides model symbol? 
+    Actually, usually we simulate a model on valid data.
+    If the model was trained on GOOGL+VIX, we MUST provide GOOGL+VIX features.
+    
+    If the user passed a custom 'ticker' override in the UI (e.g. testing a GOOGL model on MSFT), 
+    we need to be careful.
+    
+    Strategy:
+    1. Load Model Metadata to get training config (timeframe, context symbols).
+    2. If user provided a generic ticker (e.g. "MSFT") but model expects "GOOGL,VIX", 
+       we assume the user wants to substitute the PRIMARY symbol.
+       So we construct "MSFT,VIX".
     """
     model_path = MODELS_DIR / model_id
     if not model_path.exists():
-        # Check if extension is missing
         if not model_id.endswith(".joblib"):
              model_path = MODELS_DIR / f"{model_id}.joblib"
 
     if not model_path.exists():
         raise ValueError(f"Model not found: {model_id}")
         
-    log.info(f"Loading model from {model_path}")
+    # Get Metadata
+    metadata = {}
+    if METADATA_DB_PATH.exists():
+         with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
+             row = conn.execute("SELECT symbol, timeframe, data_options FROM models WHERE id = ?", [model_id.replace(".joblib", "")]).fetchone()
+             if row:
+                 metadata = {"symbol": row[0], "timeframe": row[1], "data_options": row[2]}
+
+    trained_symbol_str = metadata.get("symbol", ticker) # Fallback to passed ticker if metadata missing
+    timeframe = metadata.get("timeframe", "1m")
+    data_options = metadata.get("data_options")
+    
+    # Handle Symbol Substitution for Cross-Ticker Testing
+    # User selected 'ticker' in Simulation UI. Model was trained on 'trained_symbol_str'.
+    # If they differ, we assume substitution for the PRIMARY ticker only.
+    # Ex: Model="GOOGL,VIX", User="MSFT". We load "MSFT,VIX".
+    
+    trained_primary = trained_symbol_str.split(",")[0].strip()
+    trained_context = trained_symbol_str.split(",")[1:]
+    
+    target_load_str = ticker # Start with user request
+    if trained_context:
+        # Append context from training config
+        target_load_str = ",".join([ticker] + [s.strip() for s in trained_context])
+        
+    log.info(f"Loading model form {model_path}")
     model = joblib.load(model_path)
     
-    log.info(f"Loading data for {ticker}")
-    df = load_data(ticker)
+    log.info(f"Loading data for {target_load_str} (TF={timeframe}, Opts={data_options})")
+    df = load_simulation_data(target_load_str, timeframe, data_options)
     
     if df.empty:
-        raise ValueError(f"No data for {ticker}")
+        raise ValueError(f"No data for {target_load_str}")
 
     # Prepare features for the model.
-    # The application operates as a manual pipeline (Ingestion -> Feature Service -> Training).
-    # Therefore, the model loaded here is likely a raw estimator.
-    # We must manually align the feature columns from the parquet files to match exactly 
-    # what the model expects, as there is no scikit-learn Pipeline object to handle it automatically.
-    
-    # We'll try to use the same logic as training service roughly:
     drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted", "dt"]
     # Also drop split columns if any (train/test markers)
     for col in df.columns:
