@@ -241,19 +241,23 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
         
         action = None
         if signal == 1 and shares == 0:
-            shares = cash / price
-            last_buy_price = price
-            cash = 0
-            action = "BUY"
-            trades.append({
-                "ts": ts,
-                "type": "BUY",
-                "price": price,
-                "shares": shares,
-                "value": shares * price,
-                "pnl": 0.0,
-                "pnl_pct": 0.0
-            })
+            # Whole shares only
+            possible_shares = int(cash // price)
+            if possible_shares > 0:
+                shares = possible_shares
+                cost = shares * price
+                cash -= cost
+                last_buy_price = price
+                action = "BUY"
+                trades.append({
+                    "ts": ts,
+                    "type": "BUY",
+                    "price": price,
+                    "shares": shares,
+                    "value": cost,
+                    "pnl": 0.0,
+                    "pnl_pct": 0.0
+                })
         elif signal == 0 and shares > 0:
             proceeds = shares * price
             
@@ -261,7 +265,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
             pnl = proceeds - (shares * last_buy_price)
             pnl_pct = (price - last_buy_price) / last_buy_price * 100
             
-            cash = proceeds
+            cash += proceeds
             shares = 0
             action = "SELL"
             trades.append({
@@ -269,7 +273,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
                 "type": "SELL",
                 "price": price,
                 "shares": shares, # 0
-                "value": cash, # realized value
+                "value": proceeds, # value of the sale
                 "pnl": pnl,
                 "pnl_pct": pnl_pct
             })

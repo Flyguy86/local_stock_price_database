@@ -312,7 +312,7 @@
                 if (t.type === 'SELL' && t.pnl !== undefined) {
                     const colorClass = t.pnl >= 0 ? 'text-success' : 'text-danger';
                     const icon = t.pnl >= 0 ? '▲' : '▼';
-                    pnlHtml = `<span class="${colorClass} fw-bold">${icon} $${t.pnl.toFixed(2)} (${(t.pnl_pct * 100).toFixed(2)}%)</span>`;
+                    pnlHtml = `<span class="${colorClass} fw-bold">${icon} $${t.pnl.toFixed(2)} (${t.pnl_pct.toFixed(2)}%)</span>`;
                 }
 
                 tr.innerHTML = `
