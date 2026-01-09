@@ -39,6 +39,24 @@ Stock price database
 - Feature builder: generates/updates feature Parquet partitions, records metadata versions.
 - Task queue (Celery/Prefect): schedules/idempotent jobs keyed by symbol/date; avoids double inserts.
 
+## Feature Architecture & Pipeline Design
+This project follows a "Manual Pipeline" architecture with two distinct phases of feature engineering.
+
+### Phase 1: Time Series Engineering (Feature Service)
+*   **Role**: The "Data Warehouse" layer. Calculates stateful, history-dependent features (SMA, RSI, Bollinger Bands, Lags).
+*   **Logic**: Mathematical indicators are calculated on the **entire continuous history** of a ticker *before* any train/test splitting occurs.
+    *   This ensures indicators like `SMA_200` are valid immediately at the start of any testing fold (no "warmup" loss).
+    *   Since these are "lagged" indicators (using only past data), calculating them globally is not leakage.
+*   **Output**: "Wide" Parquet files containing all possible features.
+
+### Phase 2: Model Training (Training Service)
+*   **Role**: The "Model" layer. Handles stateless transformations (Imputation, Scaling, Selection).
+*   **Multi-Ticker Support**: You can train on multiple tickers (e.g., `GOOGL,VIX,SPY`).
+    *   **Primary Ticker (First)**: Source of `target` variable and base features.
+    *   **Context Tickers**: Merged via Inner Join on Timestamp. Columns are automatically renamed (e.g., `close_VIX`, `rsi_14_SPY`).
+    *   **Alignment**: Strict 1-minute timestamp locking; missing minutes in any context ticker results in dropped rows to preserve data integrity.
+*   **Design**: Models should utilize `scikit-learn` Pipelines (`Pipeline([Scaler, Imputer, Model])`) to bundle preprocessing logic into the saved artifact (`.joblib`), ensuring the Simulation Service can ingest raw feature data.
+
 ## Deployment & Local Dev
 - Provide Dockerfile + docker-compose for API + worker + optional UI.
 - Also support direct run in GitHub Codespaces/devcontainer (Ubuntu 24.04.3).
