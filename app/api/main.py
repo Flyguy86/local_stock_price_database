@@ -451,7 +451,7 @@ async def dashboard():
                 </div>
                 
                 <div class="row" style="margin-top:auto">
-                    <button onclick="ingest()" style="flex:1">Ingest Bars</button>
+                    <button id="ingest-button" onclick="ingest()" style="flex:1">Ingest Bars</button>
                     <button onclick="ingestEarnings()" class="secondary" title="Update Earnings Only">$</button>
                 </div>
                 <div id="ingest-result" style="font-size: 0.8rem; color: var(--success); min-height: 1.2em;"></div>
