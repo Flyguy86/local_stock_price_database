@@ -116,6 +116,7 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
 
     # Returns and moving averages
     out["return_1m"] = out["close"].pct_change().fillna(0.0)
+    out["lag_1_close"] = out["close"].shift(1)  # New lag feature
     
     if use_sma:
         out["sma_close_5"] = out["close"].rolling(window=5, min_periods=1).mean()
@@ -170,8 +171,10 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     # Volume features
     if use_vol:
         out["vol_sma_20"] = out["volume"].rolling(window=20, min_periods=1).mean()
+        out["volume_change"] = out["volume"].pct_change().fillna(0.0) # New volume feature
     else:
         out["vol_sma_20"] = np.nan
+        out["volume_change"] = np.nan
 
     # Time-based features
     if use_time:
@@ -270,6 +273,15 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             logger.warning("Dropping feature_bars to update schema with options in PK")
             dest_conn.execute("DROP TABLE feature_bars")
 
+    # Migration for new columns
+    for col in ["volume_change", "lag_1_close"]:
+        try:
+             dest_conn.execute(f"SELECT {col} FROM feature_bars LIMIT 0")
+        except duckdb.Error:
+             if _has_table(dest_conn, "feature_bars"):
+                 logger.warning(f"Adding missing column {col} to feature_bars")
+                 dest_conn.execute(f"ALTER TABLE feature_bars ADD COLUMN {col} DOUBLE")
+
     dest_conn.execute(
         """
         CREATE TABLE IF NOT EXISTS feature_bars (
@@ -283,6 +295,7 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             vwap DOUBLE,
             trade_count BIGINT,
             return_1m DOUBLE,
+            lag_1_close DOUBLE,
             sma_close_5 DOUBLE,
             sma_close_20 DOUBLE,
             bb_upper_20_2 DOUBLE,
@@ -293,6 +306,7 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             macd_hist DOUBLE,
             atr_14 DOUBLE,
             vol_sma_20 DOUBLE,
+            volume_change DOUBLE,
             time_of_day_min INTEGER,
             day_of_week INTEGER,
             day_of_month INTEGER,
