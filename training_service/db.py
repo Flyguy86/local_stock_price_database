@@ -70,7 +70,7 @@ class MetadataDB:
 
     def list_models(self):
         with self.get_connection() as conn:
-            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id"]
+            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id", "group_id"]
             return conn.execute(f"SELECT {', '.join(cols)} FROM models ORDER BY created_at DESC").fetch_df().to_dict(orient="records")
 
     def get_model(self, model_id: str):

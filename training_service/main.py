@@ -159,9 +159,35 @@ def dashboard():
                      <label>Parent Model (Features)</label>
                      <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
                 </div>
-                <div style="margin-top:auto; display:flex; gap:0.5rem">
-                    <button onclick="train()">Start Job</button>
-                    <button class="secondary" onclick="trainBatch()" title="Train Open(1m), Close(1m), High(1d), Low(1d) group">Train Group</button>
+            </div>
+
+            <div style="border-top:1px solid var(--border); margin-top:1rem; padding-top:1rem;">
+                <div style="display:flex; gap:2rem; align-items:flex-end;">
+                     <div class="group">
+                        <label style="color:#60a5fa">Open/Close Timeframe</label>
+                        <select id="tf_oc">
+                            <option value="1m" selected>1 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="30m">30 min</option>
+                            <option value="1h">1 hour</option>
+                            <option value="4h">4 hours</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label style="color:#f472b6">High/Low Timeframe</label>
+                        <select id="tf_hl">
+                            <option value="1d" selected>1 day</option>
+                            <option value="4h">4 hours</option>
+                            <option value="1h">1 hour</option>
+                            <option value="30m">30 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="1m">1 min</option>
+                        </select>
+                    </div>
+                    <div style="margin-left:auto; display:flex; gap:0.5rem">
+                        <button onclick="train()">Start Single Job</button>
+                        <button class="secondary" onclick="trainBatch()" title="Trains 4 models: Open/Close (TF1) + High/Low (TF2)">Train High/Low/Open/Close</button>
+                    </div>
                 </div>
             </div>
             
@@ -657,8 +683,7 @@ def dashboard():
                 map[m.id] = m;
             });
             
-            // Link Sort (descending time usually, but for tree maybe strictly by parent?)
-            // We want roots (null parent) first.
+            // Link Sort
             models.forEach(m => {
                 if(m.parent_model_id && map[m.parent_model_id]) {
                     map[m.parent_model_id].children.push(m);
@@ -669,8 +694,53 @@ def dashboard():
             
             // Recursive Render
             let html = '';
+
+            function renderList(nodes, depth) {
+                // Group by ID
+                const groups = {}; 
+                const singles = [];
+                nodes.forEach(n => {
+                    if(n.group_id) {
+                        if(!groups[n.group_id]) groups[n.group_id] = [];
+                        groups[n.group_id].push(n);
+                    } else {
+                        singles.push(n);
+                    }
+                });
+                
+                // Combine into render units
+                const units = [];
+                Object.values(groups).forEach(g => units.push({type: 'group', items: g}));
+                singles.forEach(s => units.push({type: 'single', item: s}));
+                
+                // Sort units by max created_at
+                units.sort((a,b) => {
+                    const getT = (u) => u.type === 'single' ? u.item.created_at : u.items.reduce((mx, i) => i.created_at > mx ? i.created_at : mx, '');
+                    return getT(b).localeCompare(getT(a));
+                });
+                
+                units.forEach(u => {
+                    if(u.type === 'single') {
+                        renderNode(u.item, depth, null);
+                    } else {
+                        // Sort inside group by target? 
+                        // open -> close -> high -> low preference? 
+                        // simple alpha sort is close, high, low, open. 
+                        // Let's stick with simple sort or preserve create order.
+                        // u.items.sort((a,b) => a.target_col.localeCompare(b.target_col));
+                        
+                        u.items.forEach((item, idx) => {
+                            renderNode(item, depth, {
+                                isGroup: true,
+                                isFirst: idx === 0,
+                                isLast: idx === u.items.length - 1
+                            });
+                        });
+                    }
+                });
+            }
             
-            const renderNode = (m, depth) => {
+            function renderNode(m, depth, groupInfo) {
                 modelsCache[m.id] = m;
                 
                 let statusHtml = `<span class="badge ${m.status}">${m.status}</span>`;
@@ -689,15 +759,29 @@ def dashboard():
                      metricsBtn = `<button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;" onclick="showReport('${m.id}')">View Report</button>`;
                 }
                 
-                // Indentation
+                // Styling
                 const indent = depth * 20;
                 const treeIcon = depth > 0 ? `<span style="color:var(--text-muted); margin-right:5px;">↳</span>` : '';
+                
+                let rowStyle = `vertical-align: top; background: rgba(255,255,255, ${depth * 0.02});`;
+                let firstTdStyle = `padding-left: ${10 + indent}px;`;
+                
+                if(groupInfo && groupInfo.isGroup) {
+                    rowStyle += `background: rgba(94, 234, 212, 0.03);`; // teal tint
+                    firstTdStyle += `border-left: 3px solid #5eead4; padding-left: ${7 + indent}px;`; // Compensate padding for border
+                    
+                    if(groupInfo.isFirst) {
+                        // maybe add a top margin spacer invisible row? 
+                        // html += `<tr style="height:5px;"></tr>`; 
+                    }
+                }
 
                 html += `
-                <tr style="vertical-align: top; background: rgba(255,255,255, ${depth * 0.02})">
-                    <td style="padding-left: ${10 + indent}px;">
+                <tr style="${rowStyle}">
+                    <td style="${firstTdStyle}">
                         ${treeIcon}
                         <span class="badge" title="${m.id}">${m.id.substring(0,8)}</span>
+                        ${groupInfo && groupInfo.isGroup ? '<span style="color:#5eead4; font-size:0.7em; margin-left:4px;">(Grp)</span>' : ''}
                     </td>
                     <td>${m.name}</td>
                     <td>${m.algorithm}</td>
@@ -713,14 +797,10 @@ def dashboard():
                 </tr>`;
                 
                 // Render children
-                // Sort children by time desc
-                m.children.sort((a,b) => b.created_at.localeCompare(a.created_at));
-                m.children.forEach(c => renderNode(c, depth + 1));
+                renderList(m.children, depth + 1);
             };
             
-            // Sort roots by created_at desc
-            roots.sort((a,b) => b.created_at.localeCompare(a.created_at));
-            roots.forEach(r => renderNode(r, 0));
+            renderList(roots, 0);
             
             tbody.innerHTML = html;
         }
@@ -800,6 +880,9 @@ def dashboard():
             const symbol = $('symbol').value.trim().toUpperCase();
             if(!symbol) return alert('Symbol required');
             
+            const tf_oc = $('tf_oc').value;
+            const tf_hl = $('tf_hl').value;
+
             // Collect context (same as train)
             const ctx = [
                 $('ctx1').value,
@@ -815,10 +898,10 @@ def dashboard():
                 featureWhitelist = checked;
             }
 
-            if(!confirm('This will start 4 training jobs (Open/Close 1m, High/Low 1d) for ' + symbol + '. Proceed?')) return;
+            if(!confirm(`Start 4 training jobs for ${symbol}?\n- Open/Close @ ${tf_oc}\n- High/Low @ ${tf_hl}`)) return;
 
             const btn = document.querySelector('button[onclick="trainBatch()"]'); 
-            const originalText = btn ? btn.innerText : 'Train Group';
+            const originalText = btn ? btn.innerText : 'Train High/Low/Open/Close';
             if(btn) {
                  btn.disabled = true;
                  btn.innerText = 'Starting...';
@@ -833,7 +916,9 @@ def dashboard():
                         algorithm: $('algo').value,
                         data_options: $('data_options').value || null,
                         parent_model_id: $('parent_model').value || null,
-                        feature_whitelist: featureWhitelist
+                        feature_whitelist: featureWhitelist,
+                        timeframe_oc: tf_oc,
+                        timeframe_hl: tf_hl
                     })
                 });
                 
@@ -895,6 +980,8 @@ class TrainBatchRequest(BaseModel):
     p_value_threshold: float = 0.05
     parent_model_id: Optional[str] = None
     feature_whitelist: Optional[list[str]] = None
+    timeframe_oc: str = "1m"
+    timeframe_hl: str = "1d"
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -985,10 +1072,10 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
     
     # Define the 4 models configuration
     configs = [
-        {"target": "open", "tf": "1m"},
-        {"target": "close", "tf": "1m"},
-        {"target": "high", "tf": "1d"},
-        {"target": "low", "tf": "1d"}
+        {"target": "open", "tf": req.timeframe_oc},
+        {"target": "close", "tf": req.timeframe_oc},
+        {"target": "high", "tf": req.timeframe_hl},
+        {"target": "low", "tf": req.timeframe_hl}
     ]
     
     started_ids = []
@@ -1001,7 +1088,7 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
             symbol=req.symbol,
             algorithm=req.algorithm,
             target_col=cfg["target"],
-            hyperparameters=params,
+            params=params,
             data_options=req.data_options,
             timeframe=cfg["tf"],
             parent_model_id=req.parent_model_id,

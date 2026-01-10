@@ -120,6 +120,18 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         
         X = X[feature_cols_used] # Update X to only valid cols
 
+        # Ensure we only have numeric features
+        # 1m data might contain object columns (strings) that break sklearn
+        numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+        if len(numeric_cols) < len(feature_cols_used):
+             dropped_non_numeric = list(set(feature_cols_used) - set(numeric_cols))
+             log.warning(f"Dropping {len(dropped_non_numeric)} non-numeric features: {dropped_non_numeric}")
+             feature_cols_used = numeric_cols
+             X = X[feature_cols_used]
+             
+        if X.empty:
+            raise ValueError("No numeric features available for training.")
+
         # If Classifier, convert target to binary direction (1 = Up/Same, 0 = Down)
         # We compare Future Target (df['target']) vs Current Price (df[target_col])
         if "classifier" in algorithm or "classification" in algorithm:
@@ -190,7 +202,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                     log.info(f"Feature Ranking (Std Beta): {ranked.head(10).to_dict()}")
 
             except Exception as e:
-                log.error(f"Pruning failed: {e}. Proceeding with all features.")
+                import traceback
+                log.error(f"Pruning failed: {e}. Trace: {traceback.format_exc()}. Proceeding with all features.")
 
         # Split Data (Custom Column or Time-based)
         is_cv = False
