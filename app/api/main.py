@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ..config import settings
 from ..logging import configure_json_logger
 from ..storage.duckdb_client import DuckDBClient
@@ -56,12 +56,16 @@ class IngestResponse(BaseModel):
     inserted: int
     ts: str
 
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
 class Status(BaseModel):
     symbol: str
     state: str
     description: str | None = None
     last_update: str | None = None
     error_message: str | None = None
+    updated_at: str = Field(default_factory=_now_iso)
 
 class TestRunRequest(BaseModel):
     expression: str | None = None
@@ -77,9 +81,6 @@ class TestRunRequest(BaseModel):
 
 TEST_MAX_OUTPUT = 20_000
 
-
-def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
 
 # In-memory agent status
 agent_status: dict[str, Status] = {}
@@ -266,6 +267,18 @@ async def ingest_earnings_endpoint(symbol: str):
 
 @app.get("/status", response_model=list[Status])
 async def status():
+    now = datetime.now(timezone.utc)
+    to_remove = []
+    for sym, s in agent_status.items():
+        if s.state in ("succeeded", "failed", "stopped"):
+            try:
+                ts = datetime.fromisoformat(s.updated_at)
+                if (now - ts).total_seconds() > 1800:  # 30 minutes
+                    to_remove.append(sym)
+            except Exception:
+                pass
+    for sym in to_remove:
+        del agent_status[sym]
     return list(agent_status.values())
 
 @app.get("/bars/{symbol}")
@@ -404,7 +417,7 @@ async def dashboard():
         .log-error { color: #fca5a5; }
         
         /* Status List */
-        .status-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+        .status-grid { display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto; padding-right: 0.25rem; }
         .status-card { background: rgba(255,255,255,0.03); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items:center; }
         .status-card .left { display: flex; flex-direction: column; gap: 0.25rem; }
         .status-card .sym { font-weight: 700; font-size: 1rem; color: #fff; }
