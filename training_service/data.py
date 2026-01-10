@@ -79,19 +79,34 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         
         # Handle options filter
         if options_filter:
-            safe_filter = options_filter.replace("'", "''")
-            query += f" WHERE options = '{safe_filter}'"
+            # Robust handling for empty options
+            if options_filter.strip() in ["{}", ""]:
+                 log.info(f"Applying flexible empty option filter for '{options_filter}'")
+                 query += " WHERE options = '{}' OR options = '' OR options IS NULL"
+            else:
+                 safe_filter = options_filter.replace("'", "''")
+                 query += f" WHERE options = '{safe_filter}'"
         
         # We don't strictly need to order here if we merge on TS later, but good for primary
         query += " ORDER BY ts ASC"
         return duckdb.query(query).to_df()
 
     # 1. Load Primary
-    log.info(f"Loading primary ticker: {primary_symbol}")
-    df = _load_single(primary_symbol)
+    log.info(f"Loading primary ticker: {primary_symbol} from {settings.features_parquet_dir / primary_symbol}")
+    log.info(f"Options filter: '{options_filter}' (Type: {type(options_filter)})")
+    
+    try:
+        df = _load_single(primary_symbol)
+        log.info(f"Loaded {len(df)} rows for {primary_symbol}")
+    except Exception as e:
+        log.error(f"Error loading {primary_symbol}: {e}")
+        raise
     
     if df.empty:
-        raise ValueError(f"No data rows for primary symbol {primary_symbol}")
+        # Fallback debug: Check if ANY data exists ignoring options
+        base_df = duckdb.query(f"SELECT count(*) as c, options FROM '{settings.features_parquet_dir / primary_symbol}/**/*.parquet' GROUP BY options").to_df()
+        log.error(f"DEBUG: Found data for {primary_symbol} with these options: {base_df.to_dict(orient='records')}")
+        raise ValueError(f"No data rows for primary symbol {primary_symbol}. Filter='{options_filter}'")
 
     # 2. Load and Merge Context Tickers
     for ctx_sym in context_symbols:
