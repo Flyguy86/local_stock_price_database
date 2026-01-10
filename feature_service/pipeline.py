@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -387,6 +388,8 @@ def run_pipeline(
     dest_parquet: Path,
     symbols: Iterable[str] | None = None,
     options: dict | None = None,
+    progress_callback: callable = None,
+    stop_event: threading.Event = None
 ) -> dict:
     if not source_db.exists():
         logger.error("source db missing", extra={"path": str(source_db)})
@@ -407,8 +410,19 @@ def run_pipeline(
             return {"symbols": 0, "inserted": 0}
         symbol_list = list(symbols) if symbols is not None else list_symbols(src_conn)
         totals_inserted = 0
+        
+        total_symbols = len(symbol_list)
 
-        for sym in symbol_list:
+        for i, sym in enumerate(symbol_list):
+            # Check Stop Signal
+            if stop_event and stop_event.is_set():
+                logger.warning("Pipeline stopped by user request")
+                break
+                
+            # Report Progress
+            if progress_callback:
+                progress_callback(sym, i + 1, total_symbols)
+
             df = fetch_bars(src_conn, sym)
             if df.empty:
                 logger.info("no source bars", extra={"symbol": sym})

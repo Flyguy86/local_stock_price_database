@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import threading
 from typing import Optional
 import tempfile
 import shutil
@@ -53,11 +54,24 @@ status: dict[str, object] = {
     "completed_at": None,
     "result": None,
     "error": None,
+    "current_symbol": None,
+    "progress_current": 0,
+    "progress_total": 0,
+    "progress_pct": 0
 }
 status_lock = asyncio.Lock()
+pipeline_stop_event = threading.Event()
 
+def _progress_callback(sym: str, current: int, total: int):
+    # Direct update of dict is thread-safe enough for this use case (GIL)
+    # We update these fields so the /status endpoint picks them up
+    status["current_symbol"] = sym
+    status["progress_current"] = current
+    status["progress_total"] = total
+    status["progress_pct"] = int((current / total) * 100) if total > 0 else 0
 
 async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> None:
+    pipeline_stop_event.clear()
     async with status_lock:
         status.update(
             {
@@ -67,16 +81,33 @@ async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> 
                 "completed_at": None,
                 "result": None,
                 "error": None,
+                "current_symbol": "Starting...",
+                "progress_current": 0,
+                "progress_total": 0,
+                "progress_pct": 0
             }
         )
     try:
-        result = await asyncio.to_thread(run_pipeline, cfg.source_db, cfg.dest_db, cfg.dest_parquet, symbols, options)
+        # Pass callback and stop event
+        result = await asyncio.to_thread(
+            run_pipeline, 
+            cfg.source_db, 
+            cfg.dest_db, 
+            cfg.dest_parquet, 
+            symbols, 
+            options,
+            _progress_callback,
+            pipeline_stop_event
+        )
+        
         async with status_lock:
+            final_state = "stopped" if pipeline_stop_event.is_set() else "succeeded"
             status.update(
                 {
-                    "state": "succeeded",
+                    "state": final_state,
                     "completed_at": datetime.now(tz=timezone.utc).isoformat(),
                     "result": result,
+                    "current_symbol": None
                 }
             )
     except Exception as exc:  # pragma: no cover
@@ -87,6 +118,7 @@ async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> 
                     "state": "failed",
                     "error": str(exc),
                     "completed_at": datetime.now(tz=timezone.utc).isoformat(),
+                    "current_symbol": None
                 }
             )
 
@@ -162,9 +194,16 @@ async def index():
             </div>
           </div>
           <div class="row">
-            <button onclick="runSelected()">Run Selected</button>
+            <button id="run-btn" onclick="runSelected()">Generate Features</button>
+            <button id="stop-btn" onclick="stopRun()" style="display:none; background: #b91c1c;">Stop</button>
             <span id="step3-badge" class="badge">idle</span>
           </div>
+          
+          <div style="background:rgba(255,255,255,0.05); height:24px; border-radius:12px; margin: 0.5rem 0; overflow:hidden; position:relative;">
+             <div id="progress-bar" style="width:0%; height:100%; background:#2563eb; transition:width 0.3s; display:flex; align-items:center; justify-content:center; font-size:0.75rem; font-weight:bold;"></div>
+          </div>
+          <div id="progress-text" style="font-size:0.8rem; color:#94a3b8; text-align:center; margin-bottom:0.5rem;">Idle</div>
+
           <div class="split">
              <div><small>Status</small><pre id="status-json">{}</pre></div>
              <div><small>Result</small><pre id="result-box">{}</pre></div>
@@ -255,22 +294,53 @@ async def index():
           const payload = { symbols: symbols.length ? symbols : null, options: options };
           try {
             await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            setBadge('step3-badge', 'pass', 'queued');
+            setBadge('step3-badge', 'running', 'queued');
             pollStatus();
           } catch (err) {
             setBadge('step3-badge', 'fail', 'error');
           }
         }
 
+        async function stopRun() {
+            try {
+                await fetch('/stop', { method: 'POST' });
+                setBadge('step3-badge', 'fail', 'stopping...');
+            } catch(e) { console.error(e); }
+        }
+
         async function pollStatus() {
           const res = await fetch('/status');
           const data = await res.json();
           document.getElementById('status-json').innerText = JSON.stringify(data, null, 2);
+          
+          // Update Status Display
+          const currentSym = data.current_symbol || 'None';
+          const pct = data.progress_pct || 0;
+          const progressText = `Processing: ${currentSym} (${data.progress_current}/${data.progress_total})`;
+          
+          const pBar = document.getElementById('progress-bar');
+          if(pBar) {
+              pBar.style.width = `${pct}%`;
+              pBar.innerText = pct > 5 ? `${pct}%` : '';
+          }
+           
+          const pText = document.getElementById('progress-text');
+          if(pText) pText.innerText = data.state === 'running' ? progressText : data.state;
+
+          if(data.state === 'running') {
+              document.getElementById('stop-btn').style.display = 'inline-block';
+              document.getElementById('run-btn').disabled = true;
+          } else {
+              document.getElementById('stop-btn').style.display = 'none';
+              document.getElementById('run-btn').disabled = false;
+          }
+          
           if (data.result) document.getElementById('result-box').innerText = JSON.stringify(data.result, null, 2);
           
           if (data.state === 'running') setTimeout(pollStatus, 1000);
-          else if (data.state === 'succeeded') {
-             setBadge('step3-badge', 'pass', 'done');
+          else if (data.state === 'succeeded' || data.state === 'stopped' || data.state === 'failed') {
+             const badgeClass = data.state === 'succeeded' ? 'pass' : 'fail';
+             setBadge('step3-badge', badgeClass, data.state);
              loadRows(0);
           }
         }
@@ -507,6 +577,16 @@ async def run_features(request: RunRequest, background: BackgroundTasks):
     options = request.options
     background.add_task(_run, symbols, options)
     return {"state": "queued"}
+
+
+@app.post("/stop")
+async def stop_features():
+    if status["state"] != "running":
+        raise HTTPException(status_code=400, detail="No run in progress")
+    
+    pipeline_stop_event.set()
+    logger.info("Stop signal received")
+    return {"state": "stopping"}
 
 
 @app.get("/status")
