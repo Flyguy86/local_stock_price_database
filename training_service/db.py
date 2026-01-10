@@ -56,6 +56,14 @@ class MetadataDB:
                 conn.execute("ALTER TABLE models ADD COLUMN group_id VARCHAR")
             except:
                 pass
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN parent_model_id VARCHAR")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN group_id VARCHAR")
+            except:
+                pass
 
     def get_connection(self):
         return duckdb.connect(self.path)

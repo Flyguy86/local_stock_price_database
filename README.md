@@ -66,10 +66,14 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Inheritance**: Child models strictly inherit the feature subset from the parent.
         *   **Feature Selection UI**: The dashboard allows you to view parent features, see their importance metrics (SHAP, Permutation, Coeff), filter by name, and manually whitelist/blacklist features for the new training job.
         *   **Smart Selection**: "Auto-Select" button automatically picks the top 2 features per category (Volatility, Momentum, Benchmark, etc.) based on SHAP importance, optimizing for feature diversity.
+    *   **Batch Training (Grouped Models)**: 
+        *   **"Train Group"**: One-click orchestration to spawn 4 related models simultaneously sharing a `group_id`.
+        *   **Config**: Trains [Open (1m), Close (1m), High (1d), Low (1d)] parallel jobs.
+        *   **Purpose**: Rapidly build a complete predict set for a ticker.
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
     *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models. The Registry displays models in a **Tree Structure** to visualize lineage.
-    *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a configuration is selected, the list of available symbols is automatically filtered to match.
+    *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a selected, the list of available symbols is automatically filtered to match.
 *   **Multi-Ticker / Context Awareness**:
     *   **Primary Ticker**: The target symbol you are trying to predict.
     *   **Context Tickers**: You can select up to 3 additional tickers (e.g., `VIX`, `SPY`, `QQQ`) to feed into the model as features.
@@ -132,6 +136,7 @@ The system includes a backtesting simulation engine to evaluate the performance 
             2.  Train Bot: Input = Market Features, Target = Did Base Model Hit? (1/0).
             3.  **Run Simulation with Filter**: The Bot acts as a gatekeeper. It approves a trade only if the Base Model signals AND the Bot is >55% confident the Base Model is correct.
         *   **Outcome**: Reduces false positives and improves Sharpe Ratio by staying out of uncertain trades.
+    *   **Advanced Features**: The simulation now leverages VIXY-derived market context (Z-Scores, Relative Volume) and novel indicators (VWAP Distance, Intraday Intensity) to filter trades.
 
 ## Feature Builder (terminal)
 - Install deps (from repo root): `pip install -e .`

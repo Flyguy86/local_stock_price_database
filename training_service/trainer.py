@@ -33,11 +33,14 @@ ALGORITHMS = {
     "random_forest_classifier": RandomForestClassifier
 }
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
         log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
+
+        # If group_id provided, simulate a shared "Name" for the UI if needed, 
+        # but the db record will store the specific target.
 
         # Load Parent Features if specified (unless explicit whitelist provided)
         parent_features = None
@@ -446,7 +449,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             error=str(e)
         )
 
-def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None):
+def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, group_id: str = None):
     if params is None:
         params = {}
         
@@ -466,7 +469,8 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
         "metrics": json.dumps({}),
         "data_options": data_options,
         "timeframe": timeframe,
-        "parent_model_id": parent_model_id
+        "parent_model_id": parent_model_id,
+        "group_id": group_id
     })
     
     # Run synchronously for now (or convert to background task if using FastAPI BackgroundTasks)

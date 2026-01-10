@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
+import uuid
 from pathlib import Path
 
 from .config import settings
@@ -158,7 +159,10 @@ def dashboard():
                      <label>Parent Model (Features)</label>
                      <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
                 </div>
-                <button onclick="train()" style="margin-top:auto">Start Training Job</button>
+                <div style="margin-top:auto; display:flex; gap:0.5rem">
+                    <button onclick="train()">Start Job</button>
+                    <button class="secondary" onclick="trainBatch()" title="Train Open(1m), Close(1m), High(1d), Low(1d) group">Train Group</button>
+                </div>
             </div>
             
              <!-- Feature Selection UI (Hidden by default) -->
@@ -792,6 +796,65 @@ def dashboard():
             }
         }
         
+        async function trainBatch() {
+            const symbol = $('symbol').value.trim().toUpperCase();
+            if(!symbol) return alert('Symbol required');
+            
+            // Collect context (same as train)
+            const ctx = [
+                $('ctx1').value,
+                $('ctx2').value,
+                $('ctx3').value
+            ].filter(s => s && s !== symbol);
+            
+            const fullSymbolString = [symbol, ...ctx].join(',');
+
+            let featureWhitelist = null;
+            if($('parent_model').value) {
+                const checked = Array.from(document.querySelectorAll('.feat-check:checked')).map(c => c.value);
+                featureWhitelist = checked;
+            }
+
+            if(!confirm('This will start 4 training jobs (Open/Close 1m, High/Low 1d) for ' + symbol + '. Proceed?')) return;
+
+            const btn = document.querySelector('button[onclick="trainBatch()"]'); 
+            const originalText = btn ? btn.innerText : 'Train Group';
+            if(btn) {
+                 btn.disabled = true;
+                 btn.innerText = 'Starting...';
+            }
+            
+            try {
+                const res = await fetch('/train/batch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        symbol: fullSymbolString,
+                        algorithm: $('algo').value,
+                        data_options: $('data_options').value || null,
+                        parent_model_id: $('parent_model').value || null,
+                        feature_whitelist: featureWhitelist
+                    })
+                });
+                
+                if(!res.ok) {
+                    const err = await res.json();
+                    alert('Error: ' + err.detail);
+                } else {
+                    const data = await res.json();
+                    console.log('Batch started:', data);
+                    loadModels();
+                }
+            } catch(e) {
+                alert('Request failed: ' + e);
+            } finally {
+                if(btn) {
+                    btn.disabled = false;
+                    btn.innerText = originalText;
+                }
+            }
+        }
+        
         window.onload = load;
         setInterval(loadModels, 5000);
       </script>
@@ -824,7 +887,17 @@ class TrainRequest(BaseModel):
     timeframe: str = "1m"
     p_value_threshold: float = 0.05
     parent_model_id: Optional[str] = None
-    feature_whitelist: Optional[list[str]] = None    group_id: Optional[str] = None
+    feature_whitelist: Optional[list[str]] = None
+    group_id: Optional[str] = None
+
+class TrainBatchRequest(BaseModel):
+    symbol: str
+    algorithm: str
+    hyperparameters: Optional[Dict[str, Any]] = None
+    data_options: Optional[str] = None
+    p_value_threshold: float = 0.05
+    parent_model_id: Optional[str] = None
+    feature_whitelist: Optional[list[str]] = None
 @app.get("/algorithms")
 def list_algorithms():
     return list(ALGORITHMS.keys())
@@ -905,6 +978,55 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
     finally:
         conn.close()
 
+@app.post("/train/batch")
+async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks):
+    if req.algorithm not in ALGORITHMS:
+        raise HTTPException(status_code=400, detail=f"Algorithm must be one of {list(ALGORITHMS.keys())}")
+
+    group_id = str(uuid.uuid4())
+    
+    # Define the 4 models configuration
+    configs = [
+        {"target": "open", "tf": "1m"},
+        {"target": "close", "tf": "1m"},
+        {"target": "high", "tf": "1d"},
+        {"target": "low", "tf": "1d"}
+    ]
+    
+    started_ids = []
+    
+    params = req.hyperparameters or {}
+    params["p_value_threshold"] = req.p_value_threshold
+
+    for cfg in configs:
+        tid = start_training(
+            symbol=req.symbol,
+            algorithm=req.algorithm,
+            target_col=cfg["target"],
+            hyperparameters=params,
+            data_options=req.data_options,
+            timeframe=cfg["tf"],
+            parent_model_id=req.parent_model_id,
+            group_id=group_id
+        )
+        started_ids.append(tid)
+        
+        background_tasks.add_task(
+            train_model_task,
+            tid,
+            req.symbol,
+            req.algorithm,
+            cfg["target"],
+            params,
+            req.data_options,
+            cfg["tf"],
+            req.parent_model_id,
+            req.feature_whitelist,
+            group_id  # Pass group_id
+        )
+
+    return {"group_id": group_id, "ids": started_ids, "status": "started batch"}
+
 @app.post("/train")
 async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     if req.algorithm not in ALGORITHMS:
@@ -926,7 +1048,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.data_options,
         req.timeframe,
         req.parent_model_id,
-        req.feature_whitelist
+        req.feature_whitelist,
+        req.group_id # Pass group_id
     )
     
     return {"id": training_id, "status": "started"}
