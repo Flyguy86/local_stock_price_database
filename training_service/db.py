@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS models (
     artifact_path VARCHAR,
     error_message VARCHAR,
     data_options VARCHAR,
-    timeframe VARCHAR
+    timeframe VARCHAR,
+    parent_model_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS features_log (
@@ -46,13 +47,17 @@ class MetadataDB:
                 conn.execute("ALTER TABLE models ADD COLUMN timeframe VARCHAR")
             except:
                 pass
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN parent_model_id VARCHAR")
+            except:
+                pass
 
     def get_connection(self):
         return duckdb.connect(self.path)
 
     def list_models(self):
         with self.get_connection() as conn:
-            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col"]
+            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id"]
             return conn.execute(f"SELECT {', '.join(cols)} FROM models ORDER BY created_at DESC").fetch_df().to_dict(orient="records")
 
     def get_model(self, model_id: str):

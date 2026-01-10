@@ -154,6 +154,10 @@ def dashboard():
                         <option value="8h">8 hours</option>
                      </select>
                 </div>
+                <div class="group">
+                     <label>Parent Model (Features)</label>
+                     <select id="parent_model" style="max-width:200px"><option value="">(None)</option></select>
+                </div>
                 <button onclick="train()" style="margin-top:auto">Start Training Job</button>
             </div>
         </section>
@@ -398,14 +402,46 @@ def dashboard():
             const models = await res.json();
             const tbody = $('models-body');
             
+            // Populate Parent Dropdown
+            // Only completed models can be parents? Or any? Let's say any except failed.
+            const parentSel = $('parent_model');
+            const currentParent = parentSel.value;
+            parentSel.innerHTML = '<option value="">(None)</option>' + 
+                models
+                .filter(m => m.status === 'completed')
+                .map(m => `<option value="${m.id}">${m.name} (${m.algorithm})</option>`)
+                .join('');
+            parentSel.value = currentParent; // Restore selection
+
             if(!models.length) {
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color: var(--text-muted)">No models found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color: var(--text-muted)">No models found</td></tr>';
                 return;
             }
             
-            tbody.innerHTML = models.map(m => {
-                modelsCache[m.id] = m; // Update cache
-
+            // Reconstruct Tree
+            const map = {};
+            const roots = [];
+            models.forEach(m => {
+                m.children = [];
+                map[m.id] = m;
+            });
+            
+            // Link Sort (descending time usually, but for tree maybe strictly by parent?)
+            // We want roots (null parent) first.
+            models.forEach(m => {
+                if(m.parent_model_id && map[m.parent_model_id]) {
+                    map[m.parent_model_id].children.push(m);
+                } else {
+                    roots.push(m);
+                }
+            });
+            
+            // Recursive Render
+            let html = '';
+            
+            const renderNode = (m, depth) => {
+                modelsCache[m.id] = m;
+                
                 let statusHtml = `<span class="badge ${m.status}">${m.status}</span>`;
                 if(m.status === 'failed' && m.error_message) {
                     const detailId = 'err-' + m.id;
@@ -421,10 +457,17 @@ def dashboard():
                 if(m.status === 'completed' && m.metrics && m.metrics !== '{}') {
                      metricsBtn = `<button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem;" onclick="showReport('${m.id}')">View Report</button>`;
                 }
+                
+                // Indentation
+                const indent = depth * 20;
+                const treeIcon = depth > 0 ? `<span style="color:var(--text-muted); margin-right:5px;">↳</span>` : '';
 
-                return `
-                <tr style="vertical-align: top;">
-                    <td><span class="badge" title="${m.id}">${m.id.substring(0,8)}</span></td>
+                html += `
+                <tr style="vertical-align: top; background: rgba(255,255,255, ${depth * 0.02})">
+                    <td style="padding-left: ${10 + indent}px;">
+                        ${treeIcon}
+                        <span class="badge" title="${m.id}">${m.id.substring(0,8)}</span>
+                    </td>
                     <td>${m.name}</td>
                     <td>${m.algorithm}</td>
                     <td>${m.symbol}</td>
@@ -436,8 +479,19 @@ def dashboard():
                         <button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#60a5fa; border-color:#1e40af" onclick="retrainModel('${m.id}')">Retrain</button>
                         <button class="secondary" style="font-size:0.75rem; padding:0.25rem 0.5rem; color:#fca5a5; border-color:#7f1d1d" onclick="deleteModel('${m.id}')">Delete</button>
                     </td>
-                </tr>
-            `}).join('');
+                </tr>`;
+                
+                // Render children
+                // Sort children by time desc
+                m.children.sort((a,b) => b.created_at.localeCompare(a.created_at));
+                m.children.forEach(c => renderNode(c, depth + 1));
+            };
+            
+            // Sort roots by created_at desc
+            roots.sort((a,b) => b.created_at.localeCompare(a.created_at));
+            roots.forEach(r => renderNode(r, 0));
+            
+            tbody.innerHTML = html;
         }
         
         async function retrainModel(id) {
@@ -483,7 +537,8 @@ def dashboard():
                         algorithm: $('algo').value,
                         target_col: $('target').value,
                         data_options: $('data_options').value || null,
-                        timeframe: $('timeframe').value
+                        timeframe: $('timeframe').value,
+                        parent_model_id: $('parent_model').value || null
                     })
                 });
                 
@@ -532,6 +587,7 @@ class TrainRequest(BaseModel):
     data_options: Optional[str] = None
     timeframe: str = "1m"
     p_value_threshold: float = 0.05
+    parent_model_id: Optional[str] = None
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -622,7 +678,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
     
-    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe)
+    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe, req.parent_model_id)
     
     background_tasks.add_task(
         train_model_task, 
@@ -632,7 +688,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.target_col, 
         params,
         req.data_options,
-        req.timeframe
+        req.timeframe,
+        req.parent_model_id
     )
     
     return {"id": training_id, "status": "started"}

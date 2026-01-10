@@ -33,11 +33,38 @@ ALGORITHMS = {
     "random_forest_classifier": RandomForestClassifier
 }
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m"):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
         log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
+
+        # Load Parent Features if specified
+        parent_features = None
+        if parent_model_id:
+            try:
+                 parent_row = db.get_model(parent_model_id)
+                 # get_model returns tuple: (id, name, alg, sym, target, features, hyper, metrics, status, created, artifact, error, options, timeframe, parent) or similar depending on DB schema history.
+                 # Wait, get_model returns SELECT * FROM models
+                 # The INIT_SQL says: id, name, algorithm, symbol, target_col, feature_cols, hyperparameters, metrics, status, created_at, artifact_path, error_message, data_options, timeframe, parent_model_id
+                 if parent_row:
+                     # DuckDB fetchone is tuple. Indices matter.
+                     # Let's verify index of feature_cols.
+                     # create table: 0:id, 1:name, 2:alg, 3:sym, 4:target, 5:feature_cols ...
+                     # But safer to parse as JSON if we find it.
+                     # Actually, let's use list_models approach or direct key lookup if we can fetch as dict?
+                     # db.get_model implementation: return conn.execute("SELECT * ...").fetchone()
+                     # This is a tuple. 
+                     # Index 5 is feature_cols in original schema.
+                     # Let's hope schema order is consistent. 
+                     # Actually, let's do a SELECT feature_cols specifically to be safe.
+                      with db.get_connection() as conn:
+                          pf = conn.execute("SELECT feature_cols FROM models WHERE id = ?", [parent_model_id]).fetchone()
+                          if pf and pf[0]:
+                              parent_features = json.loads(pf[0])
+                              log.info(f"Loaded {len(parent_features)} features from parent model {parent_model_id}")
+            except Exception as e:
+                log.warning(f"Failed to load parent model features: {e}")
 
         # Extract pruning setting from params (default 0.05)
         p_val_thresh = 0.05
@@ -70,8 +97,14 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         df_numeric = df.select_dtypes(include=[np.number])
         feature_cols = [c for c in df_numeric.columns if c not in drop_cols]
         
+        if parent_features:
+            # INTERSECT: Only keep features that were present in parent AND are in current dataset
+            original_count = len(feature_cols)
+            feature_cols = [c for c in feature_cols if c in parent_features]
+            log.info(f"Applied parent feature mask: {original_count} -> {len(feature_cols)} features")
+
         if not feature_cols:
-            raise ValueError("No numeric feature columns found for training")
+            raise ValueError("No numeric feature columns found for training (check parent model intersection?)")
 
         # 1. Drop rows where Target is missing (we cannot train without a label)
         rows_before = len(df)
@@ -423,7 +456,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             error=str(e)
         )
 
-def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m"):
+def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None):
     if params is None:
         params = {}
         
@@ -442,7 +475,8 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
         "created_at": datetime.now().isoformat(),
         "metrics": json.dumps({}),
         "data_options": data_options,
-        "timeframe": timeframe
+        "timeframe": timeframe,
+        "parent_model_id": parent_model_id
     })
     
     # Run synchronously for now (or convert to background task if using FastAPI BackgroundTasks)
