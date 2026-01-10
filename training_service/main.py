@@ -824,8 +824,7 @@ class TrainRequest(BaseModel):
     timeframe: str = "1m"
     p_value_threshold: float = 0.05
     parent_model_id: Optional[str] = None
-    feature_whitelist: Optional[list[str]] = None
-
+    feature_whitelist: Optional[list[str]] = None    group_id: Optional[str] = None
 @app.get("/algorithms")
 def list_algorithms():
     return list(ALGORITHMS.keys())
@@ -915,7 +914,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
     
-    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe, req.parent_model_id)
+    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe, req.parent_model_id, req.group_id)
     
     background_tasks.add_task(
         train_model_task, 

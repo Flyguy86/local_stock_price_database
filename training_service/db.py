@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS models (
     error_message VARCHAR,
     data_options VARCHAR,
     timeframe VARCHAR,
-    parent_model_id VARCHAR
+    parent_model_id VARCHAR,
+    group_id VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS features_log (
@@ -49,6 +50,10 @@ class MetadataDB:
                 pass
             try:
                 conn.execute("ALTER TABLE models ADD COLUMN parent_model_id VARCHAR")
+            except:
+                pass
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN group_id VARCHAR")
             except:
                 pass
 
