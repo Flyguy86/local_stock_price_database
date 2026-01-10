@@ -51,7 +51,10 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
     *   This ensures indicators like `SMA_200` are valid immediately at the start of any testing fold (no "warmup" loss).
     *   Since these are "lagged" indicators (using only past data), calculating them globally is not leakage.
 *   **Segmented Data**: Optionally splits data into "Train" and "Test" episodes (e.g. 30 days train, 5 days test) directly in the feature table, simplifying backtesting logic.
-*   **New Features**: Includes `volume_change` (Pct Change) and `lag_1_close` (Previous close).
+*   **New Features**: Includes specialized financial indicators:
+    *   **Volume & Volatility**: `volume_change`, `log_return_1m`, `return_z_score_20` (Vol Spike), `vol_ratio_60` (Rel Vol), `atr_ratio_15` (Range Expansion).
+    *   **Advanced**: `dist_vwap` (Mean Reversion), `intraday_intensity` ("Smart Money" Index), `vol_adj_mom_20` (Z-Score Momentum).
+    *   **Market Context**: `VIXY`-derived metrics (`vix_log_ret`, `vix_z_score`, `vix_rel_vol`, `vix_atr_ratio`) are automatically calculated and merged onto *every* ticker to provide regime awareness.
 *   **Output**: "Wide" Parquet files containing all possible features.
 
 ### Phase 2: Model Training (Training Service)
@@ -62,6 +65,7 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Workflow**: Train a "Parent" model (e.g., RandomForest) to identify key features, then train a "Child" model (e.g., LinearRegression) using *only* those selected features.
         *   **Inheritance**: Child models strictly inherit the feature subset from the parent.
         *   **Feature Selection UI**: The dashboard allows you to view parent features, see their importance metrics (SHAP, Permutation, Coeff), filter by name, and manually whitelist/blacklist features for the new training job.
+        *   **Smart Selection**: "Auto-Select" button automatically picks the top 2 features per category (Volatility, Momentum, Benchmark, etc.) based on SHAP importance, optimizing for feature diversity.
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
     *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models. The Registry displays models in a **Tree Structure** to visualize lineage.
@@ -121,6 +125,13 @@ The system includes a backtesting simulation engine to evaluate the performance 
         *   Calculates the % of time the model correctly predicted the *direction* of the price movement (e.g., predicted Up and price went Up).
         *   **Rolling Average**: The chart displays a 100-period rolling average of the Hit Rate on a secondary Y-axis to visualize model stability over time.
         *   **Threshold**: A Hit Rate > 50% generally indicates predictive power better than random chance (ignoring transaction costs).
+    *   **Trading Bot (Meta-Learner)**:
+        *   **Purpose**: A secondary "Bot" model (Random Forest) trained to predict when the Base Model is correct vs incorrect.
+        *   **Workflow**:
+            1.  Train Base Model (e.g., Predict Price Direction).
+            2.  Train Bot: Input = Market Features, Target = Did Base Model Hit? (1/0).
+            3.  **Run Simulation with Filter**: The Bot acts as a gatekeeper. It approves a trade only if the Base Model signals AND the Bot is >55% confident the Base Model is correct.
+        *   **Outcome**: Reduces false positives and improves Sharpe Ratio by staying out of uncertain trades.
 
 ## Feature Builder (terminal)
 - Install deps (from repo root): `pip install -e .`
