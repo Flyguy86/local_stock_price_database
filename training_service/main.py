@@ -156,9 +156,55 @@ def dashboard():
                 </div>
                 <div class="group">
                      <label>Parent Model (Features)</label>
-                     <select id="parent_model" style="max-width:200px"><option value="">(None)</option></select>
+                     <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
                 </div>
                 <button onclick="train()" style="margin-top:auto">Start Training Job</button>
+            </div>
+            
+             <!-- Feature Selection UI (Hidden by default) -->
+            <div id="feature-selection-ui" style="display:none; margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">
+                     <h3 style="font-size:1rem; margin:0">Parent Feature Selection</h3>
+                     <div style="font-size:0.8rem; color:var(--text-muted)">
+                        Uncheck to prune features from the new model
+                     </div>
+                </div>
+                
+                <div style="background: rgba(59, 130, 246, 0.1); padding: 0.75rem; border-radius: 6px; font-size: 0.85rem; margin-bottom: 1rem; border: 1px solid rgba(59, 130, 246, 0.2);">
+                    <strong style="color: #93c5fd;">Metric Guide:</strong>
+                    <ul style="margin: 0.5rem 0 0 1.2rem; padding: 0; display: grid; gap: 0.5rem; grid-template-columns: 1fr 1fr;">
+                        <li>
+                            <strong style="color: #f472b6;">SHAP (Mean Abs)</strong>: Impact magnitude. Higher is better. <br>
+                            <span style="opacity:0.7">&lt; 0.001 is often noise. &gt; 0.1 is strong.</span>
+                        </li>
+                        <li>
+                            <strong style="color: #4ade80;">Permutation</strong>: Importance via randomization. <br>
+                            <span style="opacity:0.7">&gt; 0 is good. &lt;= 0 is useless/harmful.</span>
+                        </li>
+                        <li>
+                            <strong style="color: #60a5fa;">Coeff / Imp</strong>: Linear weight or Tree split %. <br>
+                            <span style="opacity:0.7">Large magnitude (>10) may indicate instability.</span>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;">
+                    <table style="width:100%; font-size:0.85rem; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 1;">
+                            <tr>
+                                <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAllFeatures(this)"></th>
+                                <th style="text-align:left;">Feature</th>
+                                <th style="text-align:right;">SHAP</th>
+                                <th style="text-align:right;">Permutation</th>
+                                <th style="text-align:right;">Coeff / Imp</th>
+                            </tr>
+                        </thead>
+                        <tbody id="parent-features-body"></tbody>
+                    </table>
+                </div>
+                <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted); text-align: right;">
+                    Selected: <span id="selected-count">0</span> / <span id="total-count">0</span>
+                </div>
             </div>
         </section>
         
@@ -203,6 +249,97 @@ def dashboard():
             loadModels();
         }
         
+        async function onParentModelChange() {
+            const pid = $('parent_model').value;
+            const ui = $('feature-selection-ui');
+            const tbody = $('parent-features-body');
+            
+            if(!pid) {
+                ui.style.display = 'none';
+                return;
+            }
+            
+            const m = modelsCache[pid];
+            if(!m) return;
+            
+            // 1. Pre-fill Config
+            if(m.algorithm) $('algo').value = m.algorithm;
+            if(m.target_col) $('target').value = m.target_col;
+            if(m.timeframe) $('timeframe').value = m.timeframe;
+            if(m.data_options) {
+                $('data_options').value = m.data_options;
+                updateSymbols(); // Trigger updates
+                // Wait a tick for symbols to populate? Usually sync enough 
+                // if(m.symbol) $('symbol').value = m.symbol.split(',')[0];
+                // Handling complex symbol string "NVDA,SPY,QQQ"
+                if(m.symbol) {
+                     const parts = m.symbol.split(',');
+                     $('symbol').value = parts[0]; 
+                     // Try to fill contexts
+                     const ctxs = document.querySelectorAll('.ctx-select');
+                     for(let i=0; i<3; i++) {
+                         if(parts[i+1] && ctxs[i]) ctxs[i].value = parts[i+1];
+                         else if(ctxs[i]) ctxs[i].value = "";
+                     }
+                }
+            }
+
+            // 2. Render Feature Table
+            let metrics = {};
+            try { metrics = JSON.parse(m.metrics); } catch(e){}
+            
+            let rows = [];
+            
+            if(metrics.feature_details) {
+                rows = Object.entries(metrics.feature_details).map(([feat, det]) => {
+                    const shap = det.shap_mean_abs || 0;
+                    const perm = det.permutation_mean || 0;
+                    const coeff = det.coefficient !== undefined ? det.coefficient : (det.tree_importance || 0);
+                    return {feat, shap, perm, coeff};
+                });
+                // Sort
+                rows.sort((a,b) => Math.abs(b.shap) - Math.abs(a.shap));
+            } else if (metrics.feature_importance) {
+                // Fallback for older models
+                rows = Object.entries(metrics.feature_importance).map(([feat, score]) => ({
+                    feat, shap: 0, perm: 0, coeff: score // treat simple score as coeff for display
+                }));
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1rem">No feature details available in parent</td></tr>';
+                ui.style.display = 'block';
+                return;
+            }
+            
+            const fmt = n => Math.abs(n) < 0.0001 && n !== 0 ? n.toExponential(2) : n.toFixed(5);
+            
+            tbody.innerHTML = rows.map(r => `
+                <tr style="border-bottom: 1px solid var(--border);">
+                    <td style="text-align:center;">
+                        <input type="checkbox" class="feat-check" value="${r.feat}" checked onchange="updateCount()">
+                    </td>
+                    <td style="padding:0.4rem; font-family:monospace; font-size:0.8rem">${r.feat}</td>
+                    <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.shap > 0 ? '#f472b6' : '#94a3b8'}">${fmt(r.shap)}</td>
+                    <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.perm > 0 ? '#4ade80' : '#94a3b8'}">${fmt(r.perm)}</td>
+                    <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${Math.abs(r.coeff) > 0 ? '#60a5fa' : '#94a3b8'}">${fmt(r.coeff)}</td>
+                </tr>
+            `).join('');
+            
+            $('total-count').innerText = rows.length;
+            updateCount();
+            
+            ui.style.display = 'block';
+        }
+
+        function toggleAllFeatures(el) {
+            document.querySelectorAll('.feat-check').forEach(c => c.checked = el.checked);
+            updateCount();
+        }
+
+        function updateCount() {
+            const count = document.querySelectorAll('.feat-check:checked').length;
+            $('selected-count').innerText = count;
+        }
+
         let featureMap = {};
 
         async function loadOptions() {
@@ -524,6 +661,14 @@ def dashboard():
             // Join with comma
             const fullSymbolString = [symbol, ...ctx].join(',');
 
+            // Gather feature whitelist if parent is selected
+            let featureWhitelist = null;
+            if($('parent_model').value) {
+                const checked = Array.from(document.querySelectorAll('.feat-check:checked')).map(c => c.value);
+                // If NO features are checked, maybe warn? Or allow empty (which train task will error on)
+                featureWhitelist = checked;
+            }
+
             const btn = document.querySelector('button');
             btn.disabled = true;
             btn.innerText = 'Starting...';
@@ -538,7 +683,8 @@ def dashboard():
                         target_col: $('target').value,
                         data_options: $('data_options').value || null,
                         timeframe: $('timeframe').value,
-                        parent_model_id: $('parent_model').value || null
+                        parent_model_id: $('parent_model').value || null,
+                        feature_whitelist: featureWhitelist
                     })
                 });
                 
@@ -588,6 +734,7 @@ class TrainRequest(BaseModel):
     timeframe: str = "1m"
     p_value_threshold: float = 0.05
     parent_model_id: Optional[str] = None
+    feature_whitelist: Optional[list[str]] = None
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -689,7 +836,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         params,
         req.data_options,
         req.timeframe,
-        req.parent_model_id
+        req.parent_model_id,
+        req.feature_whitelist
     )
     
     return {"id": training_id, "status": "started"}

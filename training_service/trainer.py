@@ -33,36 +33,26 @@ ALGORITHMS = {
     "random_forest_classifier": RandomForestClassifier
 }
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
         log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
 
-        # Load Parent Features if specified
+        # Load Parent Features if specified (unless explicit whitelist provided)
         parent_features = None
-        if parent_model_id:
+        if feature_whitelist:
+             # Explicit whitelist from UI overrides parent lookup (or is derived from it)
+             parent_features = feature_whitelist
+             log.info(f"Using {len(feature_whitelist)} whitelisted features from request")
+        elif parent_model_id:
             try:
-                 parent_row = db.get_model(parent_model_id)
-                 # get_model returns tuple: (id, name, alg, sym, target, features, hyper, metrics, status, created, artifact, error, options, timeframe, parent) or similar depending on DB schema history.
-                 # Wait, get_model returns SELECT * FROM models
-                 # The INIT_SQL says: id, name, algorithm, symbol, target_col, feature_cols, hyperparameters, metrics, status, created_at, artifact_path, error_message, data_options, timeframe, parent_model_id
-                 if parent_row:
-                     # DuckDB fetchone is tuple. Indices matter.
-                     # Let's verify index of feature_cols.
-                     # create table: 0:id, 1:name, 2:alg, 3:sym, 4:target, 5:feature_cols ...
-                     # But safer to parse as JSON if we find it.
-                     # Actually, let's use list_models approach or direct key lookup if we can fetch as dict?
-                     # db.get_model implementation: return conn.execute("SELECT * ...").fetchone()
-                     # This is a tuple. 
-                     # Index 5 is feature_cols in original schema.
-                     # Let's hope schema order is consistent. 
-                     # Actually, let's do a SELECT feature_cols specifically to be safe.
-                      with db.get_connection() as conn:
-                          pf = conn.execute("SELECT feature_cols FROM models WHERE id = ?", [parent_model_id]).fetchone()
-                          if pf and pf[0]:
-                              parent_features = json.loads(pf[0])
-                              log.info(f"Loaded {len(parent_features)} features from parent model {parent_model_id}")
+                # Fallback: keep all parent features if not explicitly selected
+                with db.get_connection() as conn:
+                    pf = conn.execute("SELECT feature_cols FROM models WHERE id = ?", [parent_model_id]).fetchone()
+                    if pf and pf[0]:
+                        parent_features = json.loads(pf[0])
+                        log.info(f"Loaded {len(parent_features)} features from parent model {parent_model_id}")
             except Exception as e:
                 log.warning(f"Failed to load parent model features: {e}")
 
