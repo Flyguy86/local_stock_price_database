@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import logging
 from pathlib import Path
-from .core import get_available_models, get_available_tickers, run_simulation
+from .core import get_available_models, get_available_tickers, run_simulation, train_trading_bot
 
 app = FastAPI(title="Simulation Service")
 log = logging.getLogger("simulation.web")
@@ -30,13 +30,27 @@ class SimulationRequest(BaseModel):
     model_id: str
     ticker: str
     initial_cash: float = 10000.0
+    use_bot: bool = False
+
+class TrainBotRequest(BaseModel):
+    model_id: str
+    ticker: str
 
 @app.post("/api/simulate")
 async def simulate(req: SimulationRequest):
     try:
         log.info(f"Request: {req}")
-        result = run_simulation(req.model_id, req.ticker, req.initial_cash)
+        result = run_simulation(req.model_id, req.ticker, req.initial_cash, req.use_bot)
         return result
     except Exception as e:
         log.error(f"Simulation failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+@app.post("/api/train_bot")
+async def train_bot_endpoint(req: TrainBotRequest):
+    try:
+        result = train_trading_bot(req.model_id, req.ticker)
+        return result
+    except Exception as e:
+        log.error(f"Bot training failed: {e}", exc_info=True)
         return {"error": str(e)}

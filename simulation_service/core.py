@@ -6,11 +6,13 @@ from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np
 import duckdb
+from sklearn.ensemble import RandomForestClassifier
 
 log = logging.getLogger("simulation.core")
 
 # Settings / Config from environment or defaults
 MODELS_DIR = Path("/app/data/models")
+BOTS_DIR = Path("/app/data/models/bots")
 FEATURES_PATH = Path("/app/data/features_parquet")
 METADATA_DB_PATH = Path("/app/data/duckdb/models.db")
 
@@ -187,21 +189,10 @@ def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter:
 
     return df
 
-def run_simulation(model_id: str, ticker: str, initial_cash: float):
+def _prepare_simulation_inputs(model_id: str, ticker: str):
     """
-    Runs a backtest simulation.
-    Note: 'ticker' param passed from UI usually overrides model symbol? 
-    Actually, usually we simulate a model on valid data.
-    If the model was trained on GOOGL+VIX, we MUST provide GOOGL+VIX features.
-    
-    If the user passed a custom 'ticker' override in the UI (e.g. testing a GOOGL model on MSFT), 
-    we need to be careful.
-    
-    Strategy:
-    1. Load Model Metadata to get training config (timeframe, context symbols).
-    2. If user provided a generic ticker (e.g. "MSFT") but model expects "GOOGL,VIX", 
-       we assume the user wants to substitute the PRIMARY symbol.
-       So we construct "MSFT,VIX".
+    Shared logic to load Model, Data, and prepare Features/Predictions/Signals.
+    Returns (df_sim, X, model)
     """
     model_path = MODELS_DIR / model_id
     if not model_path.exists():
@@ -219,21 +210,14 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
              if row:
                  metadata = {"symbol": row[0], "timeframe": row[1], "data_options": row[2]}
 
-    trained_symbol_str = metadata.get("symbol", ticker) # Fallback to passed ticker if metadata missing
+    trained_symbol_str = metadata.get("symbol", ticker) 
     timeframe = metadata.get("timeframe", "1m")
     data_options = metadata.get("data_options")
     
-    # Handle Symbol Substitution for Cross-Ticker Testing
-    # User selected 'ticker' in Simulation UI. Model was trained on 'trained_symbol_str'.
-    # If they differ, we assume substitution for the PRIMARY ticker only.
-    # Ex: Model="GOOGL,VIX", User="MSFT". We load "MSFT,VIX".
-    
-    trained_primary = trained_symbol_str.split(",")[0].strip()
     trained_context = trained_symbol_str.split(",")[1:]
     
-    target_load_str = ticker # Start with user request
+    target_load_str = ticker 
     if trained_context:
-        # Append context from training config
         target_load_str = ",".join([ticker] + [s.strip() for s in trained_context])
         
     log.info(f"Loading model form {model_path}")
@@ -245,109 +229,169 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     if df.empty:
         raise ValueError(f"No data for {target_load_str}")
 
-    # Prepare features for the model.
+    # Prepare features
     drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted", "dt"]
-    # Also drop split columns if any (train/test markers)
     for col in df.columns:
         if "train" in col.lower() or "test" in col.lower():
-            # If it's a categorical column
             if df[col].dtype == object or isinstance(df[col].dtype, pd.CategoricalDtype):
                  drop_cols.append(col)
 
-    # Filter numeric
     df_numeric = df.select_dtypes(include=[np.number])
     feature_cols = [c for c in df_numeric.columns if c not in drop_cols]
     
-    # Check if we have features
     if not feature_cols:
         raise ValueError("No feature columns found")
 
     X = df[feature_cols].copy()
     
-    # Attempt to align features with model expectations
     if hasattr(model, "feature_names_in_"):
         required_features = list(model.feature_names_in_)
-        # Check missing
         missing = [c for c in required_features if c not in X.columns]
         if missing:
-             # Try to find them in original df (maybe we dropped them too early?)
              for m in missing:
                  if m in df.columns:
                      X[m] = df[m]
         
-        # Check again
         missing = [c for c in required_features if c not in X.columns]
         if missing:
             raise ValueError(f"Model requires features not present in data: {missing}")
         
-        # Reorder and filter to match model
         X = X[required_features]
     
-    # Handle NaNs - Fill with 0 or drop? Model might handle it?
-    # SimpleImputer was used in training potentially?
-    # For simulation, we'll iterate or batch predict.
-    # To keep it simple, drop rows with NaNs in features
-    X = X.fillna(0) # Simple fill for now to ensure run
+    X = X.fillna(0)
     
     # Predict
     try:
-        # Check if model has predict_proba (Classifier) or predict (Regressor)
-        # The user mentioned "Buy / Sell indicators"
-        # If classifier: 1 = Buy (Up), 0 = Sell/Hold (Down)
         preds = model.predict(X)
-        
-        # If it's a regression model, we might interpret positive return as Buy?
-        # But let's assume binary for now or generic signal.
-        # existing trainer handles both.
     except Exception as e:
         log.error(f"Prediction failed: {e}")
-        # Try adjusting columns if mismatch
-        # Sometimes feature order matters or extra columns exist
-        # If model expects specific features, we might need metadata.
-        # Fallback: try to warn/fail
         raise e
 
-    # Add predictions to DF
     df_sim = df.copy()
-    # Align indices if we dropped rows (we didn't yet, X matches df rows count here)
     df_sim["prediction"] = preds
     
-    # Generate Signals
-    # Logic:
-    # If Classifier: 1 = Buy, 0 = Sell
-    # If Regressor: Prediction > Threshold (e.g. 0) = Buy, else Sell
-    
-    # Let's inspect prediction values slightly
     is_classifier = hasattr(model, "predict_proba") or len(np.unique(preds)) <= 2
 
-    # Hit Rate Calculation
-    # Assume Lookforward k=1 (default)
-    # 1. Determine Predicted Direction
     if is_classifier:
         df_sim["signal"] = df_sim["prediction"].apply(lambda x: 1 if x == 1 else 0)
         df_sim["pred_dir"] = df_sim["signal"]
     else:
-        # Regressor (predicting future price)
-        # We compare Predicted Price vs Current Close
         df_sim["signal"] = df_sim.apply(lambda row: 1 if row["prediction"] > row["close"] else 0, axis=1)
         df_sim["pred_dir"] = df_sim["signal"]
 
-    # 2. Determine Actual Direction (Next Close vs Current Close)
     df_sim["next_close"] = df_sim["close"].shift(-1)
-    # 1 if Up, 0 if Down/Flat
     df_sim["actual_dir"] = (df_sim["next_close"] > df_sim["close"]).astype(int)
     
-    # 3. Calculate Hit (1 = Correct, 0 = Incorrect)
-    # Ignore last row where next_close is NaN
+    # Hit: 1 if Correct, 0 if Incorrect
     df_sim["hit"] = (df_sim["pred_dir"] == df_sim["actual_dir"]).astype(int)
+    df_sim.loc[df_sim.index[-1], "hit"] = 0 
     
-    # Handle NaN at end (shift(-1) creates a NaN)
-    df_sim.loc[df_sim.index[-1], "hit"] = 0 # Or NaN
+    df_sim["rolling_hit_rate"] = df_sim["hit"].rolling(window=20).mean() # For display
     
-    # Rolling Hit Rate (e.g., 20 period)
-    df_sim["rolling_hit_rate"] = df_sim["hit"].rolling(window=20).mean()
+    return df_sim, X, model
 
-    # Walk forward simulation
+
+def train_trading_bot(model_id: str, ticker: str):
+    """
+    Trains a secondary model (Bot) to predict if the Base Model's signal will hit.
+    """
+    try:
+        log.info(f"Training Bot for Model={model_id}, Ticker={ticker}")
+        df_sim, X, _ = _prepare_simulation_inputs(model_id, ticker)
+        
+        # Target: Is the base model correct?
+        # Labels: 'hit' (1=Correct, 0=Incorrect)
+        # We drop the last row because target is future dependent
+        X_train = X.iloc[:-1]
+        y_train = df_sim["hit"].iloc[:-1]
+        
+        if len(X_train) < 50:
+            return {"status": "error", "message": "Not enough data to train bot"}
+            
+        # Train Random Forest
+        # We use a relatively simple model to avoid overfitting too much on noise
+        bot = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        bot.fit(X_train, y_train)
+        
+        # Save
+        if not BOTS_DIR.exists():
+            BOTS_DIR.mkdir(parents=True, exist_ok=True)
+            
+        bot_path = BOTS_DIR / f"{model_id}.joblib"
+        joblib.dump(bot, bot_path)
+        
+        score = bot.score(X_train, y_train)
+        log.info(f"Bot trained. Accuracy: {score:.2f}")
+        
+        return {"status": "success", "accuracy": score, "path": str(bot_path)}
+        
+    except Exception as e:
+        log.error(f"Bot training failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: bool = False):
+    """
+    Runs a backtest simulation.
+    """
+    # 1. Prepare Data
+    df_sim, X, base_model = _prepare_simulation_inputs(model_id, ticker)
+    
+    # 2. Apply Bot Logic (if enabled)
+    if use_bot:
+        bot_path = BOTS_DIR / f"{model_id}.joblib"
+        if bot_path.exists():
+            log.info("Applying Trading Bot...")
+            bot = joblib.load(bot_path)
+            
+            # Bot predicts Probability of "Hit" (Class 1)
+            # Input X is same as base model
+            try:
+                bot_probs = bot.predict_proba(X)[:, 1]
+                
+                # Logic: Only trade if Bot is > 50% confident that Base Model is Correct
+                # Base Signal: 1 (Buy) or 0 (Sell)
+                # New Signal:
+                # If Base=Buy AND Bot=Correct -> Buy
+                # If Base=Sell AND Bot=Correct -> Sell
+                # If Bot=Incorrect -> Hold (Signal usually 0 means Sell... we need a distinct HOLD signal?)
+                # 
+                # Our simulation loop treats Signal 0 as Sell/Clear Position.
+                # It treats Signal 1 as Buy.
+                # If we want to HOLD, we need to pass a "None" signal?
+                # The current loop:
+                # if signal == 1: Buy
+                # elif signal == 0: Sell
+                # else: Hold (implied if logic doesn't match)
+                
+                # So we can introduce -1 or 2 as Hold?
+                # Actually, if signal is not 1 or 0, it does nothing.
+                
+                # Let's map:
+                # Buy Confirmed -> 1
+                # Sell Confirmed -> 0
+                # Uncertain -> -1 (Hold)
+                
+                new_signals = []
+                orig_signals = df_sim["signal"].values
+                for i, prob in enumerate(bot_probs):
+                    base_sig = orig_signals[i]
+                    if prob > 0.55: # Threshold > 50%
+                        # Bot agrees model is correct
+                        new_signals.append(base_sig)
+                    else:
+                        # Bot thinks model is WRONG.
+                        # If Model said Buy (and is wrong), Price goes Down -> We should Sell? 
+                        # Or just Stay Out?
+                        # Usually "Trading Bot" means "Filter out bad trades". So Stay Out / Hold.
+                        new_signals.append(-1) 
+                        
+                df_sim["signal"] = new_signals
+                
+            except Exception as e:
+                log.warning(f"Bot prediction failed, falling back to base model: {e}")
+        else:
+             log.warning("Bot enabled but no bot model found. Run 'Train Bot' first.")
 
     # Walk forward simulation
     cash = initial_cash
@@ -366,11 +410,11 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
         ts = row["ts"]
         signal = row["signal"]
         
-        # Execute Strategy Logic (Simple: Buy on 1, Sell on 0)
-        # If signal 1 and no shares: Buy Max
-        # If signal 0 and shares: Sell All
-        
         action = None
+        # Signal 1 = Buy
+        # Signal 0 = Sell
+        # Signal -1 = Hold (New)
+        
         if signal == 1 and shares == 0:
             # Whole shares only
             possible_shares = int(cash // price)
@@ -408,6 +452,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
                 "pnl": pnl,
                 "pnl_pct": pnl_pct
             })
+        # If signal is -1 (Hold), do nothing.
             
         current_val = cash + (shares * price)
         portfolio_values.append(current_val)
@@ -428,7 +473,8 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
         "strategy_return_pct": (df_sim["strategy_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
         "benchmark_return_pct": (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
         "total_trades": len(trades),
-        "hit_rate_pct": hit_rate_pct
+        "hit_rate_pct": hit_rate_pct,
+        "bot_active": use_bot
     }
 
     # Chart Data (Downsample if needed?)

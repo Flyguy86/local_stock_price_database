@@ -46,6 +46,23 @@
                         Run Simulation
                     </button>
                 </div>
+                
+                <!-- Bot Controls -->
+                <div class="col-md-12 mt-3 pt-3 border-top">
+                    <div class="d-flex align-items-center gap-3">
+                        <button id="trainBotBtn" class="btn btn-outline-dark" onclick="trainBot()">
+                            🤖 Train Trading Bot
+                        </button>
+                        <div class="form-check form-switch ms-3">
+                            <input class="form-check-input" type="checkbox" role="switch" id="useBotCheck">
+                            <label class="form-check-label" for="useBotCheck">Use Trading Bot Filter</label>
+                        </div>
+                        <span id="botStatus" class="ms-2 small"></span>
+                    </div>
+                    <small class="text-muted d-block mt-1">
+                        Trains a secondary model to verify the base model's predictions before trading. Helps filter out false signals.
+                    </small>
+                </div>
             </div>
         </div>
     </div>
@@ -162,11 +179,18 @@
         btn.innerText = "Running...";
         if (progressBar) progressBar.style.display = 'flex';
 
+        const useBot = document.getElementById('useBotCheck').checked;
+
         try {
             const response = await fetch('/api/simulate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_id: modelId, ticker: ticker, initial_cash: initialCash })
+                body: JSON.stringify({ 
+                    model_id: modelId, 
+                    ticker: ticker, 
+                    initial_cash: initialCash,
+                    use_bot: useBot
+                })
             });
             
             if (!response.ok) {
@@ -436,6 +460,47 @@
         
         // Scroll to results
         document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function trainBot() {
+        const modelId = document.getElementById('modelSelect').value;
+        const ticker = document.getElementById('tickerSelect').value;
+        
+        if (!modelId || modelId.includes('Select') || !ticker || ticker.includes('Select')) {
+            alert("Please select Model and Ticker first.");
+            return;
+        }
+        
+        const btn = document.getElementById('trainBotBtn');
+        const status = document.getElementById('botStatus');
+        const oldText = btn.innerText;
+        
+        btn.disabled = true;
+        btn.innerText = "Training...";
+        status.innerText = "";
+        
+        try {
+            const response = await fetch('/api/train_bot', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ model_id: modelId, ticker: ticker })
+            });
+            const data = await response.json();
+            
+            if (data.status === 'success') {
+                status.innerHTML = `<span class="text-success fw-bold">Success! Bot Accuracy: ${(data.accuracy * 100).toFixed(1)}%</span>`;
+                // Auto check the use bot box
+                document.getElementById('useBotCheck').checked = true;
+            } else {
+                 status.innerHTML = `<span class="text-danger">Error: ${data.message}</span>`;
+            }
+        } catch (e) {
+            status.innerHTML = `<span class="text-danger">Failed to call API</span>`;
+            console.error(e);
+        } finally {
+            btn.disabled = false;
+            btn.innerText = oldText;
+        }
     }
 
     // Init
