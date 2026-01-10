@@ -59,13 +59,17 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
     *   **Timeframe Selection**: Train models on resampled bars (e.g., `1h`, `4h`, `8h`) derived from the base 1-minute data. Custom aggregation ensures "Test" data never leaks into "Train" buckets during resampling.
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
-    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP), and delete old/unused models.
+    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models.
     *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a configuration is selected, the list of available symbols is automatically filtered to match.
 *   **Multi-Ticker / Context Awareness**:
     *   **Primary Ticker**: The target symbol you are trying to predict.
     *   **Context Tickers**: You can select up to 3 additional tickers (e.g., `VIX`, `SPY`, `QQQ`) to feed into the model as features.
     *   **Integration**: The system performs a strict Inner Join on the 1-minute timestamps.
     *   **Naming**: Context features are automatically suffixed (e.g., `close_VIX`, `rsi_14_SPY`) to distinguish them from the primary ticker's features.
+    *   **Feature Selection**: Includes a **Top-Down Pruning Step** to automatically select the most significant features.
+        *   **Standardization**: All features are standardized (Mean=0, Std=1) to allow for coefficient comparison.
+        *   **P-Value Pruning**: Features with a P-value > 0.05 (configurable) are automatically dropped to remove statistical noise.
+        *   **Ranking**: Logs the standardized Beta Coefficients of the top features, helping to identify which indicators (e.g., `EMA_9` vs `RSI_14`) are truly driving the model.
 *   **Design**: Models should utilize `scikit-learn` Pipelines (`Pipeline([Scaler, Imputer, Model])`) to bundle preprocessing logic into the saved artifact (`.joblib`), ensuring the Simulation Service can ingest raw feature data.
 
 ## Deployment & Local Dev

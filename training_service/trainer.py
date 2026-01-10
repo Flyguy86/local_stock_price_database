@@ -5,6 +5,9 @@ from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import f_regression
+from sklearn.pipeline import Pipeline
 try:
     import shap
 except ImportError:
@@ -35,6 +38,14 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
     
     try:
         log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
+
+        # Extract pruning setting from params (default 0.05)
+        p_val_thresh = 0.05
+        if params and "p_value_threshold" in params:
+            try:
+                p_val_thresh = float(params.pop("p_value_threshold"))
+            except:
+                p_val_thresh = 0.05
         
         # 1. Load Data
         df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe)
@@ -102,6 +113,58 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             else:
                  log.warning(f"Target column {target_col} not found for direction calc. Using > 0 check.")
                  y = (df["target"] > 0).astype(int)
+
+        # --- Top Down Pruning Step ---
+        # Filter by P-value (Univariate F-test to avoid multicollinearity checks for now)
+        if p_val_thresh < 1.0 and len(feature_cols_used) > 0:
+            try:
+                log.info(f"Pruning features with P-value > {p_val_thresh}")
+                
+                # Prepare data for selection (Impute + Standardize)
+                X_sel = X.copy()
+                if X_sel.isna().any().any():
+                     imp_sel = SimpleImputer(strategy='mean')
+                     X_sel_arr = imp_sel.fit_transform(X_sel)
+                     X_sel = pd.DataFrame(X_sel_arr, columns=X_sel.columns, index=X_sel.index)
+
+                # Standardize (User req: "Standardize your features")
+                scaler_sel = StandardScaler()
+                X_sel_scaled = pd.DataFrame(scaler_sel.fit_transform(X_sel), columns=X_sel.columns)
+
+                # Calculate P-values
+                # f_regression returns (F, p_values)
+                # It is robust for initial pruning.
+                _, p_vals = f_regression(X_sel_scaled, y)
+                
+                # Filter
+                keep_mask = p_vals < p_val_thresh
+                kept_feats = [f for f, k in zip(feature_cols_used, keep_mask) if k]
+                removed_feats = sorted(list(set(feature_cols_used) - set(kept_feats)))
+                
+                if removed_feats:
+                    log.info(f"Dropped {len(removed_feats)} features: {removed_feats}")
+                    feature_cols_used = kept_feats
+                    X = X[feature_cols_used]
+                    
+                    if not feature_cols_used:
+                         log.warning("All features pruned! Reverting to top 1 feature.")
+                         # Fallback: keep lowest p-value
+                         best_idx = np.argmin(p_vals)
+                         feature_cols_used = [X_sel.columns[best_idx]]
+                         X = X.iloc[:, [best_idx]]
+
+                # Log Standardized Coefficients (Ranking)
+                if len(feature_cols_used) > 0:
+                    lr_an = LinearRegression()
+                    lr_an.fit(X_sel_scaled[feature_cols_used], y)
+                    # Get Coefs
+                    coefs = pd.Series(lr_an.coef_, index=feature_cols_used)
+                    # Sort by Abs
+                    ranked = coefs.abs().sort_values(ascending=False)
+                    log.info(f"Feature Ranking (Std Beta): {ranked.head(10).to_dict()}")
+
+            except Exception as e:
+                log.error(f"Pruning failed: {e}. Proceeding with all features.")
 
         # Split Data (Custom Column or Time-based)
         is_cv = False
@@ -218,7 +281,13 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         if not ModelClass:
             raise ValueError(f"Unknown algorithm: {algorithm}")
             
-        model = ModelClass(**params)
+        # User Req: "Standardize your features" (Pipeline)
+        # We wrap the estimator in a pipeline.
+        final_estimator = ModelClass(**params)
+        model = Pipeline([
+            ('scaler', StandardScaler()), 
+            ('model', final_estimator)
+        ])
         
         # 4. Train Final Model
         model.fit(X_train, y_train)
@@ -257,12 +326,15 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
 
         # 1. Linear Coefficients / Tree Importance
         try:
-            if hasattr(model, "feature_importances_"):
-                imps = model.feature_importances_
+            # Unwrap pipeline
+            estimator = model.named_steps['model']
+            
+            if hasattr(estimator, "feature_importances_"):
+                imps = estimator.feature_importances_
                 for i, col in enumerate(feature_cols_used):
                     feature_details[col]["tree_importance"] = float(imps[i])
-            elif hasattr(model, "coef_"):
-                coefs = model.coef_
+            elif hasattr(estimator, "coef_"):
+                coefs = estimator.coef_
                 if coefs.ndim > 1: coefs = coefs[0]
                 for i, col in enumerate(feature_cols_used):
                     feature_details[col]["coefficient"] = float(coefs[i])
@@ -286,15 +358,19 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         # 3. SHAP Values
         if shap:
             try:
+                estimator = model.named_steps['model']
+                scaler = model.named_steps['scaler']
+
                 # Use a small background sample for explainers
-                X_bg = X_train[:100]
-                X_eval = X_test[:100]
+                # SCALE THE DATA first
+                X_bg = scaler.transform(X_train[:100])
+                X_eval = scaler.transform(X_test[:100])
                 
                 explainer = None
-                if "Linear" in str(type(model)) or "Logistic" in str(type(model)):
-                     explainer = shap.LinearExplainer(model, X_bg)
-                elif "Forest" in str(type(model)) or "Tree" in str(type(model)):
-                     explainer = shap.TreeExplainer(model)
+                if "Linear" in str(type(estimator)) or "Logistic" in str(type(estimator)):
+                     explainer = shap.LinearExplainer(estimator, X_bg)
+                elif "Forest" in str(type(estimator)) or "Tree" in str(type(estimator)):
+                     explainer = shap.TreeExplainer(estimator)
                 
                 if explainer and len(X_eval) > 0:
                      shap_vals = explainer.shap_values(X_eval)

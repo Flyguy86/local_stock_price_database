@@ -531,6 +531,7 @@ class TrainRequest(BaseModel):
     hyperparameters: Optional[Dict[str, Any]] = None
     data_options: Optional[str] = None
     timeframe: str = "1m"
+    p_value_threshold: float = 0.05
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -617,7 +618,11 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     if req.algorithm not in ALGORITHMS:
         raise HTTPException(status_code=400, detail=f"Algorithm must be one of {list(ALGORITHMS.keys())}")
     
-    training_id = start_training(req.symbol, req.algorithm, req.target_col, req.hyperparameters, req.data_options, req.timeframe)
+    # Inject p_value_threshold into parameters for persistence and task usage
+    params = req.hyperparameters or {}
+    params["p_value_threshold"] = req.p_value_threshold
+    
+    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe)
     
     background_tasks.add_task(
         train_model_task, 
@@ -625,7 +630,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.symbol, 
         req.algorithm, 
         req.target_col, 
-        req.hyperparameters or {},
+        params,
         req.data_options,
         req.timeframe
     )
