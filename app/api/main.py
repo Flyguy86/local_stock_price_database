@@ -23,8 +23,14 @@ log_lock = threading.Lock()
 
 class InMemoryHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        # Resolve timestamp
+        ts = getattr(record, "ts", None)
+        if not ts:
+            dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
+            ts = dt.isoformat()
+            
         payload = {
-            "ts": getattr(record, "ts", None) or getattr(record, "created", None),
+            "ts": ts,
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -36,7 +42,11 @@ class InMemoryHandler(logging.Handler):
             if len(log_buffer) > LOG_BUFFER_MAX:
                 del log_buffer[: len(log_buffer) - LOG_BUFFER_MAX]
 
+# Attach to both 'app' (application logs) and 'uvicorn' (requests)
 logger.addHandler(InMemoryHandler())
+logging.getLogger("uvicorn").addHandler(InMemoryHandler())
+logging.getLogger("uvicorn.access").addHandler(InMemoryHandler())
+logging.getLogger("uvicorn.error").addHandler(InMemoryHandler())
 db = DuckDBClient(settings.duckdb_path, settings.parquet_dir)
 poller = IngestPoller(db)
 app = FastAPI(title="local_stock_price_database")
