@@ -101,6 +101,42 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(0.0)
 
 
+def _calculate_vix_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculates specific market regime metrics on VIXY data."""
+    if df.empty:
+        return pd.DataFrame()
+        
+    out = df.copy()
+    out = out.sort_values("ts")
+    
+    # 1. Log Returns
+    out["vix_log_ret"] = np.log(out["close"] / out["close"].shift(1)).fillna(0.0)
+    
+    # 2. Z-Score Spike (Window of 20 minutes)
+    roll_mean = out["vix_log_ret"].rolling(20, min_periods=1).mean()
+    roll_std = out["vix_log_ret"].rolling(20, min_periods=1).std(ddof=0)
+    out["vix_z_score"] = (out["vix_log_ret"] - roll_mean) / roll_std.replace(0, np.nan)
+    out["vix_z_score"] = out["vix_z_score"].fillna(0.0)
+
+    # 3. Volume Spike (Relative to 1-hour average)
+    out["vix_rel_vol"] = out["volume"] / out["volume"].rolling(60, min_periods=1).mean().replace(0, np.nan)
+    out["vix_rel_vol"] = out["vix_rel_vol"].fillna(0.0)
+
+    # 4. Range Expansion (Current candle vs 15-min ATR)
+    prev_c = out["close"].shift(1)
+    tr = pd.concat([
+        out["high"] - out["low"],
+        (out["high"] - prev_c).abs(),
+        (out["low"] - prev_c).abs()
+    ], axis=1).max(axis=1)
+    
+    tr_mean = tr.rolling(15, min_periods=1).mean()
+    out["vix_atr_ratio"] = tr / tr_mean.replace(0, np.nan)
+    out["vix_atr_ratio"] = out["vix_atr_ratio"].fillna(0.0)
+    
+    return out[["ts", "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]]
+
+
 def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     out = df.copy()
     out = out.sort_values("ts")
@@ -117,6 +153,56 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     # Returns and moving averages
     out["return_1m"] = out["close"].pct_change().fillna(0.0)
     out["lag_1_close"] = out["close"].shift(1)  # New lag feature
+
+    # Distance from VWAP (Mean Reversion)
+    # Formula: (Close - VWAP) / VWAP
+    out["dist_vwap"] = (out["close"] - out["vwap"]) / out["vwap"].replace(0, np.nan)
+    out["dist_vwap"] = out["dist_vwap"].fillna(0.0)
+
+    # Intraday Intensity ("Smart Money" Index)
+    # Formula: Intensity = ((2 * Close - High - Low) / (High - Low)) * Volume
+    # High volume near Close implies institutional accumulation/dumping
+    denom_ii = (out["high"] - out["low"]).replace(0, np.nan)
+    term1_ii = (2 * out["close"] - out["high"] - out["low"]) / denom_ii
+    out["intraday_intensity"] = term1_ii.fillna(0.0) * out["volume"]
+
+    # Volatility-Adjusted Momentum (Z-Score)
+    # Formula: (Current Return - Mean Return 20) / Std Dev 20
+    roll_mean_ret = out["return_1m"].rolling(window=20, min_periods=1).mean()
+    roll_std_ret = out["return_1m"].rolling(window=20, min_periods=1).std(ddof=0)
+    out["vol_adj_mom_20"] = (out["return_1m"] - roll_mean_ret) / roll_std_ret.replace(0, np.nan)
+    out["vol_adj_mom_20"] = out["vol_adj_mom_20"].fillna(0.0)
+
+    # 1. Log Returns
+    # ln(close / prev_close)
+    out["log_return_1m"] = np.log(out["close"] / out["close"].shift(1)).fillna(0.0)
+
+    # 2. Return Z-Score (Volatility Spike) - Window 20
+    # Formula: (Log Return - Mean Log Return 20) / Std Log Return 20
+    roll_mean_log = out["log_return_1m"].rolling(window=20, min_periods=1).mean()
+    roll_std_log = out["log_return_1m"].rolling(window=20, min_periods=1).std(ddof=0)
+    out["return_z_score_20"] = (out["log_return_1m"] - roll_mean_log) / roll_std_log.replace(0, np.nan)
+    out["return_z_score_20"] = out["return_z_score_20"].fillna(0.0)
+
+    # 3. Relative Volume (Volume Spike) - Window 60
+    # Formula: Volume / Avg Volume 60
+    vol_mean_60 = out["volume"].rolling(window=60, min_periods=1).mean()
+    out["vol_ratio_60"] = out["volume"] / vol_mean_60.replace(0, np.nan)
+    out["vol_ratio_60"] = out["vol_ratio_60"].fillna(0.0)
+
+    # 4. ATR Ratio (Range Expansion) - Window 15
+    # True Range = Max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+    prev_c = out["close"].shift(1)
+    # We can use vector max: max(A, B, C)
+    tr_series = pd.concat([
+        out["high"] - out["low"],
+        (out["high"] - prev_c).abs(),
+        (out["low"] - prev_c).abs()
+    ], axis=1).max(axis=1)
+    
+    tr_mean_15 = tr_series.rolling(window=15, min_periods=1).mean()
+    out["atr_ratio_15"] = tr_series / tr_mean_15.replace(0, np.nan)
+    out["atr_ratio_15"] = out["atr_ratio_15"].fillna(0.0)
     
     if use_sma:
         out["sma_close_5"] = out["close"].rolling(window=5, min_periods=1).mean()
@@ -222,6 +308,27 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     # Carry forward VWAP; ensure non-null if present
     out["vwap"] = out["vwap"].ffill()
 
+    # Merge VIXY Context if available
+    vix_ctx = opts.get("vixy_context")
+    if vix_ctx is not None and not vix_ctx.empty:
+        # We need to merge on TS. 
+        # Ideally an asof merge if timestamps strictly aligned is risky, but inner join might drop data.
+        # Given both are 1-min bars from same source, left join is safest.
+        # Ensure dtypes match
+        if out["ts"].dt.tz is None: out["ts"] = out["ts"].dt.tz_localize("UTC")
+        if vix_ctx["ts"].dt.tz is None: vix_ctx["ts"] = vix_ctx["ts"].dt.tz_localize("UTC")
+            
+        out = pd.merge(out, vix_ctx, on="ts", how="left")
+        
+        # Forward fill VIX metrics to handle gaps
+        cols = ["vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]
+        out[cols] = out[cols].ffill().fillna(0.0)
+    else:
+        out["vix_log_ret"] = 0.0
+        out["vix_z_score"] = 0.0
+        out["vix_rel_vol"] = 0.0
+        out["vix_atr_ratio"] = 0.0
+
     # Round all float columns to 5 decimal places
     float_cols = out.select_dtypes(include=['float64', 'float32']).columns
     out[float_cols] = out[float_cols].round(5)
@@ -274,7 +381,9 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             dest_conn.execute("DROP TABLE feature_bars")
 
     # Migration for new columns
-    for col in ["volume_change", "lag_1_close"]:
+    for col in ["volume_change", "lag_1_close", "dist_vwap", "intraday_intensity", "vol_adj_mom_20", 
+                "log_return_1m", "return_z_score_20", "vol_ratio_60", "atr_ratio_15",
+                "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]:
         try:
              dest_conn.execute(f"SELECT {col} FROM feature_bars LIMIT 0")
         except duckdb.Error:
@@ -296,6 +405,17 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             trade_count BIGINT,
             return_1m DOUBLE,
             lag_1_close DOUBLE,
+            dist_vwap DOUBLE,
+            intraday_intensity DOUBLE,
+            vol_adj_mom_20 DOUBLE,
+            log_return_1m DOUBLE,
+            return_z_score_20 DOUBLE,
+            vol_ratio_60 DOUBLE,
+            atr_ratio_15 DOUBLE,
+            vix_log_ret DOUBLE,
+            vix_z_score DOUBLE,
+            vix_rel_vol DOUBLE,
+            vix_atr_ratio DOUBLE,
             sma_close_5 DOUBLE,
             sma_close_20 DOUBLE,
             bb_upper_20_2 DOUBLE,
@@ -426,6 +546,19 @@ def run_pipeline(
         totals_inserted = 0
         
         total_symbols = len(symbol_list)
+        
+        # Pre-fetch VIXY data for market context
+        vixy_ctx = pd.DataFrame()
+        try:
+            vixy_df = fetch_bars(src_conn, "VIXY")
+            if not vixy_df.empty:
+                logger.info("Fetched VIXY data for market context context", extra={"rows": len(vixy_df)})
+                vixy_clean = clean_bars(vixy_df)
+                vixy_ctx = _calculate_vix_metrics(vixy_clean)
+            else:
+                 logger.warning("VIXY data not found. VIX features will be zero.")
+        except Exception as e:
+            logger.error(f"Failed to calculate VIXY metrics: {e}")
 
         for i, sym in enumerate(symbol_list):
             # Check Stop Signal
@@ -446,6 +579,7 @@ def run_pipeline(
             earnings_df = fetch_earnings(src_conn, sym)
             calc_options = (options or {}).copy()
             calc_options["earnings_df"] = earnings_df
+            calc_options["vixy_context"] = vixy_ctx
 
             if progress_callback:
                 progress_callback(sym, i + 1, total_symbols, "Engineering features")
