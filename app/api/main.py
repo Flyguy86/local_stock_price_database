@@ -23,6 +23,10 @@ log_lock = threading.Lock()
 
 class InMemoryHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if "GET /logs" in msg or "GET /status" in msg:
+            return
+
         # Resolve timestamp
         ts = getattr(record, "ts", None)
         if not ts:
@@ -409,7 +413,7 @@ async def dashboard():
         pre { background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 6px; overflow: auto; margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; border: 1px solid var(--border); }
         
         /* Logs */
-        #logs-box { height: 300px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; display: flex; flex-direction: column; gap: 0.25rem; background: #0f172a; padding: 0.5rem; border-radius: 4px; }
+        #logs-box { height: 200px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; display: flex; flex-direction: column; gap: 0.25rem; background: #0f172a; padding: 0.5rem; border-radius: 4px; }
         .log-entry { padding: 0.25rem 0.5rem; border-radius: 4px; }
         .log-entry:hover { background: rgba(255,255,255,0.05); }
         .log-info { color: #94a3b8; }
