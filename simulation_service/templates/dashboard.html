@@ -220,7 +220,8 @@
                 <strong>${stats.total_trades}</strong>
             </div>
             <div class="col-md-3 mb-2">
-                 <!-- spacer -->
+                 <small class="text-muted d-block">Directional Hit Rate</small>
+                 <strong class="${stats.hit_rate_pct > 50 ? 'text-success' : 'text-warning'}">${stats.hit_rate_pct.toFixed(2)}%</strong>
             </div>
 
             <div class="col-md-3 mb-2">
@@ -251,6 +252,7 @@
         const dates = data.chart_data.map(d => d.ts.substring(0, 10)); // Just YYYY-MM-DD
         const strategy = data.chart_data.map(d => d.strategy_equity);
         const benchmark = data.chart_data.map(d => d.benchmark_equity);
+        const hitRate = data.chart_data.map(d => (d.rolling_hit_rate || 0) * 100);
 
         chartInstance = new Chart(ctx, {
             type: 'line',
@@ -265,7 +267,8 @@
                         fill: true,
                         tension: 0.1,
                         pointRadius: 0,
-                        pointHoverRadius: 5
+                        pointHoverRadius: 5,
+                        yAxisID: 'y'
                     },
                     {
                         label: 'Buy & Hold Benchmark',
@@ -273,7 +276,19 @@
                         borderColor: 'rgb(108, 117, 125)', // Grey
                         borderDash: [5, 5],
                         tension: 0.1,
-                        pointRadius: 0
+                        pointRadius: 0,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Hit Rate (20p Avg)',
+                        data: hitRate,
+                        borderColor: 'rgb(13, 110, 253)', // Blue
+                        backgroundColor: 'rgba(13, 110, 253, 0.05)',
+                        borderWidth: 1,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        yAxisID: 'y1',
+                        fill: false
                     }
                 ]
             },
@@ -289,6 +304,23 @@
                         ticks: {
                             maxTicksLimit: 10
                         }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: { display: true, text: 'Equity ($)' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: { display: true, text: 'Hit Rate (%)' },
+                        grid: {
+                            drawOnChartArea: false
+                        },
+                        min: 0,
+                        max: 100
                     }
                 },
                 plugins: {

@@ -51,15 +51,20 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
     *   This ensures indicators like `SMA_200` are valid immediately at the start of any testing fold (no "warmup" loss).
     *   Since these are "lagged" indicators (using only past data), calculating them globally is not leakage.
 *   **Segmented Data**: Optionally splits data into "Train" and "Test" episodes (e.g. 30 days train, 5 days test) directly in the feature table, simplifying backtesting logic.
+*   **New Features**: Includes `volume_change` (Pct Change) and `lag_1_close` (Previous close).
 *   **Output**: "Wide" Parquet files containing all possible features.
 
 ### Phase 2: Model Training (Training Service)
 *   **Role**: The "Model" layer. Handles stateless transformations (Imputation, Scaling, Selection).
 *   **Capabilities**:
     *   **Timeframe Selection**: Train models on resampled bars (e.g., `1h`, `4h`, `8h`) derived from the base 1-minute data. Custom aggregation ensures "Test" data never leaks into "Train" buckets during resampling.
+    *   **Parent-Child Models**: Support for **Iterative Model Training**.
+        *   **Workflow**: Train a "Parent" model (e.g., RandomForest) to identify key features, then train a "Child" model (e.g., LinearRegression) using *only* those selected features.
+        *   **Inheritance**: Child models strictly inherit the feature subset from the parent.
+        *   **Feature Selection UI**: The dashboard allows you to view parent features, see their importance metrics (SHAP, Permutation, Coeff), filter by name, and manually whitelist/blacklist features for the new training job.
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
-    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models.
+    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models. The Registry displays models in a **Tree Structure** to visualize lineage.
     *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a configuration is selected, the list of available symbols is automatically filtered to match.
 *   **Multi-Ticker / Context Awareness**:
     *   **Primary Ticker**: The target symbol you are trying to predict.
@@ -110,7 +115,12 @@ The system includes a backtesting simulation engine to evaluate the performance 
         *   **Trigger**: A **Sell Signal** is received AND the portfolio currently holds **shares > 0**.
         *   **Action**: Sells **100%** of the held shares at the current close price.
     *   **Holding**: If the signal matches the current position (e.g., Buy Signal while holding), no action is taken.
-5.  **Metrics**: The results (Equity Curve, Trades, Returns) are calculated and compared against a "Buy and Hold" benchmark.
+5.  **Metrics**: 
+    *   **Equity Curve**: Visualizes portfolio value over time vs Buy & Hold.
+    *   **Directional Hit Rate**:
+        *   Calculates the % of time the model correctly predicted the *direction* of the price movement (e.g., predicted Up and price went Up).
+        *   **Rolling Average**: The chart displays a 100-period rolling average of the Hit Rate on a secondary Y-axis to visualize model stability over time.
+        *   **Threshold**: A Hit Rate > 50% generally indicates predictive power better than random chance (ignoring transaction costs).
 
 ## Feature Builder (terminal)
 - Install deps (from repo root): `pip install -e .`

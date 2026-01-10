@@ -319,13 +319,35 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     
     # Let's inspect prediction values slightly
     is_classifier = hasattr(model, "predict_proba") or len(np.unique(preds)) <= 2
-    
+
+    # Hit Rate Calculation
+    # Assume Lookforward k=1 (default)
+    # 1. Determine Predicted Direction
     if is_classifier:
         df_sim["signal"] = df_sim["prediction"].apply(lambda x: 1 if x == 1 else 0)
+        df_sim["pred_dir"] = df_sim["signal"]
     else:
-        # Regressor (predicting future price or return?)
-        # For now assume predicting return: > 0 means Buy
-        df_sim["signal"] = df_sim["prediction"].apply(lambda x: 1 if x > 0 else 0)
+        # Regressor (predicting future price)
+        # We compare Predicted Price vs Current Close
+        df_sim["signal"] = df_sim.apply(lambda row: 1 if row["prediction"] > row["close"] else 0, axis=1)
+        df_sim["pred_dir"] = df_sim["signal"]
+
+    # 2. Determine Actual Direction (Next Close vs Current Close)
+    df_sim["next_close"] = df_sim["close"].shift(-1)
+    # 1 if Up, 0 if Down/Flat
+    df_sim["actual_dir"] = (df_sim["next_close"] > df_sim["close"]).astype(int)
+    
+    # 3. Calculate Hit (1 = Correct, 0 = Incorrect)
+    # Ignore last row where next_close is NaN
+    df_sim["hit"] = (df_sim["pred_dir"] == df_sim["actual_dir"]).astype(int)
+    
+    # Handle NaN at end (shift(-1) creates a NaN)
+    df_sim.loc[df_sim.index[-1], "hit"] = 0 # Or NaN
+    
+    # Rolling Hit Rate (e.g., 20 period)
+    df_sim["rolling_hit_rate"] = df_sim["hit"].rolling(window=20).mean()
+
+    # Walk forward simulation
 
     # Walk forward simulation
     cash = initial_cash
@@ -394,6 +416,10 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
     df_sim["benchmark_equity"] = df_sim["close"] * benchmark_shares
     
     # Results
+    # Calc Hit Rate (exclude last row which has no next_close)
+    valid_hits = df_sim["hit"].iloc[:-1]
+    hit_rate_pct = (valid_hits.sum() / len(valid_hits) * 100) if len(valid_hits) > 0 else 0.0
+
     stats = {
         "start_date": df_sim["ts"].min().isoformat(),
         "end_date": df_sim["ts"].max().isoformat(),
@@ -401,11 +427,12 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float):
         "final_benchmark_value": df_sim["benchmark_equity"].iloc[-1],
         "strategy_return_pct": (df_sim["strategy_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
         "benchmark_return_pct": (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
-        "total_trades": len(trades)
+        "total_trades": len(trades),
+        "hit_rate_pct": hit_rate_pct
     }
 
     # Chart Data (Downsample if needed?)
-    chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity"]].copy()
+    chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity", "rolling_hit_rate"]].fillna(0).copy()
     chart_data["ts"] = chart_data["ts"].dt.strftime('%Y-%m-%d %H:%M:%S')
     
     return {
