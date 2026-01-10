@@ -49,6 +49,7 @@ class IngestResponse(BaseModel):
 class Status(BaseModel):
     symbol: str
     state: str
+    description: str | None = None
     last_update: str | None = None
     error_message: str | None = None
 
@@ -72,6 +73,7 @@ def _now_iso() -> str:
 
 # In-memory agent status
 agent_status: dict[str, Status] = {}
+running_tasks: dict[str, asyncio.Task] = {}  # symbol -> task
 test_state_lock = asyncio.Lock()
 test_state: dict[str, object] = {
     "status": "idle",
@@ -181,44 +183,75 @@ async def trigger_tests(request: TestRunRequest):
 async def ingest_symbol(symbol: str, start: str | None = None, end: str | None = None):
     if not ((settings.alpaca_key_id and settings.alpaca_secret_key) or settings.iex_token):
         raise HTTPException(status_code=400, detail="Missing provider credentials: set Alpaca keys or IEX token")
+    
+    if symbol in running_tasks and not running_tasks[symbol].done():
+        raise HTTPException(status_code=409, detail=f"Task for {symbol} is already running")
+
     logger.info("ingest request queued", extra={"symbol": symbol, "start": start, "end": end})
-    agent_status[symbol] = Status(symbol=symbol, state="queued", last_update=None)
+    agent_status[symbol] = Status(symbol=symbol, state="queued", description="Initializing...", last_update=None)
+    
     async def task():
-        agent_status[symbol] = Status(symbol=symbol, state="running", last_update=None)
+        agent_status[symbol] = Status(symbol=symbol, state="running", description=f"Backfilling {start or 'max'} -> {end or 'now'}", last_update=None)
         logger.info("ingest task started", extra={"symbol": symbol, "start": start, "end": end})
         try:
             # 1. Run price history backfill
             result = await poller.run_history(symbol, start=start, end=end)
             
             # 2. Run earnings fetch (best effort)
+            agent_status[symbol] = Status(symbol=symbol, state="running", description="Fetching earnings", last_update=None)
             try:
                 await poller.run_earnings(symbol)
             except Exception as e:
                 logger.warning("earnings fetch failed during ingest", extra={"symbol": symbol, "error": str(e)})
 
-            agent_status[symbol] = Status(symbol=symbol, state="succeeded", last_update=result["ts"])
+            agent_status[symbol] = Status(symbol=symbol, state="succeeded", description="Complete", last_update=result["ts"])
             logger.info("ingest task succeeded", extra={"symbol": symbol, "inserted": result["inserted"], "ts": result["ts"]})
+        except asyncio.CancelledError:
+             logger.warning("ingest task cancelled", extra={"symbol": symbol})
+             agent_status[symbol] = Status(symbol=symbol, state="stopped", description="User cancelled", last_update=None)
         except Exception as exc:
             logger.exception("ingest failed", extra={"symbol": symbol})
-            agent_status[symbol] = Status(symbol=symbol, state="failed", last_update=None, error_message=str(exc))
-    asyncio.create_task(task())
+            agent_status[symbol] = Status(symbol=symbol, state="failed", description="Failed", last_update=None, error_message=str(exc))
+        finally:
+             if symbol in running_tasks:
+                 del running_tasks[symbol]
+
+    t = asyncio.create_task(task())
+    running_tasks[symbol] = t
     return IngestResponse(symbol=symbol, inserted=0, ts="queued")
+
+@app.post("/stop/{symbol}")
+async def stop_task(symbol: str):
+    if symbol in running_tasks and not running_tasks[symbol].done():
+         running_tasks[symbol].cancel()
+         return {"status": "stopping", "symbol": symbol}
+    return {"status": "no_running_task", "symbol": symbol}
+
 
 @app.post("/ingest/earnings/{symbol}")
 async def ingest_earnings_endpoint(symbol: str):
+    if symbol in running_tasks and not running_tasks[symbol].done():
+        raise HTTPException(status_code=409, detail=f"Task for {symbol} is already running")
+
     logger.info("ingest earnings queued", extra={"symbol": symbol})
-    agent_status[symbol] = Status(symbol=symbol, state="earnings_queued", last_update=None)
+    agent_status[symbol] = Status(symbol=symbol, state="queued", description="Queued earnings fetch", last_update=None)
     
     async def task():
-        agent_status[symbol] = Status(symbol=symbol, state="earnings_running", last_update=None)
+        agent_status[symbol] = Status(symbol=symbol, state="running", description="Fetching earnings", last_update=None)
         try:
             result = await poller.run_earnings(symbol)
-            agent_status[symbol] = Status(symbol=symbol, state="earnings_succeeded", last_update=result["ts"])
+            agent_status[symbol] = Status(symbol=symbol, state="succeeded", description="Earnings complete", last_update=result["ts"])
+        except asyncio.CancelledError:
+             agent_status[symbol] = Status(symbol=symbol, state="stopped", description="User cancelled", last_update=None)
         except Exception as exc:
             logger.exception("ingest earnings failed", extra={"symbol": symbol})
-            agent_status[symbol] = Status(symbol=symbol, state="earnings_failed", last_update=None, error_message=str(exc))
+            agent_status[symbol] = Status(symbol=symbol, state="failed", description="Earnings failed", last_update=None, error_message=str(exc))
+        finally:
+             if symbol in running_tasks:
+                 del running_tasks[symbol]
     
-    asyncio.create_task(task())
+    t = asyncio.create_task(task())
+    running_tasks[symbol] = t
     return {"status": "queued", "symbol": symbol}
 
 @app.get("/status", response_model=list[Status])
@@ -317,7 +350,8 @@ async def dashboard():
         section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
         
         h2 { margin: 0; font-size: 1rem; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
-        
+        h4 { margin: 0 0 0.5rem 0; font-size:0.9rem; color:#cbd5e1; }
+
         /* Controls */
         .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
         .group { display: flex; align-items: center; gap: 0.5rem; background: rgba(0,0,0,0.2); padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); }
@@ -347,11 +381,12 @@ async def dashboard():
         .badge { display: inline-flex; align-items: center; padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; background: var(--border); color: var(--text-muted); user-select: none; }
         .badge.green { background: rgba(16, 185, 129, 0.2); text: #6ee7b7; color: #34d399; }
         .badge.red { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+        .badge.blue { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
         
         pre { background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 6px; overflow: auto; margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; border: 1px solid var(--border); }
         
         /* Logs */
-        #logs-box { height: 300px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; display: flex; flex-direction: column; gap: 0.25rem; }
+        #logs-box { height: 300px; overflow-y: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; display: flex; flex-direction: column; gap: 0.25rem; background: #0f172a; padding: 0.5rem; border-radius: 4px; }
         .log-entry { padding: 0.25rem 0.5rem; border-radius: 4px; }
         .log-entry:hover { background: rgba(255,255,255,0.05); }
         .log-info { color: #94a3b8; }
@@ -359,16 +394,22 @@ async def dashboard():
         .log-error { color: #fca5a5; }
         
         /* Status List */
-        .status-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem; }
-        .status-card { background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: space-between; gap: 0.5rem; }
-        .status-card .sym { font-weight: 700; font-size: 1.1rem; color: #fff; }
-        .status-card .state { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+        .status-card { background: rgba(255,255,255,0.03); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items:center; }
+        .status-card .left { display: flex; flex-direction: column; gap: 0.25rem; }
+        .status-card .sym { font-weight: 700; font-size: 1rem; color: #fff; }
+        .status-card .desc { font-size: 0.8rem; color: var(--text-muted); }
+        .status-card .right { display: flex; align-items:center; gap: 0.5rem; }
         
         /* Tabs */
         .tabs { display: flex; gap: 1rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
         .tab { padding: 0.5rem 0; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; transition: all 0.2s; }
         .tab:hover { color: var(--text); }
         .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        
+        /* Split view specific */
+        .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+        @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
       </style>
     </head>
     <body>
@@ -379,60 +420,77 @@ async def dashboard():
                 <h1>Local Stock DB</h1>
             </div>
             <div class="row">
-                <div class="badge">Feed: <span>__ALPACA_FEED__</span></div>
-                <div class="badge">DB: <span>__DUCKDB_PATH__</span></div>
+                <div class="badge blue">Feed: <span>__ALPACA_FEED__</span></div>
+                <div class="badge blue">DB: <span>__DUCKDB_PATH__</span></div>
                 <a href="/docs" target="_blank" class="badge" style="text-decoration:none; cursor:pointer;">API Docs &#8599;</a>
             </div>
         </header>
         
         <main>
-            <!-- Ingest Section -->
-            <section>
-                <h2>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    Data Ingestion
-                </h2>
-                <div class="row">
-                    <div class="group" style="flex: 1;">
-                        <label>Symbol</label>
-                        <input id="ingest-symbol" placeholder="e.g. NVDA" style="width: 80px; text-transform:uppercase;">
+            <!-- Ingest Control & Status Split -->
+            <div class="full-width split">
+                <!-- Control -->
+                <section>
+                    <h2>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Ingest Control
+                    </h2>
+                    <div style="display:flex; flex-direction:column; gap:1rem;">
+                        <div class="row">
+                            <div class="group" style="flex: 1;">
+                                <label>Symbol</label>
+                                <input id="ingest-symbol" placeholder="e.g. NVDA" style="width: 80px; text-transform:uppercase;">
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                             <div class="group">
+                                <label>Lookback (Yrs)</label>
+                                <input id="lookback-years" type="number" value="10" step="0.5">
+                            </div>
+                            <div class="group" style="flex: 1;">
+                                 <label>Dates</label>
+                                 <input id="start" placeholder="YYYY-MM-DD">
+                                 <span>to</span>
+                                 <input id="end" placeholder="YYYY-MM-DD">
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <button id="ingest-button" onclick="ingest()" style="flex:1">Ingest Bars</button>
+                            <button onclick="ingestEarnings()" class="secondary" title="Update Earnings Only">$ Earnings</button>
+                        </div>
+                        <div id="ingest-result" style="font-size: 0.8rem; color: var(--success); min-height: 1.2em;"></div>
                     </div>
-                </div>
-                
-                <div class="row">
-                     <div class="group">
-                        <label>Range (Yrs)</label>
-                        <input id="lookback-years" type="number" value="10" step="0.5">
-                    </div>
-                    <div class="group" style="flex: 1;">
-                         <label>Dates</label>
-                         <input id="start" placeholder="YYYY-MM-DD">
-                         <span>-</span>
-                         <input id="end" placeholder="YYYY-MM-DD">
-                    </div>
-                </div>
-                
-                <div class="row" style="margin-top:auto">
-                    <button id="ingest-button" onclick="ingest()" style="flex:1">Ingest Bars</button>
-                    <button onclick="ingestEarnings()" class="secondary" title="Update Earnings Only">$</button>
-                </div>
-                <div id="ingest-result" style="font-size: 0.8rem; color: var(--success); min-height: 1.2em;"></div>
-            </section>
+                </section>
 
-            <!-- Status Section -->
-            <section class="full-width">
-                <h2>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    System Status
-                    <div style="margin-left:auto; display:flex; gap:0.5rem; align-items:center;">
-                        <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; cursor:pointer;">
-                            <input type="checkbox" id="alpaca-debug" onchange="toggleAlpacaDebug(this.checked)"> Raw Debug
-                        </label>
-                        <button class="sm secondary" onclick="refreshStatus()">Refresh</button>
+                <!-- Processes & Logs -->
+                <section style="display:flex; flex-direction:column; min-height:400px;">
+                    <h2 style="margin-bottom:0;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        System Activity
+                        <div style="margin-left:auto; display:flex; gap:0.5rem; align-items:center;">
+                            <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem; cursor:pointer;">
+                                <input type="checkbox" id="alpaca-debug" onchange="toggleAlpacaDebug(this.checked)"> Raw Debug
+                            </label>
+                        </div>
+                    </h2>
+                    
+                    <div style="flex:1; display:flex; flex-direction:column; gap:1rem;">
+                        <div>
+                             <h4>Running Processes</h4>
+                             <div id="status-grid" class="status-grid">
+                                <div style="color:var(--text-muted); font-size:0.8rem; text-align:center; padding:1rem;">No active processes</div>
+                             </div>
+                        </div>
+                        
+                        <div style="flex:1; display:flex; flex-direction:column; min-height:200px;">
+                             <h4>Live Logs</h4>
+                             <div id="logs-box" style="flex:1;"></div>
+                        </div>
                     </div>
-                </h2>
-                <div id="status-grid" class="status-grid"></div>
-            </section>
+                </section>
+            </div>
 
             <!-- Data Viewer -->
             <section class="full-width" style="min-height: 400px;">
@@ -474,36 +532,23 @@ async def dashboard():
                 </div>
             </section>
             
-            <!-- Tests Section -->
+            <!-- Tests Section (Mini) -->
             <section class="full-width">
                 <h2>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                    Test Runner
+                    Tests
+                    <span id="tests-status" class="badge" style="margin-left:1rem;"></span>
                 </h2>
                 <div class="row">
                     <input id="tests-expression" placeholder="pytest matching..." style="flex: 1; background: rgba(0,0,0,0.2); border: 1px solid var(--border); padding: 0.5rem; border-radius: 4px; color: var(--text);">
-                    <button onclick="runAllTests()">Run All</button>
-                    <button class="secondary" onclick="runSelectedTests()">Run Selected</button>
+                    <button class="sm" onclick="runAllTests()">Run All</button>
+                    <button class="sm secondary" onclick="runSelectedTests()">Run Selected</button>
                 </div>
-                <div class="row" style="margin-top: 0.5rem;">
-                     <span id="tests-status" class="badge"></span>
-                     <span id="tests-meta" style="font-size: 0.75rem; color: var(--text-muted);"></span>
-                </div>
-                <details style="background: rgba(0,0,0,0.2); border-radius: 4px; padding: 0.5rem; margin-top:0.5rem;">
-                    <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Output (stdout/stderr)</summary>
+                 <details>
+                    <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted); margin-top:0.5rem;">Output</summary>
                     <pre id="tests-stdout" style="margin-top: 0.5rem; max-height: 200px; color: #cbd5e1;"></pre>
                     <pre id="tests-stderr" style="margin-top: 0.5rem; max-height: 200px; color: #fca5a5;"></pre>
                 </details>
-            </section>
-            
-            <!-- Logs -->
-            <section class="full-width">
-                <h2>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    Logs
-                    <button class="sm secondary" onclick="refreshLogs()" style="margin-left:auto;">Refresh</button>
-                </h2>
-                <div id="logs-box"></div>
             </section>
             
             <!-- Danger Zone -->
@@ -532,8 +577,9 @@ async def dashboard():
              loadTablesList();
              loadData();
              loadDebugToggle();
-             // Auto-refresh status
-             setInterval(refreshStatus, 5000); 
+             // Auto-refresh loops
+             setInterval(refreshStatus, 2000); 
+             setInterval(refreshLogs, 2000);
         };
 
         // Actions
@@ -545,20 +591,26 @@ async def dashboard():
             const end = $('end').value;
             
             $('ingest-button').disabled = true;
-            $('ingest-result').innerText = 'Ingesting...';
+            $('ingest-result').innerText = 'Queueing...';
             
             try {
                 let url = `/ingest/${sym}?start=${start}`;
                 if(end) url += `&end=${end}`;
                 const res = await fetch(url, {method: 'POST'});
                 const data = await res.json();
-                $('ingest-result').innerText = JSON.stringify(data);
+                $('ingest-result').innerText = 'Queued: ' + data.ts;
                 refreshStatus();
             } catch(e) {
                 alert('Ingest failed: ' + e);
             } finally {
                $('ingest-button').disabled = false;
             }
+        }
+
+        async function stopTask(sym) {
+            if(!confirm('Stop task for ' + sym + '?')) return;
+            await fetch('/stop/' + sym, { method: 'POST' });
+            refreshStatus();
         }
         
         async function ingestEarnings() {
@@ -627,6 +679,7 @@ async def dashboard():
                 const end = Math.min(state.offset + state.limit, state.total);
                 $('page-info').innerText = `${state.offset + 1}-${end} of ${state.total}`;
             } catch(e) {
+                // Ignore error on load if table doesn't exist yet
                 $('data-table').querySelector('tbody').innerHTML = `<tr><td colspan="100" style="text-align:center">No data or error</td></tr>`;
             }
         }
@@ -696,10 +749,6 @@ async def dashboard():
             const status = $('tests-status');
             status.innerText = st.status || "unknown";
             status.className = `badge ${st.status === "passed" ? "green" : st.status === "failed" ? "red" : ""}`;
-            
-            $('tests-meta').innerText = 
-               [st.started_at ? `Start: ${st.started_at}` : "", st.returncode !== null ? `Exit: ${st.returncode}` : ""].join(' • ');
-            
             $('tests-stdout').innerText = st.stdout || "";
             $('tests-stderr').innerText = st.stderr || "";
         }
@@ -709,29 +758,56 @@ async def dashboard():
             const res = await fetch('/status');
             const data = await res.json();
             const grid = $('status-grid');
-            grid.innerHTML = data.map(s => `
-                <div class="status-card" style="border-left: 3px solid ${s.state === 'error' ? 'var(--danger)' : s.state === 'complete' ? 'var(--success)' : 'var(--primary)'}">
-                    <div style="display:flex; justify-content:space-between">
-                         <span class="sym">${s.symbol}</span>
-                         <span class="badge ${s.state === 'complete' ? 'green' : s.state === 'error' ? 'red' : ''}">${s.state}</span>
+            
+            // Only show active or recently failed/succeeded (last 5 mins) to keep list clean?
+            // For now show all tracked
+            
+            if (data.length === 0) {
+                 grid.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; text-align:center; padding:1rem;">No active processes</div>';
+                 return;
+            }
+
+            // Sort: Running first, then by time
+            data.sort((a,b) => (a.state === 'running' ? -1 : 1));
+
+            grid.innerHTML = data.map(s => {
+                const isRunning = s.state === 'running';
+                const badgeClass = s.state === 'succeeded' || s.state === 'completed' ? 'green' : s.state === 'failed' ? 'red' : s.state === 'running' ? 'blue' : '';
+                
+                return `
+                <div class="status-card" style="border-left: 3px solid ${s.state === 'failed' ? 'var(--danger)' : s.state === 'succeeded' ? 'var(--success)' : 'var(--primary)'}">
+                    <div class="left">
+                         <div style="display:flex; align-items:center; gap:0.5rem">
+                             <span class="sym">${s.symbol}</span>
+                             <span class="badge ${badgeClass}">${s.state}</span>
+                         </div>
+                         <div class="desc">${s.description || '-'}</div>
+                         ${s.error_message ? `<div style="color: var(--danger); font-size: 0.75rem">${s.error_message}</div>` : ''}
                     </div>
-                    <div style="font-size: 0.75rem; color: var(--text-muted)">Updated: ${s.last_update ? s.last_update.split('T')[1].split('.')[0] : '-'}</div>
-                    ${s.error_message ? `<div style="color: var(--danger); font-size: 0.75rem">${s.error_message}</div>` : ''}
+                    <div class="right">
+                        ${isRunning ? `<button class="sm danger" onclick="stopTask('${s.symbol}')">Stop</button>` : ''}
+                    </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
         
         async function refreshLogs() {
             const res = await fetch('/logs?limit=50');
             const data = await res.json();
             const box = $('logs-box');
+            // Check if scroll is at bottom
+            const isAtBottom = box.scrollHeight - box.clientHeight <= box.scrollTop + 50;
+            
             box.innerHTML = data.map(l => {
                  const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARNING' ? 'log-warning' : 'log-info';
+                 const ts = l.ts ? l.ts.split('T')[1].split('.')[0] : '';
                  return `<div class="log-entry ${cls}">
-                    <span style="opacity:0.6">[${l.level}]</span> ${l.message}
-                    ${l.raw ? `<details><summary style="cursor:pointer; opacity:0.5">Raw</summary><pre>${l.raw}</pre></details>` : ''}
+                    <span style="opacity:0.6; font-size:0.7em; margin-right:0.5rem;">${ts}</span>
+                    <span style="opacity:0.8">[${l.level}]</span> ${l.message}
                  </div>`;
-            }).reverse().join('');
+            }).join('');
+            
+            if (isAtBottom) box.scrollTop = box.scrollHeight;
         }
 
         async function loadDebugToggle() {

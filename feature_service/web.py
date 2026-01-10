@@ -7,6 +7,7 @@ import tempfile
 import shutil
 import duckdb
 import pandas as pd
+from collections import deque
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
@@ -19,7 +20,31 @@ from .pipeline import run_pipeline, list_symbols as list_symbols_from_db
 
 cfg = Config()
 cfg.ensure_paths()
+
+# Setup Memory Logging
+log_queue = deque(maxlen=200)
+
+class MemoryHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            log_queue.append({
+                "ts": datetime.fromtimestamp(record.created).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": msg
+            })
+        except Exception:
+            self.handleError(record)
+
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+mem_handler = MemoryHandler()
+mem_handler.setFormatter(formatter)
+
+# Configure Root Logger
 logging.basicConfig(level=getattr(logging, cfg.log_level.upper(), logging.INFO))
+logging.getLogger().addHandler(mem_handler)
+
 logger = logging.getLogger("feature_service.web")
 app = FastAPI(title="Feature Builder Service")
 
@@ -55,6 +80,7 @@ status: dict[str, object] = {
     "result": None,
     "error": None,
     "current_symbol": None,
+    "task_detail": None,
     "progress_current": 0,
     "progress_total": 0,
     "progress_pct": 0
@@ -62,10 +88,11 @@ status: dict[str, object] = {
 status_lock = asyncio.Lock()
 pipeline_stop_event = threading.Event()
 
-def _progress_callback(sym: str, current: int, total: int):
+def _progress_callback(sym: str, current: int, total: int, detail: str = None):
     # Direct update of dict is thread-safe enough for this use case (GIL)
     # We update these fields so the /status endpoint picks them up
     status["current_symbol"] = sym
+    status["task_detail"] = detail
     status["progress_current"] = current
     status["progress_total"] = total
     status["progress_pct"] = int((current / total) * 100) if total > 0 else 0
@@ -82,6 +109,7 @@ async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> 
                 "result": None,
                 "error": None,
                 "current_symbol": "Starting...",
+                "task_detail": "Initializing pipeline...",
                 "progress_current": 0,
                 "progress_total": 0,
                 "progress_pct": 0
@@ -107,7 +135,8 @@ async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> 
                     "state": final_state,
                     "completed_at": datetime.now(tz=timezone.utc).isoformat(),
                     "result": result,
-                    "current_symbol": None
+                    "current_symbol": None,
+                    "task_detail": None
                 }
             )
     except Exception as exc:  # pragma: no cover
@@ -118,7 +147,8 @@ async def _run(symbols: Optional[list[str]], options: Optional[dict] = None) -> 
                     "state": "failed",
                     "error": str(exc),
                     "completed_at": datetime.now(tz=timezone.utc).isoformat(),
-                    "current_symbol": None
+                    "current_symbol": None,
+                    "task_detail": None
                 }
             )
 
@@ -135,7 +165,7 @@ async def index():
         body { font-family: 'Inter', system-ui, sans-serif; margin: 0; background: #0b1224; color: #e2e8f0; font-size: 0.9rem; }
         header { padding: 0.75rem 1rem; background: #111827; display:flex; justify-content: space-between; align-items:center; border-bottom: 1px solid #1f2937; }
         h1 { margin: 0; font-size: 1.1rem; }
-        main { padding: 1rem; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        main { padding: 1rem; display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); }
         section { background: #111827; border-radius: 8px; padding: 0.75rem; border: 1px solid #1f2937; }
         section.full-width { grid-column: 1 / -1; }
         h3 { margin: 0 0 0.5rem 0; font-size: 1rem; color: #94a3b8; }
@@ -149,10 +179,15 @@ async def index():
         .badge { background: #1f2937; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75rem; color: #94a3b8; }
         .pass { background: #064e3b; color: #6ee7b7; }
         .fail { background: #7f1d1d; color: #fca5a5; }
+        .running { background: #1e3a8a; color: #93c5fd; }
         pre { background: #0f172a; border-radius: 4px; padding: 0.5rem; max-height: 150px; overflow: auto; font-size: 0.75rem; margin: 0; }
         .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
         .split { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
         input[type="checkbox"] { accent-color: #2563eb; }
+        .log-entry { font-family: monospace; border-bottom: 1px solid #334155; padding: 2px 0; }
+        .log-error { color: #fca5a5; }
+        .log-warning { color: #fde047; }
+        .log-info { color: #cbd5e1; }
       </style>
     </head>
     <body>
@@ -161,52 +196,61 @@ async def index():
         <div class="row" style="margin:0"> <span class="badge">Src: __SOURCE_DB__</span> <span class="badge">Dst: __DEST_DB__</span></div>
       </header>
       <main>
-        <section>
-          <h3>1. Load Tickers</h3>
-          <div class="row">
-            <button onclick="loadSymbols()">Load</button>
-            <span id="step1-badge" class="badge">pending</span>
-          </div>
-          <div style="max-height: 200px; overflow-y: auto; border: 1px solid #1f2937; border-radius: 4px;">
-            <table id="symbols-table"><thead><tr><th width="30"><input type="checkbox" onclick="toggleAll(this)"></th><th>Symbol</th></tr></thead><tbody></tbody></table>
-          </div>
-        </section>
-
-        <section>
-          <h3>2. Configure & Generate</h3>
-          <div style="margin-bottom: 0.5rem; border: 1px solid #1f2937; padding: 0.5rem; border-radius: 4px;">
-            <div class="row">
-                <label><input type="checkbox" id="opt-sma" checked> SMA</label>
-                <label><input type="checkbox" id="opt-bb" checked> Bollinger</label>
-                <label><input type="checkbox" id="opt-rsi" checked> RSI</label>
-                <label><input type="checkbox" id="opt-macd" checked> MACD</label>
-                <label><input type="checkbox" id="opt-atr" checked> ATR</label>
-                <label><input type="checkbox" id="opt-vol" checked> Volume</label>
-                <label><input type="checkbox" id="opt-time" checked> Time</label>
-            </div>
-            <hr style="border: 0; border-top: 1px solid #1f2937; margin: 0.5rem 0;">
-            <div class="row">
-                <label><input type="checkbox" id="opt-segmentation" onchange="toggleSeg(this)"> Episode Mode</label>
-            </div>
-            <div id="seg-options" class="row" style="display:none; margin-left: 1rem;">
-                <label>Train: <input type="number" id="opt-train" value="30" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
-                <label>Test: <input type="number" id="opt-test" value="5" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
-            </div>
-          </div>
-          <div class="row">
-            <button id="run-btn" onclick="runSelected()">Generate Features</button>
-            <button id="stop-btn" onclick="stopRun()" style="display:none; background: #b91c1c;">Stop</button>
-            <span id="step3-badge" class="badge">idle</span>
-          </div>
-          
-          <div style="background:rgba(255,255,255,0.05); height:24px; border-radius:12px; margin: 0.5rem 0; overflow:hidden; position:relative;">
-             <div id="progress-bar" style="width:0%; height:100%; background:#2563eb; transition:width 0.3s; display:flex; align-items:center; justify-content:center; font-size:0.75rem; font-weight:bold;"></div>
-          </div>
-          <div id="progress-text" style="font-size:0.8rem; color:#94a3b8; text-align:center; margin-bottom:0.5rem;">Idle</div>
-
+        <!-- PIPELINE PROCESS -->
+        <section class="full-width">
+          <h3>Feature Pipeline Control</h3>
           <div class="split">
-             <div><small>Status</small><pre id="status-json">{}</pre></div>
-             <div><small>Result</small><pre id="result-box">{}</pre></div>
+            <div>
+                 <div style="margin-bottom: 0.5rem;">
+                     <strong>1. Select Tickers</strong>
+                     <div class="row" style="margin-top:0.25rem;">
+                        <button onclick="loadSymbols()">Load Symbols</button>
+                        <span id="step1-badge" class="badge">pending</span>
+                     </div>
+                     <div style="max-height: 150px; overflow-y: auto; border: 1px solid #1f2937; border-radius: 4px;">
+                        <table id="symbols-table"><thead><tr><th width="30"><input type="checkbox" onclick="toggleAll(this)"></th><th>Symbol</th></tr></thead><tbody></tbody></table>
+                     </div>
+                 </div>
+                 
+                 <div style="margin-top: 1rem;">
+                    <strong>2. Configure & Run</strong>
+                    <div style="margin: 0.25rem 0; border: 1px solid #1f2937; padding: 0.5rem; border-radius: 4px;">
+                        <div class="row">
+                            <label><input type="checkbox" id="opt-sma" checked> SMA</label>
+                            <label><input type="checkbox" id="opt-bb" checked> Bollinger</label>
+                            <label><input type="checkbox" id="opt-rsi" checked> RSI</label>
+                            <label><input type="checkbox" id="opt-macd" checked> MACD</label>
+                            <label><input type="checkbox" id="opt-atr" checked> ATR</label>
+                            <label><input type="checkbox" id="opt-vol" checked> Volume</label>
+                            <label><input type="checkbox" id="opt-time" checked> Time</label>
+                        </div>
+                        <div class="row">
+                            <label><input type="checkbox" id="opt-segmentation" onchange="toggleSeg(this)"> Episode Mode</label>
+                        </div>
+                        <div id="seg-options" class="row" style="display:none; margin-left: 1rem;">
+                            <label>Train: <input type="number" id="opt-train" value="30" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
+                            <label>Test: <input type="number" id="opt-test" value="5" style="width: 50px; background: #1f2937; color: white; border: 1px solid #374151;"></label>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <button id="run-btn" onclick="runSelected()">Generate Features</button>
+                        <button id="stop-btn" onclick="stopRun()" style="display:none; background: #b91c1c;">Stop Pipeline</button>
+                    </div>
+                 </div>
+            </div>
+            
+            <!-- STATUS PANEL -->
+            <div style="background:#1e293b; padding:1rem; border-radius:4px; display:flex; flex-direction:column;">
+                <h4 style="margin:0 0 0.5rem 0; color:#cbd5e1;">Pipeline Status: <span id="pipeline-state" class="badge">IDLE</span></h4>
+                <div style="background:rgba(255,255,255,0.05); height:24px; border-radius:12px; margin-bottom: 0.25rem; overflow:hidden; position:relative;">
+                     <div id="progress-bar" style="width:0%; height:100%; background:#2563eb; transition:width 0.3s; display:flex; align-items:center; justify-content:center; font-size:0.75rem; font-weight:bold;"></div>
+                </div>
+                <div id="progress-detail" style="font-size:0.8rem; color:#94a3b8; text-align:center; height:1.2em;">Idle</div>
+                
+                <h4 style="margin:1rem 0 0.25rem 0; color:#cbd5e1;">Live Logs</h4>
+                <div id="log-container" style="background:#0f172a; flex:1; overflow-y:auto; font-size:0.75rem; padding:0.5rem; border-radius:4px; max-height:200px;">
+                </div>
+            </div>
           </div>
         </section>
 
@@ -229,11 +273,12 @@ async def index():
       </main>
       <script>
         let pageState = { offset: 0, limit: 15, total: 0 };
+        let logInterval = null;
 
         function setBadge(id, state, text) {
           const el = document.getElementById(id);
           if (!el) return;
-          el.className = 'badge ' + (state === 'pass' ? 'pass' : state === 'fail' ? 'fail' : '');
+          el.className = 'badge ' + (state === 'pass' ? 'pass' : state === 'fail' ? 'fail' : state === 'running' ? 'running' : '');
           el.innerText = text || state;
         }
 
@@ -297,52 +342,81 @@ async def index():
             setBadge('step3-badge', 'running', 'queued');
             pollStatus();
           } catch (err) {
-            setBadge('step3-badge', 'fail', 'error');
+            console.error(err);
           }
         }
 
         async function stopRun() {
             try {
                 await fetch('/stop', { method: 'POST' });
-                setBadge('step3-badge', 'fail', 'stopping...');
             } catch(e) { console.error(e); }
         }
 
         async function pollStatus() {
-          const res = await fetch('/status');
-          const data = await res.json();
-          document.getElementById('status-json').innerText = JSON.stringify(data, null, 2);
-          
-          // Update Status Display
-          const currentSym = data.current_symbol || 'None';
-          const pct = data.progress_pct || 0;
-          const progressText = `Processing: ${currentSym} (${data.progress_current}/${data.progress_total})`;
-          
-          const pBar = document.getElementById('progress-bar');
-          if(pBar) {
-              pBar.style.width = `${pct}%`;
-              pBar.innerText = pct > 5 ? `${pct}%` : '';
-          }
-           
-          const pText = document.getElementById('progress-text');
-          if(pText) pText.innerText = data.state === 'running' ? progressText : data.state;
+          try {
+            const res = await fetch('/status');
+            const data = await res.json();
+            
+            // Update State Badge
+            const state = data.state.toUpperCase();
+            const badgeClass = data.state === 'succeeded' ? 'pass' : data.state === 'failed' ? 'fail' : data.state === 'running' ? 'running' : '';
+            const stateBadge = document.getElementById('pipeline-state');
+            stateBadge.className = 'badge ' + badgeClass;
+            stateBadge.innerText = state;
+            
+            // Update Progress
+            const pct = data.progress_pct || 0;
+            const pBar = document.getElementById('progress-bar');
+            pBar.style.width = `${pct}%`;
+            pBar.innerText = pct > 5 ? `${pct}%` : '';
 
-          if(data.state === 'running') {
-              document.getElementById('stop-btn').style.display = 'inline-block';
-              document.getElementById('run-btn').disabled = true;
-          } else {
-              document.getElementById('stop-btn').style.display = 'none';
-              document.getElementById('run-btn').disabled = false;
-          }
-          
-          if (data.result) document.getElementById('result-box').innerText = JSON.stringify(data.result, null, 2);
-          
-          if (data.state === 'running') setTimeout(pollStatus, 1000);
-          else if (data.state === 'succeeded' || data.state === 'stopped' || data.state === 'failed') {
-             const badgeClass = data.state === 'succeeded' ? 'pass' : 'fail';
-             setBadge('step3-badge', badgeClass, data.state);
-             loadRows(0);
-          }
+            // Update Detail Text
+            const pDetail = document.getElementById('progress-detail');
+            let detailText = data.state;
+            if (data.state === 'running') {
+                detailText = `Freq: ${data.current_symbol || '...'} (${data.progress_current}/${data.progress_total})`;
+                if (data.task_detail) detailText += ` - ${data.task_detail}`;
+            } else if (data.state === 'succeeded') {
+                detailText = `Completed at ${data.completed_at}`;
+            } else if (data.state === 'failed') {
+                detailText = `Error: ${data.error}`;
+            }
+            pDetail.innerText = detailText || 'Idle';
+
+            // Buttons
+            if(data.state === 'running') {
+                document.getElementById('stop-btn').style.display = 'inline-block';
+                document.getElementById('run-btn').disabled = true;
+                if(!logInterval) logInterval = setInterval(fetchLogs, 2000);
+            } else {
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('run-btn').disabled = false;
+                if (data.state === 'succeeded' || data.state === 'stopped' || data.state === 'failed') {
+                   loadRows(0); // Refresh data on complete
+                }
+                if (logInterval && (Date.now() - new Date(data.completed_at).getTime() > 5000)) {
+                    // Stop polling logs shortly after completion
+                    clearInterval(logInterval);
+                    logInterval = null;
+                }
+            }
+            
+            // Re-poll if running or recently finished
+            if (data.state === 'running') setTimeout(pollStatus, 1000);
+          } catch(e) { console.log("Poll error", e); }
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/logs');
+                const logs = await res.json();
+                const container = document.getElementById('log-container');
+                container.innerHTML = logs.map(l => {
+                    const cls = l.level === 'ERROR' ? 'log-error' : l.level === 'WARNING' ? 'log-warning' : 'log-info';
+                    return `<div class="log-entry ${cls}">[${l.ts.split('T')[1].split('.')[0]}] ${l.message}</div>`;
+                }).join('');
+                container.scrollTop = container.scrollHeight;
+            } catch(e) { console.error('log fetch error', e); }
         }
 
         async function loadRows(offset) {
@@ -372,9 +446,9 @@ async def index():
 
                     data.rows.forEach(r => {
                         const tr = document.createElement('tr');
-                        cols.forEach(c => {
+                        cols.forEach(rCol => {
                             const td = document.createElement('td');
-                            if (c === 'options') {
+                            if (rCol === 'options') {
                                 const details = document.createElement('details');
                                 const summary = document.createElement('summary');
                                 summary.innerText = '{...}';
@@ -382,13 +456,13 @@ async def index():
                                 summary.style.color = '#94a3b8';
                                 details.appendChild(summary);
                                 const pre = document.createElement('pre');
-                                pre.innerText = r[c];
+                                pre.innerText = r[rCol];
                                 pre.style.margin = '0.5rem 0 0 0';
                                 pre.style.whiteSpace = 'pre-wrap';
                                 details.appendChild(pre);
                                 td.appendChild(details);
                             } else {
-                                td.innerText = r[c];
+                                td.innerText = r[rCol];
                             }
                             tr.appendChild(td);
                         });
@@ -413,7 +487,9 @@ async def index():
 
         loadSymbols();
         pollStatus();
+        fetchLogs();
         loadRows(0);
+        setInterval(fetchLogs, 5000); // Background log refresh
       </script>
     </body>
     </html>
@@ -593,6 +669,11 @@ async def stop_features():
 async def get_status():
     async with status_lock:
         return dict(status)
+
+
+@app.get("/logs")
+async def get_logs():
+    return list(log_queue)
 
 
 @app.on_event("startup")

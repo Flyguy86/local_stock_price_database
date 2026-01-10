@@ -421,7 +421,7 @@ def run_pipeline(
                 
             # Report Progress
             if progress_callback:
-                progress_callback(sym, i + 1, total_symbols)
+                progress_callback(sym, i + 1, total_symbols, "Fetching bars")
 
             df = fetch_bars(src_conn, sym)
             if df.empty:
@@ -433,9 +433,15 @@ def run_pipeline(
             calc_options = (options or {}).copy()
             calc_options["earnings_df"] = earnings_df
 
+            if progress_callback:
+                progress_callback(sym, i + 1, total_symbols, "Engineering features")
+
             cleaned = clean_bars(df)
             featured = engineer_features(cleaned, calc_options)
             
+            if progress_callback:
+                progress_callback(sym, i + 1, total_symbols, "Writing output")
+
             # Pass original options to write_features (excludes earnings_df)
             inserted = write_features(dest_conn, featured, sym, dest_parquet, options)
             totals_inserted += inserted
