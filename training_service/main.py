@@ -862,10 +862,6 @@ def dashboard():
     </html>
     """
 
-@app.get("/algorithms")
-def get_algorithms():
-    return list(ALGORITHMS.keys())
-
 @app.get("/data/options")
 def list_global_options():
     return get_data_options()
@@ -890,6 +886,7 @@ class TrainRequest(BaseModel):
     feature_whitelist: Optional[list[str]] = None
     group_id: Optional[str] = None
 
+# Validating batch request schema
 class TrainBatchRequest(BaseModel):
     symbol: str
     algorithm: str
@@ -898,6 +895,7 @@ class TrainBatchRequest(BaseModel):
     p_value_threshold: float = 0.05
     parent_model_id: Optional[str] = None
     feature_whitelist: Optional[list[str]] = None
+
 @app.get("/algorithms")
 def list_algorithms():
     return list(ALGORITHMS.keys())
