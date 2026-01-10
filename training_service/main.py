@@ -193,7 +193,10 @@ def dashboard():
                         <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 1;">
                             <tr>
                                 <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAllFeatures(this)"></th>
-                                <th style="text-align:left;">Feature</th>
+                                <th style="text-align:left;">
+                                    Feature <br>
+                                    <input type="text" id="feat-filter" placeholder="Contains..." style="width: 100%; font-size: 0.75rem; padding: 2px; margin-top: 2px; background: rgba(0,0,0,0.3); border: 1px solid var(--border);" onkeyup="filterFeatures()">
+                                </th>
                                 <th style="text-align:right;">SHAP</th>
                                 <th style="text-align:right;">Permutation</th>
                                 <th style="text-align:right;">Coeff / Imp</th>
@@ -330,8 +333,24 @@ def dashboard():
             ui.style.display = 'block';
         }
 
+        function filterFeatures() {
+            const term = $('feat-filter').value.toLowerCase();
+            const rows = document.querySelectorAll('#parent-features-body tr');
+            rows.forEach(r => {
+                const feat = r.querySelector('td:nth-child(2)').innerText.toLowerCase();
+                r.style.display = feat.includes(term) ? '' : 'none';
+            });
+        }
+
         function toggleAllFeatures(el) {
-            document.querySelectorAll('.feat-check').forEach(c => c.checked = el.checked);
+            const visibleOnly = true; // should toggle only visible? typically yes in filters
+            const rows = document.querySelectorAll('#parent-features-body tr');
+            rows.forEach(r => {
+                if(r.style.display !== 'none') {
+                    const cb = r.querySelector('.feat-check');
+                    if(cb) cb.checked = el.checked;
+                }
+            });
             updateCount();
         }
 
