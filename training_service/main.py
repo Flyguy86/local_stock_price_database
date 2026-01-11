@@ -86,6 +86,44 @@ def dashboard():
             background: rgba(0,0,0,0.5);
             backdrop-filter: blur(2px);
         }
+        
+        /* Tooltip Styles */
+        .help-tip {
+            position: relative;
+            display: inline-block;
+            margin-left: 4px;
+            cursor: help;
+        }
+        .help-tip .tip-content {
+            visibility: hidden;
+            width: 420px;
+            background-color: var(--bg-card);
+            color: var(--text);
+            text-align: left;
+            border-radius: 6px;
+            padding: 12px;
+            position: absolute;
+            z-index: 100;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -210px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            font-size: 0.8rem;
+            font-weight: normal;
+            line-height: 1.4;
+            pointer-events: none;
+        }
+        .help-tip:hover .tip-content {
+            visibility: visible;
+            opacity: 1;
+        }
+        .tip-content table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        .tip-content th { background: rgba(255,255,255,0.05); padding: 4px 8px; font-weight: 600; text-align: left; border-bottom: 1px solid var(--border); }
+        .tip-content td { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+        .tip-content code { background: rgba(0,0,0,0.3); padding: 2px 4px; border-radius: 3px; font-family: monospace; }
       </style>
     </head>
     <body>
@@ -116,6 +154,51 @@ def dashboard():
                 <div class="group">
                      <label>Data Options</label>
                      <select id="data_options" style="max-width: 300px;" onchange="updateSymbols()"><option value="">Loading...</option></select>
+                </div>
+                <!-- Moved Prediction Type Here -->
+                <div class="group">
+                     <label style="display:flex; align-items:center;">
+                        Prediction Type
+                        <div class="help-tip">
+                            ℹ️
+                            <div class="tip-content">
+                                <strong style="color:var(--primary); font-size:0.9rem; border-bottom:1px solid var(--border); display:block; padding-bottom:4px; margin-bottom:8px;">Prediction Type Formats</strong>
+                                
+                                <div style="margin-bottom:8px;">
+                                    <strong>1. Target Variable:</strong> Raw column (e.g. Close).<br>
+                                    <strong>2. Prediction Type:</strong> Math formula applied to it.
+                                </div>
+                                
+                                <table>
+                                    <tr>
+                                        <th width="25%">Type</th>
+                                        <th width="30%">Formula</th>
+                                        <th>Why use it?</th>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#a78bfa">Log Return</td>
+                                        <td><code>ln(Fut/Cur)</code></td>
+                                        <td><strong>Best for ML.</strong> Stationary & Stable.</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#34d399">Pct Change</td>
+                                        <td><code>(Fut-Cur)/Cur</code></td>
+                                        <td>Readable ("+1%"). Interpretable.</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#fca5a5">Raw Price</td>
+                                        <td><code>Future</code></td>
+                                        <td><strong>Risky!</strong> Non-Stationary.</td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+                     </label>
+                     <select id="target_transform">
+                        <option value="log_return" selected>Log Return (Stationary) ✅</option>
+                        <option value="pct_change">Percent Change (Stationary)</option>
+                        <option value="none">Raw Price (Non-Stationary) ⚠️</option>
+                     </select>
                 </div>
                 <div class="group">
                      <label>Symbol (Target)</label>
@@ -199,7 +282,18 @@ def dashboard():
                 <h2 style="color: #a78bfa; border-bottom: 1px solid rgba(167, 139, 250, 0.3); padding-bottom: 0.5rem;">Method A: Train Single Model</h2>
                 <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
                     <div class="group">
-                         <label title="Which raw data column to use (e.g. Close Price).&#10;The Prediction Type will apply a formula to this value.">Target Variable ℹ️</label>
+                         <label style="display:flex; align-items:center;">
+                            Target Variable 
+                            <div class="help-tip">
+                                ℹ️
+                                <div class="tip-content">
+                                    <strong style="color:var(--primary)">Target Variable vs Prediction Type</strong>
+                                    <p style="margin: 0.5rem 0 0.25rem 0"><strong>1. Target Variable:</strong> The raw data column from the database (e.g. Close Price "$200.50").</p>
+                                    <p style="margin: 0 0 0.5rem 0"><strong>2. Prediction Type:</strong> The formula applied to that column to create the training label.</p>
+                                    <div style="font-size:0.75em; color:var(--text-muted); margin-top:0.5rem">See "Prediction Type" tooltip for the math breakdown.</div>
+                                </div>
+                            </div>
+                         </label>
                          <select id="target">
                             <option value="close">Close</option>
                             <option value="open">Open</option>
@@ -209,14 +303,7 @@ def dashboard():
                             <option value="vwap">VWAP</option>
                          </select>
                     </div>
-                    <div class="group">
-                         <label title="How to format the prediction target (Math):&#10;&#10;1. Log Return (Recommended): ln(Future/Current)&#10;   - Best for ML, statistically stable (Stationary).&#10;&#10;2. Percent Change: (Future-Current)/Current&#10;   - Good for interpretability (e.g. +1%).&#10;&#10;3. Raw Price: Future Value&#10;   - Risky! Non-Stationary data (e.g. $50 vs $200) often confuses models.">Prediction Type ℹ️</label>
-                         <select id="target_transform">
-                            <option value="log_return" selected>Log Return (Stationary) ✅</option>
-                            <option value="pct_change">Percent Change (Stationary)</option>
-                            <option value="none">Raw Price (Non-Stationary) ⚠️</option>
-                         </select>
-                    </div>
+                    <!-- Prediction Type moved to Top Training Config -->
                     <div class="group">
                          <label>Timeframe</label>
                          <select id="timeframe">
@@ -334,16 +421,24 @@ def dashboard():
         }
 
         async function load() {
-            // Load Algos
-            const res = await fetch('/algorithms');
-            const algos = await res.json();
-            $('algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
-            
-            // Load Data Options (Global)
-            loadOptions();
+            try {
+                // Load Algos
+                const res = await fetch('/algorithms');
+                if(!res.ok) throw new Error('Failed to fetch algorithms: ' + res.statusText);
+                const algos = await res.json();
+                if(!Array.isArray(algos)) throw new Error('Algorithms response is not a list: ' + JSON.stringify(algos));
+                
+                $('algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
+                
+                // Load Data Options (Global)
+                await loadOptions();
 
-            // Load Models
-            loadModels();
+                // Load Models
+                await loadModels();
+            } catch(e) {
+                console.error("Dashboard load failed:", e);
+                alert("Dashboard load failed: " + e.message);
+            }
         }
         
         async function onParentModelChange() {
@@ -997,7 +1092,8 @@ def dashboard():
                         parent_model_id: $('parent_model').value || null,
                         feature_whitelist: featureWhitelist,
                         timeframe_oc: tf_oc,
-                        timeframe_hl: tf_hl
+                        timeframe_hl: tf_hl,
+                        target_transform: $('target_transform').value
                     })
                 });
                 
@@ -1062,11 +1158,18 @@ class TrainBatchRequest(BaseModel):
     feature_whitelist: Optional[list[str]] = None
     timeframe_oc: str = "1m"
     timeframe_hl: str = "1d"
+    target_transform: str = "log_return"
     target_transform: str = "log_return" # Default to 'log_return' for batch to encourage stationarity
 
 @app.get("/algorithms")
 def list_algorithms():
-    return list(ALGORITHMS.keys())
+    try:
+        keys = list(ALGORITHMS.keys())
+        log.info(f"Serving algorithms list: {keys}")
+        return keys
+    except Exception as e:
+        log.error(f"Failed to list algorithms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/models")
 def list_models():
@@ -1213,7 +1316,8 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
             cfg["tf"],
             req.parent_model_id,
             req.feature_whitelist,
-            group_id  # Pass group_id
+            group_id,  # Pass group_id
+            req.target_transform
         )
 
     return {"group_id": group_id, "ids": started_ids, "status": "started batch"}
