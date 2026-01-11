@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
 import uuid
+import threading
 from pathlib import Path
 from collections import deque
 
@@ -16,12 +17,14 @@ settings.ensure_paths()
 
 # --- Custom Log Handler ---
 log_buffer = deque(maxlen=200)
+log_lock = threading.Lock()
 
 class BufferHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
-            log_buffer.append(msg)
+            with log_lock:
+                log_buffer.append(msg)
         except Exception:
             self.handleError(record)
 
@@ -38,7 +41,8 @@ app = FastAPI(title="Training Service")
 
 @app.get("/logs")
 def get_logs():
-    return list(log_buffer)
+    with log_lock:
+        return list(log_buffer)
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -455,12 +459,25 @@ def dashboard():
         }
 
         function load() {
-            // Load components in parallel so one slow service doesn't block the UI
-            loadAlgos();
-            loadOptions();
-            loadModels();
-            updateLogs();
-            setInterval(updateLogs, 3000); // Poll logs every 3s
+            console.log("Dashbard load() started");
+            try {
+                // Load components in parallel so one slow service doesn't block the UI
+                loadAlgos().catch(e => console.error("loadAlgos error:", e));
+                loadOptions().catch(e => console.error("loadOptions error:", e));
+                loadModels().catch(e => console.error("loadModels error:", e));
+                updateLogs().catch(e => console.error("updateLogs error:", e));
+                
+                setInterval(() => {
+                    updateLogs().catch(e => console.error("Polling updateLogs error:", e));
+                }, 3000); // Poll logs every 3s
+                setInterval(() => {
+                     loadModels().catch(e => console.error("Polling loadModels error:", e));
+                }, 5000);
+
+            } catch(e) {
+                console.error("Critical error in load():", e);
+                alert("Dashboard failed to initialize: " + e);
+            }
         }
         
         async function updateLogs() {
@@ -479,7 +496,11 @@ def dashboard():
                     
                     if(wasAtBottom) div.scrollTop = div.scrollHeight;
                 }
-            } catch(e) { console.error("Log fetch failed", e); }
+            } catch(e) { 
+                console.error("Log fetch failed", e);
+                const div = $('log-container');
+                if(div) div.innerText = "Error: " + e;
+            }
         }
 
         async function loadAlgos() {
@@ -687,7 +708,6 @@ def dashboard():
                  alert("Error loading data options from Feature Builder: " + e);
              }
         }
-        }
 
         function updateSymbols() {
             const opt = $('data_options').value;
@@ -851,7 +871,7 @@ def dashboard():
         }
 
         async function deleteAllModels() {
-            if(!confirm('⚠️ DANGER: Are you sure you want to DELETE ALL models?\n\nThis action cannot be undone.')) return;
+            if(!confirm('⚠️ DANGER: Are you sure you want to DELETE ALL models?\\n\\nThis action cannot be undone.')) return;
             
             const verification = prompt("Type 'DELETE' to confirm wiping all models:");
             if(verification !== 'DELETE') {
@@ -1135,7 +1155,7 @@ def dashboard():
                 featureWhitelist = checked;
             }
 
-            if(!confirm(`Start 4 training jobs for ${symbol}?\n- Open/Close @ ${tf_oc}\n- High/Low @ ${tf_hl}`)) return;
+            if(!confirm(`Start 4 training jobs for ${symbol}?\\n- Open/Close @ ${tf_oc}\\n- High/Low @ ${tf_hl}`)) return;
 
             const btn = document.querySelector('button[onclick="trainBatch()"]'); 
             const originalText = btn ? btn.innerText : 'Train High/Low/Open/Close';
@@ -1178,8 +1198,7 @@ def dashboard():
             }
         }
         
-        window.onload = load;
-        setInterval(loadModels, 5000);
+        window.addEventListener("load", load);
       </script>
     </body>
     </html>
