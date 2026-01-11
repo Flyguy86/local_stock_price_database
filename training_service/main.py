@@ -199,7 +199,7 @@ def dashboard():
                 <h2 style="color: #a78bfa; border-bottom: 1px solid rgba(167, 139, 250, 0.3); padding-bottom: 0.5rem;">Method A: Train Single Model</h2>
                 <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
                     <div class="group">
-                         <label>Target Variable</label>
+                         <label title="Which raw data column to use (e.g. Close Price).&#10;The Prediction Type will apply a formula to this value.">Target Variable ℹ️</label>
                          <select id="target">
                             <option value="close">Close</option>
                             <option value="open">Open</option>
@@ -210,7 +210,7 @@ def dashboard():
                          </select>
                     </div>
                     <div class="group">
-                         <label title="Predict Raw Price vs Log Returns (Recommended)">Prediction Type ℹ️</label>
+                         <label title="How to format the prediction target (Math):&#10;&#10;1. Log Return (Recommended): ln(Future/Current)&#10;   - Best for ML, statistically stable (Stationary).&#10;&#10;2. Percent Change: (Future-Current)/Current&#10;   - Good for interpretability (e.g. +1%).&#10;&#10;3. Raw Price: Future Value&#10;   - Risky! Non-Stationary data (e.g. $50 vs $200) often confuses models.">Prediction Type ℹ️</label>
                          <select id="target_transform">
                             <option value="log_return" selected>Log Return (Stationary) ✅</option>
                             <option value="pct_change">Percent Change (Stationary)</option>
