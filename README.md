@@ -159,6 +159,7 @@ The system includes a backtesting simulation engine to evaluate the performance 
         *   Prediction `> 0` → **Buy Signal**
         *   Prediction `<= 0` → **Sell Signal**
     *   **Filtering Logic** (New):
+        *   **Target Transform Awareness**: Now correctly handles models trained on "Log Returns" vs "Raw Prices". If your model predicts 0.002 (0.2%), the simulation knows this is a high-conviction value, rather than mistakenly comparing it to a $150 stock price.
         *   **Prediction Threshold**: "Don't trade unless conviction is high." A slider filters out weak predictions (e.g. only trade if pred > 0.005).
         *   **Outlier Filter (Z-Score)**: "Don't trust massive predictions." A checkbox filters out predictions that are statistical outliers (Z > 3), which often indicate data errors or model instability.
         *   **Volatility Normalization**: "Adapt to the market." Scales the prediction threshold dynamically based on recent Rolling Volatility.

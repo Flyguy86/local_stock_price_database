@@ -298,13 +298,21 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
     metadata = {}
     if METADATA_DB_PATH.exists():
          with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
-             row = conn.execute("SELECT symbol, timeframe, data_options FROM models WHERE id = ?", [model_id.replace(".joblib", "")]).fetchone()
-             if row:
-                 metadata = {"symbol": row[0], "timeframe": row[1], "data_options": row[2]}
+             # Try to select target_transform first
+             try:
+                 row = conn.execute("SELECT symbol, timeframe, data_options, target_transform FROM models WHERE id = ?", [model_id.replace(".joblib", "")]).fetchone()
+                 if row:
+                     metadata = {"symbol": row[0], "timeframe": row[1], "data_options": row[2], "target_transform": row[3]}
+             except Exception:
+                 # Fallback for old schema
+                 row = conn.execute("SELECT symbol, timeframe, data_options FROM models WHERE id = ?", [model_id.replace(".joblib", "")]).fetchone()
+                 if row:
+                     metadata = {"symbol": row[0], "timeframe": row[1], "data_options": row[2]}
 
     trained_symbol_str = metadata.get("symbol", ticker) 
     timeframe = metadata.get("timeframe", "1m")
     data_options = metadata.get("data_options")
+    target_transform = metadata.get("target_transform", "none")
     
     trained_context = trained_symbol_str.split(",")[1:]
     
@@ -406,12 +414,37 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
         df_sim["pred_dir"] = df_sim["signal"]
     else:
         # Regression Logic with Threshold
-        # (Predicted Price - Close) / Close > Threshold
-        df_sim["signal"] = df_sim.apply(
-            lambda row: 1 if (row["prediction"] - row["close"]) / row["close"] > min_prediction_threshold else 0, 
-            axis=1
-        )
-        df_sim["pred_dir"] = df_sim["signal"]
+        # Check target_transform to decide comparison logic
+        # If model predicts Returns (Log or Pct), compare directly against threshold (> 0 means Up)
+        # If model predicts Price (None), compare (Price - Close)/Close against threshold
+        
+        # Note: target_transform variable is available in this scope? No, need to pass it or extract.
+        # But wait, this code is inside the function that returns it.
+        # Let's use the local variable logic.
+        
+        is_return_pred = target_transform in ["log_return", "pct_change"]
+        
+        if is_return_pred:
+            # Prediction IS the expected return.
+            # Buy if Pred > Threshold
+            # Sell if Pred < -Threshold (or just <= 0? User asked for threshold).
+            # Usually threshold implies "Magnitude of confidence".
+            # If Threshold = 0.0005, then Buy if > 0.0005. Sell if < 0. (Or < -0.0005?)
+            # Standard logic: > 0 for Buy. Threshold logic: > Threshold.
+            
+            df_sim["signal"] = df_sim["prediction"].apply(lambda x: 1 if x > min_prediction_threshold else 0)
+            
+            # Direction for Hit Rate: > 0 is UP.
+            df_sim["pred_dir"] = (df_sim["prediction"] > 0).astype(int)
+            
+        else:
+            # Prediction IS Price.
+            # (Pred - Close) / Close > Threshold
+            df_sim["signal"] = df_sim.apply(
+                lambda row: 1 if ((row["prediction"] - row["close"]) / row["close"]) > min_prediction_threshold else 0, 
+                axis=1
+            )
+            df_sim["pred_dir"] = (df_sim["prediction"] > df_sim["close"]).astype(int)
 
     df_sim["next_close"] = df_sim["close"].shift(-1)
     df_sim["actual_dir"] = (df_sim["next_close"] > df_sim["close"]).astype(int)
@@ -422,7 +455,7 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
     
     df_sim["rolling_hit_rate"] = df_sim["hit"].rolling(window=20).mean() # For display
     
-    return df_sim, X, model
+    return df_sim, X, model, target_transform
 
 
 def train_trading_bot(model_id: str, ticker: str, 
@@ -434,7 +467,7 @@ def train_trading_bot(model_id: str, ticker: str,
     """
     try:
         log.info(f"Training Bot for Model={model_id}, Ticker={ticker}")
-        df_sim, X, _ = _prepare_simulation_inputs(
+        df_sim, X, _, _ = _prepare_simulation_inputs(
             model_id, ticker,
             min_prediction_threshold=min_prediction_threshold,
             enable_z_score_check=enable_z_score_check,
@@ -482,7 +515,7 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
     Runs a backtest simulation.
     """
     # 1. Prepare Data
-    df_sim, X, base_model = _prepare_simulation_inputs(
+    df_sim, X, base_model, target_transform = _prepare_simulation_inputs(
         model_id, ticker,
         min_prediction_threshold=min_prediction_threshold,
         enable_z_score_check=enable_z_score_check,
