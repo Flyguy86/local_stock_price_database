@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 import tempfile
 import shutil
+import hashlib
 
 import duckdb
 import numpy as np
@@ -508,10 +509,32 @@ def write_features(
 
     # Write partitioned parquet for downstream consumption
     df["date"] = pd.to_datetime(df["ts"]).dt.date
+    current_hash = hashlib.md5(opts_str.encode()).hexdigest()[:8]
+
     for date, group in df.groupby("date"):
         dest = parquet_root / symbol / f"dt={date}"
         dest.mkdir(parents=True, exist_ok=True)
-        file_path = dest / "features.parquet"
+        
+        # 1. Legacy Migration: Rename unhashed features.parquet if it exists
+        legacy_path = dest / "features.parquet"
+        if legacy_path.exists():
+            try:
+                # Read options column to determine hash
+                legacy_df = pd.read_parquet(legacy_path, columns=["options"])
+                if not legacy_df.empty:
+                    old_opt = legacy_df["options"].iloc[0]
+                    if pd.isna(old_opt) or not old_opt: old_opt = "{}"
+                    old_hash = hashlib.md5(old_opt.encode()).hexdigest()[:8]
+                    
+                    target_name = dest / f"features_{old_hash}.parquet"
+                    if not target_name.exists():
+                        legacy_path.rename(target_name)
+                    else:
+                        legacy_path.unlink() # Duplicate
+            except Exception as e:
+                logger.warning(f"Legacy migration failed: {e}")
+
+        file_path = dest / f"features_{current_hash}.parquet"
         group.drop(columns=["date"]).to_parquet(file_path, index=False)
     return len(df)
 
