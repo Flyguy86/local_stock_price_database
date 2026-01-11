@@ -33,11 +33,11 @@ ALGORITHMS = {
     "random_forest_classifier": RandomForestClassifier
 }
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None, target_transform: str = "none"):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
-        log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}")
+        log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}. TargetTransform: {target_transform}")
 
         # If group_id provided, simulate a shared "Name" for the UI if needed, 
         # but the db record will store the specific target.
@@ -68,7 +68,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 p_val_thresh = 0.05
         
         # 1. Load Data
-        df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe)
+        df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe, target_transform=target_transform)
         
         # 1a. Detect Split Column (Train/Test)
         split_col_name = None
@@ -334,6 +334,12 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         if not ModelClass:
             raise ValueError(f"Unknown algorithm: {algorithm}")
             
+        if "regressor" in algorithm or "regression" in algorithm:
+             if target_transform in ["log_return", "pct_change"]:
+                  pass # Correct matching
+        elif target_transform in ["log_return", "pct_change"]:
+             log.warning("Classification algorithm selected but regression transform used. Target remains continuous. Did you mean to use Regressor?")
+
         # User Req: "Standardize your features" (Pipeline)
         # We wrap the estimator in a pipeline.
         final_estimator = ModelClass(**params)
@@ -353,6 +359,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             metrics["dropped_cols"] = dropped_feature_cols
         metrics["features_count"] = len(feature_cols_used)
         
+        metrics["target_transform"] = target_transform
+
         if is_cv:
             # Process CV metrics
             if "accuracy" in cv_metrics[0]:
@@ -464,7 +472,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             status="completed", 
             metrics=json.dumps(metrics), 
             artifact_path=model_path,
-            feature_cols=json.dumps(feature_cols_used)
+            feature_cols=json.dumps(feature_cols_used),
+            target_transform=target_transform
         )
         log.info(f"Training {training_id} completed. Metrics: {metrics}")
         
@@ -476,7 +485,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             error=str(e)
         )
 
-def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, group_id: str = None):
+def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, group_id: str = None, target_transform: str = "none"):
     if params is None:
         params = {}
         
@@ -489,8 +498,18 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
         "algorithm": algorithm,
         "symbol": symbol,
         "target_col": target_col,
-        "feature_cols": json.dumps([]), # Filled later?
+        "feature_cols": json.dumps([]),
         "hyperparameters": json.dumps(params),
+        "status": "pending",
+        "metrics": json.dumps({}),
+        "data_options": data_options,
+        "parent_model_id": parent_model_id,
+        "group_id": group_id,
+        "timeframe": timeframe,
+        "target_transform": target_transform
+    })
+    
+    return training_id        "hyperparameters": json.dumps(params),
         "status": "running",
         "created_at": datetime.now().isoformat(),
         "metrics": json.dumps({}),

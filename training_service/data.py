@@ -57,14 +57,11 @@ def get_data_options(symbol: str = None) -> list[str]:
     else:
         return sorted(list(mapping.keys()))
 
-def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None, timeframe: str = "1m") -> pd.DataFrame:
+def load_training_data(symbol: str, target_col: str = "close", lookforward: int = 1, options_filter: str = None, timeframe: str = "1m", target_transform: str = "none") -> pd.DataFrame:
     """
     Load data from Parquet features. 
-    Supports multiple tickers via comma-separation (e.g. "GOOGL,VIX").
-    First ticker is the PRIMARY (target). Others are merged as features.
-    
-    timeframe: Resample interval (e.g. "1m" (check if null), "10m", "1h", "4h", "8h").
-               Default "1m" means no resampling (assuming source is 1m).
+    Supports multiple tickers via comma-separation.
+    target_transform: 'none', 'log_return', 'pct_change'
     """
     symbols = [s.strip() for s in symbol.split(",")]
     primary_symbol = symbols[0]
@@ -178,8 +175,22 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
     if target_col not in df.columns:
         raise ValueError(f"Target column {target_col} not found in features (Primary Symbol: {primary_symbol})")
 
-    # Shift target backward to align "current features" with "future price"
-    df["target"] = df[target_col].shift(-lookforward)
+    # Target Generation
+    future_val = df[target_col].shift(-lookforward)
+    
+    if target_transform == "log_return":
+        # Log Return = ln(Future / Current)
+        # Add small epsilon to avoid div/0 if accidentally 0 (though prices shouldn't be)
+        df["target"] = np.log((future_val + 1e-9) / (df[target_col] + 1e-9))
+        log.info(f"Target: Log Return of {target_col} (lookforward={lookforward})")
+    elif target_transform == "pct_change":
+        # Pct Change = (Future - Current) / Current
+        df["target"] = (future_val - df[target_col]) / (df[target_col] + 1e-9)
+        log.info(f"Target: Pct Change of {target_col} (lookforward={lookforward})")
+    else:
+        # Raw Value (Non-Stationary trap!)
+        df["target"] = future_val
+        log.warning(f"Target: PREDICTING RAW {target_col}. Be wary of stationarity issues!")
     
     # --- PREVENT DATA LEAKAGE ---
     # If using segmentation, we must handle the boundary where Train -> Test.

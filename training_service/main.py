@@ -210,6 +210,14 @@ def dashboard():
                          </select>
                     </div>
                     <div class="group">
+                         <label title="Predict Raw Price vs Log Returns (Recommended)">Prediction Type ℹ️</label>
+                         <select id="target_transform">
+                            <option value="log_return" selected>Log Return (Stationary) ✅</option>
+                            <option value="pct_change">Percent Change (Stationary)</option>
+                            <option value="none">Raw Price (Non-Stationary) ⚠️</option>
+                         </select>
+                    </div>
+                    <div class="group">
                          <label>Timeframe</label>
                          <select id="timeframe">
                             <option value="1m">1 min</option>
@@ -926,7 +934,8 @@ def dashboard():
                         data_options: $('data_options').value || null,
                         timeframe: $('timeframe').value,
                         parent_model_id: $('parent_model').value || null,
-                        feature_whitelist: featureWhitelist
+                        feature_whitelist: featureWhitelist,
+                        target_transform: $('target_transform').value
                     })
                 });
                 
@@ -1040,6 +1049,7 @@ class TrainRequest(BaseModel):
     parent_model_id: Optional[str] = None
     feature_whitelist: Optional[list[str]] = None
     group_id: Optional[str] = None
+    target_transform: str = "none" # none, log_return, pct_change
 
 # Validating batch request schema
 class TrainBatchRequest(BaseModel):
@@ -1052,6 +1062,7 @@ class TrainBatchRequest(BaseModel):
     feature_whitelist: Optional[list[str]] = None
     timeframe_oc: str = "1m"
     timeframe_hl: str = "1d"
+    target_transform: str = "log_return" # Default to 'log_return' for batch to encourage stationarity
 
 @app.get("/algorithms")
 def list_algorithms():
@@ -1117,11 +1128,13 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
     conn = db.get_connection()
     try:
         # Fetch original parameters
-        row = conn.execute("SELECT symbol, algorithm, target_col, hyperparameters, data_options, timeframe FROM models WHERE id = ?", [model_id]).fetchone()
+        row = conn.execute("SELECT symbol, algorithm, target_col, hyperparameters, data_options, timeframe, target_transform FROM models WHERE id = ?", [model_id]).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Original model not found")
         
-        symbol, algo, target, params_json, d_opt, tf = row
+        symbol, algo, target, params_json, d_opt, tf, transform = row
+        # Support legacy rows where transform might be null
+        transform = transform or "none"
         
         # Parse params
         params = {}
@@ -1132,7 +1145,7 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
                 log.warning(f"Could not parse hyperparameters for {model_id}, using empty dict")
                 
         # Start new training job
-        training_id = start_training(symbol, algo, target, params, d_opt, tf)
+        training_id = start_training(symbol, algo, target, params, d_opt, tf, target_transform=transform)
     
         background_tasks.add_task(
             train_model_task, 
@@ -1142,7 +1155,11 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
             target, 
             params,
             d_opt,
-            tf
+            tf,
+            None, # parent
+            None, # features
+            None, # group
+            transform
         )
         return {"id": training_id, "status": "started", "retrained_from": model_id}
             

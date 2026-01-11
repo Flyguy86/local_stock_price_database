@@ -64,13 +64,17 @@ class MetadataDB:
                 conn.execute("ALTER TABLE models ADD COLUMN group_id VARCHAR")
             except:
                 pass
+            try:
+                conn.execute("ALTER TABLE models ADD COLUMN target_transform VARCHAR")
+            except:
+                pass
 
     def get_connection(self):
         return duckdb.connect(self.path)
 
     def list_models(self):
         with self.get_connection() as conn:
-            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id", "group_id"]
+            cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id", "group_id", "target_transform"]
             return conn.execute(f"SELECT {', '.join(cols)} FROM models ORDER BY created_at DESC").fetch_df().to_dict(orient="records")
 
     def get_model(self, model_id: str):
@@ -87,7 +91,7 @@ class MetadataDB:
         with self.get_connection() as conn:
             conn.execute(query, values)
             
-    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error: str | None = None, feature_cols: str | None = None):
+    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error: str | None = None, feature_cols: str | None = None, target_transform: str | None = None):
         updates = ["status = ?"]
         params = [status]
         
@@ -103,6 +107,9 @@ class MetadataDB:
         if feature_cols:
             updates.append("feature_cols = ?")
             params.append(feature_cols)
+        if target_transform:
+             updates.append("target_transform = ?")
+             params.append(target_transform)
             
         params.append(model_id)
         query = f"UPDATE models SET {', '.join(updates)} WHERE id = ?"

@@ -1,3 +1,5 @@
+For any significant code changes, update the README.md to reflect new functionality or usage instructions.
+
 # Copilot Instructions
 ## Code accuracy and completeness
 - Ensure all code is syntactically correct and complete.

@@ -71,7 +71,10 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **"Train Group"**: One-click orchestration to spawn 4 related models simultaneously sharing a `group_id`.
         *   **Config**: Trains [Open (1m), Close (1m), High (1d), Low (1d)] parallel jobs.
         *   **Purpose**: Rapidly build a complete predict set for a ticker.
-    *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
+    *   **Stationarity & Target Selection**: 
+        *   **Prediction Type**: System defaults to **Log Return** (`ln(Future/Current)`) or **Percent Change** to ensure the target variable is **stationary**. Predicting Raw Prices is flagged with a warning to prevent high-coefficient/low-value models.
+        *   **Flexibility**: Users can still select "Raw Price" for specific research needs, but "Log Return" is enforced for Batch jobs.
+        *   **Target Column**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: 
         *   **Aggressive Splitting**: When resampling (e.g., 1m to 1h), if a bucket contains *any* "Test" data, the entire bucket is labeled "Test" to ensure no future data leaks into the training set.
         *   **Boundary Protection**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
