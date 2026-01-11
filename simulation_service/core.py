@@ -13,10 +13,16 @@ from sklearn.preprocessing import StandardScaler
 log = logging.getLogger("simulation.core")
 
 # Settings / Config from environment or defaults
-MODELS_DIR = Path("/app/data/models")
-BOTS_DIR = Path("/app/data/models/bots")
-FEATURES_PATH = Path("/app/data/features_parquet")
-METADATA_DB_PATH = Path("/app/data/duckdb/models.db")
+# Robust path resolution for container vs local dev
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = Path("/app/data")
+if not DATA_DIR.exists():
+    DATA_DIR = BASE_DIR / "data"
+
+MODELS_DIR = DATA_DIR / "models"
+BOTS_DIR = DATA_DIR / "models/bots"
+FEATURES_PATH = DATA_DIR / "features_parquet"
+METADATA_DB_PATH = DATA_DIR / "duckdb/models.db"
 
 def ensure_sim_history_table():
     """Ensures the simulation history table exists in DuckDB."""
@@ -37,6 +43,18 @@ def ensure_sim_history_table():
                     params JSON
                 )
             """)
+            
+            # Simple migration attempt for older schemas
+            try:
+                conn.execute("ALTER TABLE simulation_history ADD COLUMN hit_rate DOUBLE")
+            except Exception:
+                pass # Already exists or other error
+                
+            try:
+                conn.execute("ALTER TABLE simulation_history ADD COLUMN params JSON")
+            except Exception:
+                pass 
+                
     except Exception as e:
         log.error(f"Failed to ensure sim_history table: {e}")
 
@@ -218,7 +236,20 @@ def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter:
             return pd.DataFrame()
             
         print(f"Loading {sym} from {path}...")
-        query = f"SELECT * FROM '{path}/**/*.parquet'"
+        
+        # DuckDB Pattern Matching:
+        # If 'dt=' partitions exist, we should target them.
+        # But wait, **/*.parquet works recursively.
+        # Check if we are running in Container (path valid) vs Local (might need adjusting if not mapped)
+        
+        # NOTE: The query syntax 'path/**/*.parquet' works in DuckDB 
+        # BUT on some systems it needs 'path/*/*.parquet' if depth is strictly 2.
+        # Let's try the recursive glob which is most robust.
+        
+        # Ensure path string is absolute and valid for DuckDB
+        abs_path = str(path.resolve())
+        query = f"SELECT * FROM '{abs_path}/**/*.parquet'"
+        
         if options_filter:
             safe_filter = options_filter.replace("'", "''")
             query += f" WHERE options = '{safe_filter}'"
@@ -510,7 +541,8 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
                    enable_z_score_check: bool = False,
                    volatility_normalization: bool = False,
                    regime_col: str = None,
-                   allowed_regimes: list = None):
+                   allowed_regimes: list = None,
+                   save_to_history: bool = True):
     """
     Runs a backtest simulation.
     """
@@ -720,7 +752,9 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
         "enable_z_score_check": enable_z_score_check,
         "volatility_normalization": volatility_normalization
     }
-    save_simulation_history(model_id, ticker, stats, run_params)
+    
+    if save_to_history:
+        save_simulation_history(model_id, ticker, stats, run_params)
 
     return {
         "stats": stats,

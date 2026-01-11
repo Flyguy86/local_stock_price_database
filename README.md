@@ -259,3 +259,21 @@ When adding new indicators or columns to `feature_service/pipeline.py`, keep the
     *   When using cross-sectional features (like Beta or Sector Relative Strength) that rely on external context (e.g., QQQ data), you **MUST** handle the case where that context is missing (empty DB or missing symbols).
     *   **Fix**: Always initialize the dependent columns (e.g., `qqq_return`, `regime_sma_dist`) with default values (0.0) in the `else` block of your merge logic.
     *   **Reason**: If these columns are missing from the DataFrame, DuckDB insertion will fail with `Binder Error: Referenced update column ... not found`.
+
+## Optimization Service (Grid Search)
+
+The optimization service allows running automated grid searches across models, tickers, and parameters to find the best performing configurations. It uses a "Commander-Worker" architecture.
+
+1.  **Start the Commander (C2)**:
+    ```bash
+    python optimization_service/main.py
+    ```
+    Open `http://localhost:8002` to view the dashboard and queue jobs.
+
+2.  **Start Workers (Agents)**:
+    Run as many agents as you have CPU cores. Each agent pulls jobs from the Commander.
+    ```bash
+    python optimization_service/worker.py
+    ```
+
+## Development
