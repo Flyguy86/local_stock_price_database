@@ -372,6 +372,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             ('model', final_estimator)
         ])
         
+        tuned_params = None
+        
         # --- GRID SEARCH FOR ELASTICNET ---
         if algorithm == "elasticnet_regression" and not params:
             log.info("Starting Grid Search for ElasticNet (Alpha/L1 Ratio) to avoid zero-feature models...")
@@ -409,8 +411,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             # Replace model with the tuned one
             model = best_model
             
-            # Capture selected params into metrics for reporting
-            metrics["tuned_params"] = best_params
+            # Capture selected params for reporting later
+            tuned_params = best_params
 
         else:
             # 4. Train Final Model (Normal)
@@ -420,6 +422,9 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         preds = model.predict(X_test)
         
         metrics = {}
+        if tuned_params:
+            metrics["tuned_params"] = tuned_params
+            
         if dropped_feature_cols:
             metrics["dropped_cols"] = dropped_feature_cols
         metrics["features_count"] = len(feature_cols_used)
