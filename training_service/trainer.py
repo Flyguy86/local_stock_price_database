@@ -1,7 +1,17 @@
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression, ElasticNet
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+try:
+    from xgboost import XGBRegressor, XGBClassifier
+except ImportError:
+    XGBRegressor = None
+    XGBClassifier = None
+try:
+    from lightgbm import LGBMRegressor, LGBMClassifier
+except ImportError:
+    LGBMRegressor = None
+    LGBMClassifier = None
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
@@ -30,8 +40,16 @@ ALGORITHMS = {
     "linear_regression": LinearRegression,
     "random_forest_regressor": RandomForestRegressor,
     "logistic_classification": LogisticRegression,
-    "random_forest_classifier": RandomForestClassifier
+    "random_forest_classifier": RandomForestClassifier,
+    "elasticnet_regression": ElasticNet
 }
+if XGBRegressor:
+    ALGORITHMS["xgboost_regressor"] = XGBRegressor
+    ALGORITHMS["xgboost_classifier"] = XGBClassifier
+if LGBMRegressor:
+    ALGORITHMS["lightgbm_regressor"] = LGBMRegressor
+    ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
+    ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
 
 def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None, target_transform: str = "none"):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
@@ -509,16 +527,4 @@ def start_training(symbol: str, algorithm: str, target_col: str = "close", param
         "target_transform": target_transform
     })
     
-    return training_id        "hyperparameters": json.dumps(params),
-        "status": "running",
-        "created_at": datetime.now().isoformat(),
-        "metrics": json.dumps({}),
-        "data_options": data_options,
-        "timeframe": timeframe,
-        "parent_model_id": parent_model_id,
-        "group_id": group_id
-    })
-    
-    # Run synchronously for now (or convert to background task if using FastAPI BackgroundTasks)
-    # We will call this via BackgroundTasks in main.py
     return training_id

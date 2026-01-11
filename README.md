@@ -66,6 +66,10 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Inheritance**: Child models strictly inherit the feature subset from the parent.
         *   **Feature Selection UI**: The dashboard allows you to view parent features, see their importance metrics (SHAP, Permutation, Coeff), filter by name, and manually whitelist/blacklist features for the new training job.
         *   **Smart Selection**: "Auto-Select" button automatically picks the top 2 features per category (Volatility, Momentum, Benchmark, etc.) based on SHAP importance, optimizing for feature diversity. **It automatically excludes features with negative coefficients/importance to ensure stability.**
+    *   **Supported Algorithms**:
+        *   **Standard**: Linear Regression, RandomForest (Regressor/Classifier), Gradient Boosting (Regressor/Classifier).
+        *   **Advanced**: XGBoost (Regressor/Classifier), LightGBM (Regressor/Classifier).
+        *   **Regularized**: ElasticNet (combines L1/L2 penalties), Ridge, Lasso.
     *   **Batch Training (Grouped Models - Method B)**: 
         *   **UI Separation**: Interface clearly splits "Single Model" (Method A) and "Group Model" (Method B) workflows.
         *   **"Train Group"**: One-click orchestration to spawn 4 related models simultaneously sharing a `group_id`.

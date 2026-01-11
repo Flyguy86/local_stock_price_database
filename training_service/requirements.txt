@@ -9,3 +9,5 @@ pydantic-settings>=2.0
 pyarrow>=17.0
 numpy>=1.26
 shap>=0.40.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
