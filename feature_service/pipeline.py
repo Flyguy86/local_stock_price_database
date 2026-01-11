@@ -13,6 +13,7 @@ import hashlib
 import duckdb
 import numpy as np
 import pandas as pd
+from sklearn.mixture import GaussianMixture
 
 logger = logging.getLogger("feature_service")
 
@@ -102,6 +103,133 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return rsi.fillna(0.0)
 
 
+def _calculate_market_regimes(qqq_df: pd.DataFrame, vixy_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates 3 types of market regime labels based on QQQ (Market) and VIXY (Volatility).
+    Returns a DataFrame with ['ts', 'regime_vix', 'regime_gmm', 'regime_sma'].
+    """
+    if qqq_df.empty or "close" not in qqq_df.columns:
+        return pd.DataFrame()
+        
+    out = qqq_df[["ts", "close"]].copy().sort_values("ts")
+    out = out.rename(columns={"close": "qqq_close"})
+    
+    # 1. Prepare Returns & VIX
+    # -----------------------
+    out["qqq_ret"] = out["qqq_close"].pct_change().fillna(0.0)
+    out["qqq_ret_rolling"] = out["qqq_ret"].rolling(20).mean() # Smooth for regime
+    
+    if not vixy_df.empty and "close" in vixy_df.columns:
+        # Merge VIXY
+        v_df = vixy_df[["ts", "close"]].rename(columns={"close": "vix_close"})
+        # Ensure TZ alignment
+        if out["ts"].dt.tz is None: out["ts"] = out["ts"].dt.tz_localize("UTC")
+        if v_df["ts"].dt.tz is None: v_df["ts"] = v_df["ts"].dt.tz_localize("UTC")
+            
+        out = pd.merge(out, v_df, on="ts", how="left")
+        out["vix_close"] = out["vix_close"].ffill().fillna(15.0) # Default VIX
+    else:
+        out["vix_close"] = 15.0
+
+    # ------------------------------------------------------------
+    # A. VIX-Price Matrix (4 Quadrants)
+    # ------------------------------------------------------------
+    # Bull Quiet (3): Ret > 0, VIX < SMA
+    # Bull Vol   (2): Ret > 0, VIX > SMA
+    # Bear Quiet (1): Ret < 0, VIX < SMA
+    # Bear Vol   (0): Ret < 0, VIX > SMA
+    
+    vix_sma = out["vix_close"].rolling(window=60).mean().fillna(out["vix_close"])
+    out["vix_high"] = out["vix_close"] > vix_sma
+    out["mkt_up"] = out["qqq_ret_rolling"] > 0
+    
+    def get_vix_regime(row):
+        if row["mkt_up"] and not row["vix_high"]: return 3 # Bull Quiet (Best)
+        if row["mkt_up"] and row["vix_high"]: return 2 # Bull Volatile (Melt Up)
+        if not row["mkt_up"] and not row["vix_high"]: return 1 # Bear Quiet (Drift Down)
+        return 0 # Bear Volatile (Crash)
+        
+    out["regime_vix"] = out.apply(get_vix_regime, axis=1)
+    
+    # ------------------------------------------------------------
+    # B. Gaussian Mixture Model (Clustering) - "State 0 vs State 1"
+    # ------------------------------------------------------------
+    # Features: Log Returns, Realized Volatility
+    out["log_ret"] = np.log(out["qqq_close"] / out["qqq_close"].shift(1)).fillna(0.0)
+    out["realized_vol"] = out["log_ret"].rolling(20).std().fillna(0.0)
+    
+    # Need enough data to fit GMM
+    if len(out) > 100:
+        X = out[["log_ret", "realized_vol"]].values
+        # Replace infs
+        X = np.nan_to_num(X)
+        try:
+            gmm = GaussianMixture(n_components=2, covariance_type='full', random_state=42)
+            gmm.fit(X)
+            out["regime_gmm"] = gmm.predict(X)
+            
+            # Heuristic: Ensure State 0 is Low Vol / Bullish if possible?
+            # GMM labels are arbitrary (0 could be crash or calm).
+            # We can check mean volatility of state 0 vs 1.
+            vol_0 = out.loc[out["regime_gmm"] == 0, "realized_vol"].mean()
+            vol_1 = out.loc[out["regime_gmm"] == 1, "realized_vol"].mean()
+            
+            # If State 0 is higher volatility than State 1, swap them so 0 is always "Calm"
+            if vol_0 > vol_1:
+                out["regime_gmm"] = 1 - out["regime_gmm"]
+
+            # --------------------------------------------------------
+            # Smoothing / Hysteresis
+            # --------------------------------------------------------
+            # Prevent "flickering" between regimes by forcing a regime to hold 
+            # for a window (e.g. 30 mins).
+            # For binary (0/1), Rolling Mode is equivalent to Rolling Mean > 0.5
+            out["regime_gmm"] = out["regime_gmm"].rolling(30, min_periods=1).mean().round().fillna(0).astype(int)
+                
+        except Exception:
+            out["regime_gmm"] = 0
+    else:
+        out["regime_gmm"] = 0
+
+    # ------------------------------------------------------------
+    # C. Moving Average Distance (Structural)
+    # ------------------------------------------------------------
+    # User asked for "1-hour or 1-day interval" SMA 200.
+    # 200 hours = 12000 minutes.
+    # Let's approximate by resampling, calculating, and ffilling.
+    
+    try:
+        # Resample to Hourly
+        hourly = out.set_index("ts")[["qqq_close"]].resample("1h").last()
+        hourly["sma_200_h"] = hourly["qqq_close"].rolling(200, min_periods=1).mean()
+        
+        # Merge back to 1m
+        # Reset index to preserve TS for merge
+        hourly = hourly.reset_index()[["ts", "sma_200_h"]]
+        
+        # Merge_asof logic to broadcast hourly SMA to minute bars
+        out = pd.merge_asof(
+            out, 
+            hourly.sort_values("ts"), 
+            on="ts", 
+            direction="backward"
+        )
+        
+        out["regime_sma"] = np.where(out["qqq_close"] > out["sma_200_h"], 1, 0)
+        out["regime_sma"] = out["regime_sma"].fillna(0).astype(int)
+
+        # Continuous Distance Feature (for Linear Models)
+        # (Close - SMA) / SMA
+        out["regime_sma_dist"] = (out["qqq_close"] - out["sma_200_h"]) / out["sma_200_h"]
+        out["regime_sma_dist"] = out["regime_sma_dist"].fillna(0.0)
+        
+    except Exception as e:
+        logger.warning(f"Failed to calc regime_sma: {e}")
+        out["regime_sma"] = 0
+        out["regime_sma_dist"] = 0.0
+
+    return out[["ts", "regime_vix", "regime_gmm", "regime_sma", "regime_sma_dist"]]
+
 def _calculate_vix_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """Calculates specific market regime metrics on VIXY data."""
     if df.empty:
@@ -135,7 +263,9 @@ def _calculate_vix_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["vix_atr_ratio"] = tr / tr_mean.replace(0, np.nan)
     out["vix_atr_ratio"] = out["vix_atr_ratio"].fillna(0.0)
     
-    return out[["ts", "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]]
+    out["vix_close"] = out["close"]
+    
+    return out[["ts", "vix_close", "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]]
 
 
 def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
@@ -155,17 +285,49 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     out["return_1m"] = out["close"].pct_change().fillna(0.0)
     out["lag_1_close"] = out["close"].shift(1)  # New lag feature
 
-    # Distance from VWAP (Mean Reversion)
+    # --- 1. Liquidity & Microstructure Alphas ---
+    
+    # Amihud Illiquidity Ratio
+    # Formula: |Return| / (Price * Volume)
+    # Measures price impact per dollar traded
+    dollar_vol = (out["close"] * out["volume"]).replace(0, np.nan)
+    out["amihud_illiquidity"] = out["return_1m"].abs() / dollar_vol
+    out["amihud_illiquidity"] = out["amihud_illiquidity"].fillna(0.0)
+
+    # Relative Volume (RVOL) Z-Score
+    # Formula: (Volume - Mean Vol 20) / Std Vol 20
+    roll_mean_vol = out["volume"].rolling(window=20, min_periods=1).mean()
+    roll_std_vol = out["volume"].rolling(window=20, min_periods=1).std(ddof=0)
+    out["vol_z_score_20"] = (out["volume"] - roll_mean_vol) / roll_std_vol.replace(0, np.nan)
+    out["vol_z_score_20"] = out["vol_z_score_20"].fillna(0.0)
+
+    # --- 2. Mean Reversion & Over-Extension ---
+    
+    # Distance from VWAP (base)
     # Formula: (Close - VWAP) / VWAP
     out["dist_vwap"] = (out["close"] - out["vwap"]) / out["vwap"].replace(0, np.nan)
     out["dist_vwap"] = out["dist_vwap"].fillna(0.0)
 
+    # Internal Bar Strength (IBS)
+    # Formula: (Close - Low) / (High - Low)
+    hl_range = (out["high"] - out["low"]).replace(0, np.nan)
+    out["ibs"] = (out["close"] - out["low"]) / hl_range
+    out["ibs"] = out["ibs"].fillna(0.5) # Default to mid-range if flat
+
     # Intraday Intensity ("Smart Money" Index)
     # Formula: Intensity = ((2 * Close - High - Low) / (High - Low)) * Volume
-    # High volume near Close implies institutional accumulation/dumping
     denom_ii = (out["high"] - out["low"]).replace(0, np.nan)
     term1_ii = (2 * out["close"] - out["high"] - out["low"]) / denom_ii
     out["intraday_intensity"] = term1_ii.fillna(0.0) * out["volume"]
+
+    # --- 4. Advanced Volatility Features (Part 1) ---
+
+    # Parkinson Volatility (Rolling Window 20)
+    # Formula: sqrt( 1/(4*ln(2)) * mean( ln(High/Low)^2 ) )
+    ln_hl_sq = (np.log(out["high"] / out["low"].replace(0, np.nan)).fillna(0.0)) ** 2
+    roll_mean_hl = ln_hl_sq.rolling(window=20, min_periods=1).mean()
+    const_factor = 1.0 / (4.0 * np.log(2.0))
+    out["parkinson_vol_20"] = np.sqrt(const_factor * roll_mean_hl).fillna(0.0)
 
     # Volatility-Adjusted Momentum (Z-Score)
     # Formula: (Current Return - Mean Return 20) / Std Dev 20
@@ -252,8 +414,16 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
             axis=1,
         ).max(axis=1)
         out["atr_14"] = tr.rolling(window=14, min_periods=1).mean()
+        
+        # Distance from VWAP (Standardized)
+        # Formula: (Close - VWAP) / ATR(14)
+        # Measures reversion potential in volatility units
+        out["dist_vwap_std"] = (out["close"] - out["vwap"]) / out["atr_14"].replace(0, np.nan)
+        out["dist_vwap_std"] = out["dist_vwap_std"].fillna(0.0)
+
     else:
         out["atr_14"] = np.nan
+        out["dist_vwap_std"] = np.nan
 
     # Volume features
     if use_vol:
@@ -309,6 +479,67 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
     # Carry forward VWAP; ensure non-null if present
     out["vwap"] = out["vwap"].ffill()
 
+    # --- 3. Market Regime & Cross-Sectional Alphas ---
+    # Merge QQQ Context (Market Proxy)
+    # --------------------------------------------------------------------------------
+    qqq_ctx = opts.get("qqq_context")
+    if qqq_ctx is not None and not qqq_ctx.empty:
+        # Ensure Timezones match
+        if out["ts"].dt.tz is None: out["ts"] = out["ts"].dt.tz_localize("UTC")
+        if qqq_ctx["ts"].dt.tz is None: qqq_ctx["ts"] = qqq_ctx["ts"].dt.tz_localize("UTC")
+            
+        # Left Join QQQ context
+        out = pd.merge(out, qqq_ctx, on="ts", how="left")
+        
+        # Fill holes
+        out["qqq_return"] = out["qqq_return"].ffill().fillna(0.0)
+        
+        # Beta-Adjusted Residual Return
+        # Logic: Return - Beta * Market_Return
+        # We calculate rolling Beta (window=60 e.g.)
+        # Beta = Cov(Stock, Market) / Var(Market)
+        rolling_cov = out["return_1m"].rolling(window=60, min_periods=20).cov(out["qqq_return"])
+        rolling_var = out["qqq_return"].rolling(window=60, min_periods=20).var()
+        out["beta_60"] = rolling_cov / rolling_var
+        out["beta_60"] = out["beta_60"].fillna(1.0) # Default to 1.0 (Market Performance)
+        
+        out["beta_residual_ret"] = out["return_1m"] - (out["beta_60"] * out["qqq_return"])
+        out["beta_residual_ret"] = out["beta_residual_ret"].fillna(0.0)
+        
+        # Sector Relative Strength (Z-Score)
+        # Logic: Z-Score of (Return_Stock - Return_Market)
+        # Using difference instead of ratio as returns can be zero/negative
+        rel_str = out["return_1m"] - out["qqq_return"]
+        rs_mean = rel_str.rolling(window=20, min_periods=5).mean()
+        rs_std = rel_str.rolling(window=20, min_periods=5).std()
+        
+        out["sector_rel_str_z"] = (rel_str - rs_mean) / rs_std.replace(0, np.nan)
+        out["sector_rel_str_z"] = out["sector_rel_str_z"].fillna(0.0)
+        
+    else:
+        out["beta_60"] = 1.0
+        out["beta_residual_ret"] = 0.0
+        out["sector_rel_str_z"] = 0.0
+
+    # Merge Market Regime Context
+    # --------------------------------------------------------------------------------
+    regime_ctx = opts.get("regime_context")
+    if regime_ctx is not None and not regime_ctx.empty:
+        # Merge on TS
+        if out["ts"].dt.tz is None: out["ts"] = out["ts"].dt.tz_localize("UTC")
+        if regime_ctx["ts"].dt.tz is None: regime_ctx["ts"] = regime_ctx["ts"].dt.tz_localize("UTC")
+            
+        out = pd.merge(out, regime_ctx, on="ts", how="left")
+        
+        # Forward fill regimes (they are stateful)
+        out["regime_vix"] = out["regime_vix"].ffill().fillna(0).astype("int64")
+        out["regime_gmm"] = out["regime_gmm"].ffill().fillna(0).astype("int64")
+        out["regime_sma"] = out["regime_sma"].ffill().fillna(0).astype("int64")
+    else:
+        out["regime_vix"] = 0
+        out["regime_gmm"] = 0
+        out["regime_sma"] = 0
+
     # Merge VIXY Context if available
     vix_ctx = opts.get("vixy_context")
     if vix_ctx is not None and not vix_ctx.empty:
@@ -322,13 +553,36 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
         out = pd.merge(out, vix_ctx, on="ts", how="left")
         
         # Forward fill VIX metrics to handle gaps
-        cols = ["vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]
+        cols = ["vix_close", "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]
         out[cols] = out[cols].ffill().fillna(0.0)
+        
+        # --- 4. Advanced Volatility Features (Part 2) ---
+        # Volatility Risk Premium (VRP)
+        # Logic: VIX_Close - Realized_Vol(ATR%)
+        # VIX is annualized vol. To match 1-minute scale or daily scale is tricky.
+        # Assuming VIXY is a proxy for VIX index value here (rough approx).
+        # We need to express ATR as % of Price to be comparable to implied vol %?
+        # Actually VIX is Annualized SD. VIX=20 means 20% annualized moves.
+        # ATR_14 (absolute) / Close = Period Volatility (approx).
+        # We simply output the difference for the ML model to learn the relation.
+        if use_atr:
+             # VIXY Price as proxy for "Implied Vol Level" (roughly)
+             # Realized: ATR / Close * 100 * sqrt(252*390) ??
+             # Let's just give raw diff between stylized factors
+             # Or Ratio: Implied / Realized
+             atr_pct = (out["atr_14"] / out["close"]).replace(0, np.nan)
+             out["vrp"] = out["vix_close"] / (atr_pct * 1000).replace(0, np.nan) # Arbitrary scaling to make comparable
+             out["vrp"] = out["vrp"].fillna(0.0)
+        else:
+             out["vrp"] = 0.0
+        
     else:
+        out["vix_close"] = 0.0
         out["vix_log_ret"] = 0.0
         out["vix_z_score"] = 0.0
         out["vix_rel_vol"] = 0.0
         out["vix_atr_ratio"] = 0.0
+        out["vrp"] = 0.0
 
     # Round all float columns to 5 decimal places
     float_cols = out.select_dtypes(include=['float64', 'float32']).columns
@@ -384,7 +638,10 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
     # Migration for new columns
     for col in ["volume_change", "lag_1_close", "dist_vwap", "intraday_intensity", "vol_adj_mom_20", 
                 "log_return_1m", "return_z_score_20", "vol_ratio_60", "atr_ratio_15",
-                "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio"]:
+                "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio", "vix_close",
+                "amihud_illiquidity", "vol_z_score_20", "dist_vwap_std", "ibs", 
+                "parkinson_vol_20", "beta_60", "beta_residual_ret", "sector_rel_str_z", "vrp",
+                 "regime_vix", "regime_gmm", "regime_sma"]:
         try:
              dest_conn.execute(f"SELECT {col} FROM feature_bars LIMIT 0")
         except duckdb.Error:
@@ -417,6 +674,22 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             vix_z_score DOUBLE,
             vix_rel_vol DOUBLE,
             vix_atr_ratio DOUBLE,
+            vix_close DOUBLE,
+            
+            amihud_illiquidity DOUBLE,
+            vol_z_score_20 DOUBLE,
+            dist_vwap_std DOUBLE,
+            ibs DOUBLE,
+            parkinson_vol_20 DOUBLE,
+            beta_60 DOUBLE,
+            beta_residual_ret DOUBLE,
+            sector_rel_str_z DOUBLE,
+            vrp DOUBLE,
+            
+            regime_vix INTEGER,
+            regime_gmm INTEGER,
+            regime_sma INTEGER,
+            
             sma_close_5 DOUBLE,
             sma_close_20 DOUBLE,
             bb_upper_20_2 DOUBLE,
@@ -433,6 +706,10 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             day_of_month INTEGER,
             month INTEGER,
             days_until_earnings DOUBLE,
+            regime_vix INTEGER,
+            regime_gmm INTEGER,
+            regime_sma INTEGER,
+            regime_sma_dist DOUBLE,
             data_split VARCHAR,
             options VARCHAR,
             PRIMARY KEY (symbol, ts, options)
@@ -582,6 +859,30 @@ def run_pipeline(
                  logger.warning("VIXY data not found. VIX features will be zero.")
         except Exception as e:
             logger.error(f"Failed to calculate VIXY metrics: {e}")
+            
+        # Pre-fetch QQQ data for Market Context
+        qqq_ctx = pd.DataFrame()
+        regime_ctx = pd.DataFrame()
+        try:
+            qqq_df = fetch_bars(src_conn, "QQQ")
+            if not qqq_df.empty:
+                # Basic cleaning
+                qqq_clean = clean_bars(qqq_df)
+                qqq_clean["qqq_return"] = qqq_clean["close"].pct_change().fillna(0.0)
+                qqq_clean["qqq_log_return"] = np.log(qqq_clean["close"] / qqq_clean["close"].shift(1)).fillna(0.0)
+                qqq_ctx = qqq_clean[["ts", "qqq_return", "qqq_log_return"]]
+                
+                # --- Calculate Regimes (New) ---
+                # Requires QQQ and VIXY (via clean inputs)
+                logger.info("Calculating Market Regimes...")
+                vixy_for_regime = clean_bars(fetch_bars(src_conn, "VIXY")) # Re-fetch to be safe/independent
+                regime_ctx = _calculate_market_regimes(qqq_clean, vixy_for_regime)
+                
+                logger.info("Fetched QQQ data for market context", extra={"rows": len(qqq_ctx)})
+            else:
+                logger.warning("QQQ data not found. Market beta features will be missing.")
+        except Exception as e:
+            logger.error(f"Failed to load QQQ context: {e}")
 
         for i, sym in enumerate(symbol_list):
             # Check Stop Signal
@@ -603,6 +904,8 @@ def run_pipeline(
             calc_options = (options or {}).copy()
             calc_options["earnings_df"] = earnings_df
             calc_options["vixy_context"] = vixy_ctx
+            calc_options["qqq_context"] = qqq_ctx
+            calc_options["regime_context"] = regime_ctx
 
             if progress_callback:
                 progress_callback(sym, i + 1, total_symbols, "Engineering features")

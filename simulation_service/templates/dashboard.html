@@ -61,6 +61,27 @@
                             <label for="minPredInput" class="form-label">Min Threshold</label>
                             <input type="number" class="form-control" id="minPredInput" value="0.0005" step="0.0001">
                         </div>
+                        
+                        <!-- Regime Filter UI -->
+                        <div class="col-md-4">
+                            <label for="regimeSelect" class="form-label">Regime Logic Gate</label>
+                            <select id="regimeSelect" class="form-select" onchange="updateRegimeVals()">
+                                <option value="" selected>No Filter</option>
+                                <option value="regime_gmm">GMM (Crash Detection)</option>
+                                <option value="regime_vix">VIX Zones (4-Quad)</option>
+                                <option value="regime_sma">SMA 200 (Trend)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                             <label id="regimeLabel" for="regimeVals" class="form-label text-muted">Allowed Regimes (IDs)</label>
+                             <div class="input-group">
+                                <span class="input-group-text bg-white">
+                                    <small id="regimeHint">Select gate type above</small>
+                                </span>
+                                <input type="text" class="form-control" id="regimeVals" placeholder="e.g. 0, 1 (Comma separated)">
+                             </div>
+                        </div>
+
                         <div class="col-md-12 pt-3 d-flex align-items-center gap-4 border-bottom pb-3 mb-3">
                              <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="zScoreCheck">
@@ -299,6 +320,14 @@
         const enableZ = document.getElementById('zScoreCheck').checked;
         const volNorm = document.getElementById('volNormCheck').checked;
         
+        // Regime Params
+        const regimeCol = document.getElementById('regimeSelect').value || null;
+        let allowedRegimes = null;
+        const regimeInput = document.getElementById('regimeVals').value;
+        if (regimeCol && regimeInput) {
+            allowedRegimes = regimeInput.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+        }
+        
         // Hide previous errors and results
         const errorAlert = document.getElementById('errorAlert');
         if (errorAlert) errorAlert.style.display = 'none';
@@ -330,7 +359,9 @@
                     use_bot: useBot,
                     min_prediction_threshold: minPred,
                     enable_z_score_check: enableZ,
-                    volatility_normalization: volNorm
+                    volatility_normalization: volNorm,
+                    regime_col: regimeCol,
+                    allowed_regimes: allowedRegimes
                 })
             });
             
@@ -359,6 +390,30 @@
             btn.disabled = false;
             btn.innerText = oldText;
             if (progressBar) progressBar.style.display = 'none';
+        }
+    }
+    
+    function updateRegimeVals() {
+        const sel = document.getElementById('regimeSelect').value;
+        const hint = document.getElementById('regimeHint');
+        const input = document.getElementById('regimeVals');
+        
+        if (!sel) {
+            hint.innerText = "Select gate type above";
+            input.disabled = true;
+            input.value = "";
+        } else if (sel === 'regime_gmm') {
+            hint.innerText = "0=Calm/Bull, 1=Crash/Volatile";
+            input.disabled = false;
+            input.placeholder = "e.g. 0  (Restrict to Calm only)";
+        } else if (sel === 'regime_vix') {
+             hint.innerText = "3=BullQt, 2=BullVol, 1=BearQt, 0=BearVol";
+             input.disabled = false;
+             input.placeholder = "e.g. 2, 3 (Bullish only)";
+        } else if (sel === 'regime_sma') {
+             hint.innerText = "1=Above SMA200, 0=Below";
+             input.disabled = false;
+             input.placeholder = "e.g. 1";
         }
     }
 

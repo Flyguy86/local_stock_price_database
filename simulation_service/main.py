@@ -38,6 +38,8 @@ class SimulationRequest(BaseModel):
     min_prediction_threshold: float = 0.0
     enable_z_score_check: bool = False
     volatility_normalization: bool = False
+    regime_col: str | None = None
+    allowed_regimes: list[int] | None = None
 
 class BatchSimulationRequest(BaseModel):
     model_id: str
@@ -47,6 +49,8 @@ class BatchSimulationRequest(BaseModel):
     min_prediction_threshold: float = 0.0
     enable_z_score_check: bool = False
     volatility_normalization: bool = False
+    regime_col: str | None = None
+    allowed_regimes: list[int] | None = None
 
 class TrainBotRequest(BaseModel):
     model_id: str
@@ -63,7 +67,9 @@ async def simulate(req: SimulationRequest):
             req.model_id, req.ticker, req.initial_cash, req.use_bot,
             min_prediction_threshold=req.min_prediction_threshold,
             enable_z_score_check=req.enable_z_score_check,
-            volatility_normalization=req.volatility_normalization
+            volatility_normalization=req.volatility_normalization,
+            regime_col=req.regime_col,
+            allowed_regimes=req.allowed_regimes
         )
         return result
     except Exception as e:
@@ -81,9 +87,12 @@ async def batch_simulate(req: BatchSimulationRequest):
                     req.model_id, ticker, req.initial_cash, req.use_bot,
                     min_prediction_threshold=req.min_prediction_threshold,
                     enable_z_score_check=req.enable_z_score_check,
-                    volatility_normalization=req.volatility_normalization
+                    volatility_normalization=req.volatility_normalization,
+                    regime_col=req.regime_col,
+                    allowed_regimes=req.allowed_regimes
                 )
                 results.append({
+
                     "ticker": ticker, 
                     "status": "success", 
                     "return_pct": res["stats"]["strategy_return_pct"],

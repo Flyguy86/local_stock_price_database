@@ -53,8 +53,18 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
 *   **Segmented Data**: Optionally splits data into "Train" and "Test" episodes (e.g. 30 days train, 5 days test) directly in the feature table, simplifying backtesting logic.
 *   **New Features**: Includes specialized financial indicators:
     *   **Volume & Volatility**: `volume_change`, `log_return_1m`, `return_z_score_20` (Vol Spike), `vol_ratio_60` (Rel Vol), `atr_ratio_15` (Range Expansion).
+    *   **Universal Alphas** (New):
+        *   **Liquidity**: `amihud_illiquidity` (Price impact per unit volume).
+        *   **Mean Reversion**: `ibs` (Internal Bar Strength - position of Close within High-Low range).
+        *   **Volatility**: `parkinson_vol` (High-Low based estimator), `efficiency_ratio` (Trend quality).
     *   **Advanced**: `dist_vwap` (Mean Reversion), `intraday_intensity` ("Smart Money" Index), `vol_adj_mom_20` (Z-Score Momentum).
     *   **Market Context**: `VIXY`-derived metrics (`vix_log_ret`, `vix_z_score`, `vix_rel_vol`, `vix_atr_ratio`) are automatically calculated and merged onto *every* ticker to provide regime awareness.
+    *   **Regime Tagging** (New):
+        *   **Global Context**: The pipeline pre-calculates market states using QQQ and VIXY before processing individual tickers.
+        *   **VIX Regimes**: 4-Quadrant Logic (Bull/Bear x Quiet/Volatile) based on VIX levels and trends.
+        *   **GMM Clusters**: Gaussian Mixture Models cluster market conditions into "Low Volatility/Steady" vs "High Volatility/Crash" regimes.
+            *   **Smoothing**: Applied a 30-minute Rolling Mode (Hysteresis) to the GMM output to prevent rapid state-switching noise.
+        *   **Trend Filter**: Regimes based on Price vs SMA 200 interaction.
 *   **Output**: "Wide" Parquet files containing all possible features.
 
 ### Phase 2: Model Training (Training Service)
@@ -106,6 +116,13 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Standardization**: All features are standardized (Mean=0, Std=1) to allow for coefficient comparison.
         *   **P-Value Pruning**: Features with a P-value > 0.05 (configurable) are automatically dropped to remove statistical noise.
         *   **Ranking**: Logs the standardized Beta Coefficients of the top features, helping to identify which indicators (e.g., `EMA_9` vs `RSI_14`) are truly driving the model.
+    *   **Conditional Preprocessing** (New):
+        *   **Context**: Different algorithms need different input formats for Regime features.
+        *   **Linear Models (ElasticNet)**: Applying One-Hot Encoding to categorical regimes (`regime_vix`, `regime_gmm`) and using continuous distance metrics (`regime_sma_dist`) for structural breaks.
+        *   **Tree Models (XGBoost/RF)**: Keeping regimes as Ordinal Integers (1-4) for efficient tree splitting.
+    *   **Interactions**:
+        *   **Regime-Conditional Importance**: The trainer automatically partitions feature importance (SHAP) by Market Regime (if available).
+        *   **Insight**: This allows you to see if a feature like `dist_vwap` is critical during "Mean Reverting" regimes but useless during "Trending" regimes.
 *   **Design**: Models should utilize `scikit-learn` Pipelines (`Pipeline([Scaler, Imputer, Model])`) to bundle preprocessing logic into the saved artifact (`.joblib`), ensuring the Simulation Service can ingest raw feature data.
 
 ## Deployment & Local Dev
@@ -137,6 +154,14 @@ The system includes a backtesting simulation engine to evaluate the performance 
     *   **Regressors**: 
         *   Prediction `> 0` → **Buy Signal**
         *   Prediction `<= 0` → **Sell Signal**
+    *   **Filtering Logic** (New):
+        *   **Prediction Threshold**: "Don't trade unless conviction is high." A slider filters out weak predictions (e.g. only trade if pred > 0.005).
+        *   **Outlier Filter (Z-Score)**: "Don't trust massive predictions." A checkbox filters out predictions that are statistical outliers (Z > 3), which often indicate data errors or model instability.
+        *   **Volatility Normalization**: "Adapt to the market." Scales the prediction threshold dynamically based on recent Rolling Volatility.
+    *   **Regime Gating (New)**:
+        *   **Concept**: Solves the "0 Trades" problem or "Knife Catching" by only allowing trades in favorable market conditions.
+        *   **Logic**: "IF Market Regime == 'Bull Quiet' THEN Allow Trades, ELSE Exit/Halt."
+        *   **Controls**: Select a Regime Type (GMM, VIX, or SMA) and whitelist the allowed states (e.g., `0` for Calm GMM). The simulation will force a "Sell/Exit" signal whenever the market enters a forbidden regime.
 4.  **Trading Execution (Walk-Forward Loop)**:
     *   The simulation iterates through the data chronologically, maintaining a cash and share balance.
     *   **Buying**:
@@ -146,7 +171,10 @@ The system includes a backtesting simulation engine to evaluate the performance 
         *   **Trigger**: A **Sell Signal** is received AND the portfolio currently holds **shares > 0**.
         *   **Action**: Sells **100%** of the held shares at the current close price.
     *   **Holding**: If the signal matches the current position (e.g., Buy Signal while holding), no action is taken.
-5.  **Metrics**: 
+5.  **Metrics & History**: 
+    *   **History Tracking**: Every simulation run is now saved to the DuckDB `sim_runs` table.
+        *   **Batch Run**: Execute simulations across all models for a ticker in one click to find the best performer.
+        *   **Comparison**: Review past runs in the "History" tab, comparing sharpe ratios and equity curves.
     *   **Equity Curve**: Visualizes portfolio value over time vs Buy & Hold.
     *   **Directional Hit Rate**:
         *   Calculates the % of time the model correctly predicted the *direction* of the price movement (e.g., predicted Up and price went Up).

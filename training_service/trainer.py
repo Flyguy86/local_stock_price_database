@@ -15,7 +15,8 @@ except (ImportError, OSError):
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
 from sklearn.feature_selection import f_regression
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV
@@ -366,9 +367,34 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
 
         # User Req: "Standardize your features" (Pipeline)
         # We wrap the estimator in a pipeline.
+        # Conditional Preprocessing logic for Regimes
+        
+        # 1. Identify Algorithm Category
+        is_linear = any(k in algorithm for k in ["linear", "elasticnet", "logistic", "ridge", "lasso", "svm"])
+        
+        # 2. Identify Special Columns (Regimes)
+        # We look for 'regime_vix', 'regime_gmm' in the feature set.
+        one_hot_cols = [c for c in X_train.columns if c in ["regime_vix", "regime_gmm"]]
+        numeric_cols = [c for c in X_train.columns if c not in one_hot_cols]
+
+        preprocessor = None
+        
+        if is_linear and one_hot_cols:
+            log.info(f"Applying One-Hot Encoding to categorical regime columns: {one_hot_cols}")
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    ('num', StandardScaler(), numeric_cols),
+                    ('cat', OneHotEncoder(handle_unknown='ignore'), one_hot_cols)
+                ]
+            )
+        else:
+            # Default: Scale everything (Trees handle ordinal ints fine, or we just treat them as "numeric")
+            # If trees, we leave VIX/GMM as 1/2/3/4 or 0/1 integers.
+            preprocessor = StandardScaler()
+
         final_estimator = ModelClass(**params)
         model = Pipeline([
-            ('scaler', StandardScaler()), 
+            ('preprocessor', preprocessor), 
             ('model', final_estimator)
         ])
         
@@ -379,15 +405,11 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             log.info("Starting Grid Search for ElasticNet (Alpha/L1 Ratio) to avoid zero-feature models...")
             
             # Param Grid
-            # alpha: Regularization strength. Lower = Less pruning.
-            # l1_ratio: Mix of Lasso (L1) / Ridge (L2). 
-            # 1.0 = Lasso (high sparsity, features -> 0)
-            # 0.0 = Ridge (low sparsity, features -> small weights)
-            # We want to find a balance where features don't all hit zero.
             grid_params = {
                 'model__alpha': [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0],
                 'model__l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
             }
+
             
             # Use GridSearchCV
             # n_jobs=-1 uses all CPU cores (Multi-threaded)
@@ -520,12 +542,17 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         if shap:
             try:
                 estimator = model.named_steps['model']
-                scaler = model.named_steps['scaler']
+                preprocessor = model.named_steps['preprocessor']
 
                 # Use a small background sample for explainers
                 # SCALE THE DATA first
-                X_bg = scaler.transform(X_train[:100])
-                X_eval = scaler.transform(X_test[:100])
+                X_bg = preprocessor.transform(X_train[:100])
+                X_eval = preprocessor.transform(X_test[:100])
+                
+                # If OHE was used, the number of features in X_bg might be larger than original feature_cols_used
+                # This breaks the mapping back to feature names.
+                # For now, if we detect ColumnTransformer, we skip SHAP mapping or accept it might fail for OHE cols.
+                is_ohe = isinstance(preprocessor, ColumnTransformer)
                 
                 explainer = None
                 est_type = str(type(estimator))
@@ -542,7 +569,9 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                      # Fallback
                      explainer = shap.Explainer(estimator, X_bg)
                 
-                if explainer and len(X_eval) > 0:
+                if explainer and len(X_eval) > 0 and not is_ohe:
+                     # Only run SHAP mapping if dimensions match (no OHE expansion)
+                     # Or logic needs to retrieve feature names from transformer
                      shap_vals = explainer.shap_values(X_eval)
                      # For classification, shap_vals might be a list of arrays (one per class). Take the first (or positive class)
                      if isinstance(shap_vals, list):
@@ -552,8 +581,64 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                      shap_mean = np.mean(np.abs(shap_vals), axis=0)
                      for i, col in enumerate(feature_cols_used):
                          feature_details[col]["shap_mean_abs"] = float(shap_mean[i])
+                elif explainer and is_ohe:
+                     log.info("Skipping detailed SHAP mapping due to OHE expansion (ColumnTransformer).")
+                    
+                     # ----------------------------------------------------
+                     # 4. Regime Interaction Analysis (New)
+                     # ----------------------------------------------------
+                     # Analyze how feature importance flips between regimes.
+                     # We look for columns in the original DF starting with 'regime_'
+                     # irrespective of whether they were used as features.
+                     try:
+                         regime_interaction = {}
+                         # Valid indices for the SHAP evaluation set
+                         eval_indices = X_test.index[:100]
+                         if len(eval_indices) > 0:
+                             # Check original DF for regime columns
+                             regime_cols = [c for c in df.columns if str(c).startswith("regime_")]
+                             
+                             for r_col in regime_cols:
+                                 # Get regime labels for the evaluation set
+                                 # Ensure alignment
+                                 r_vals = df.loc[eval_indices, r_col]
+                                 unique_regimes = r_vals.unique()
+                                 
+                                 # Only analyze meaningful regimes (discrete categories, not continuous)
+                                 if len(unique_regimes) < 10: 
+                                     regime_interaction[r_col] = {}
+                                     
+                                     for r_val in unique_regimes:
+                                         # Create a mask for this regime
+                                         mask = (r_vals == r_val).values
+                                         if mask.sum() > 0:
+                                             # Filter SHAP values for this regime
+                                             # shap_vals shape: (samples, features)
+                                             r_shap_vals = shap_vals[mask]
+                                             
+                                             # Calculate Mean Abs SHAP for this regime
+                                             r_shap_mean = np.mean(np.abs(r_shap_vals), axis=0)
+                                             
+                                             # Store raw values
+                                             # Convert numpy types to native Python for JSON
+                                             r_dict = {}
+                                             for i, col in enumerate(feature_cols_used):
+                                                 r_dict[col] = float(r_shap_mean[i])
+                                             
+                                             r_key = str(r_val) # transform 0/1 to "0"/"1" for JSON
+                                             regime_interaction[r_col][r_key] = r_dict
+                                             
+                         if regime_interaction:
+                             metrics["regime_importance"] = regime_interaction
+                             log.info(f"Calculated Regime-Conditional Feature Importance for: {list(regime_interaction.keys())}")
+                             
+                     except Exception as reg_err:
+                         log.warning(f"Failed to calc regime interactions: {reg_err}")
+                     # ----------------------------------------------------
+
             except Exception as e:
                 log.warning(f"Error extracting SHAP values: {e}")
+
 
         metrics["feature_details"] = feature_details
         

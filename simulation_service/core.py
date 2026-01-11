@@ -475,7 +475,9 @@ def train_trading_bot(model_id: str, ticker: str,
 def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: bool = False,
                    min_prediction_threshold: float = 0.0,
                    enable_z_score_check: bool = False,
-                   volatility_normalization: bool = False):
+                   volatility_normalization: bool = False,
+                   regime_col: str = None,
+                   allowed_regimes: list = None):
     """
     Runs a backtest simulation.
     """
@@ -542,6 +544,52 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
                 log.warning(f"Bot prediction failed, falling back to base model: {e}")
         else:
              log.warning("Bot enabled but no bot model found. Run 'Train Bot' first.")
+
+    # 3. Regime Filter Logic (New Gated Strategy)
+    # The user can specify a regime column (e.g., 'regime_gmm' or 'regime_vix') and a list of allowed values.
+    # If the current regime is NOT in the allowed list, we force the signal to 'Hold' (-1) or 'Sell' (0)?
+    # Prompt says: "HALT ALL TRADING" -> usually implies exiting positions and waiting (Safety).
+    # Or implies "Do not enter new trades".
+    # Interpretation: 
+    # - If we are in a bad regime, we should probably be in Cash (Sell/Flat). 
+    # - "HALT ALL TRADING" in a violent bear market usually means "Get Out".
+    # - Let's assume Signal 0 (Sell) is safer than Hold if we are currently Long.
+    # - However, if we just suppress Buys, we might hold into a crash.
+    # - Let's set signal to 0 (Sell/Exit) if regime is forbidden.
+    
+    if regime_col and allowed_regimes is not None:
+        if regime_col in df_sim.columns:
+            log.info(f"Applying Regime Filter: {regime_col} must be in {allowed_regimes}")
+            
+            def apply_regime_gate(row):
+                current_regime = row[regime_col]
+                # Check if current regime is allowed
+                if current_regime in allowed_regimes:
+                    return row["signal"] # Valid, keep original signal
+                else:
+                    return -1 # Halt/Hold/Do Nothing (or 0 to Sell?)
+                    # If "HALT ALL TRADING" means "Stay Flat", we should ensure we aren't holding.
+                    # But forcing a Sell might trigger a trade when we just want to sleep.
+                    # Let's use -1 (Hold) to prevent *entering* new trades.
+                    # BUT, if we are already long and the regime turns "Bear Volatile", we PROBABLY want to sell.
+                    # User said: "Halts all trading" -> protect from knife catch.
+                    # Commonly this means "Don't Buy".
+                    # Let's stick with -1 (Don't Change Position) for now, or 0 (Exit).
+                    # Actually, for "Protection", exiting is best.
+                    
+                    # Implementation detail: The simulation loop interprets:
+                    # Signal 1: Buy
+                    # Signal 0: Sell
+                    # Anything else: Hold
+                    
+                    # If I return -1, I hold. If I return 0, I sell.
+                    # In a "Bear Volatile" regime, holding a Long position is dangerous.
+                    # So I will return 0 (Sell Everything).
+                    return 0
+
+            df_sim["signal"] = df_sim.apply(apply_regime_gate, axis=1)
+        else:
+            log.warning(f"Regime column {regime_col} not found in data. Ignoring filter.")
 
     # Walk forward simulation
     cash = initial_cash
