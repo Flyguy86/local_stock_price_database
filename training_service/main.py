@@ -268,7 +268,10 @@ def dashboard():
         <section>
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <h2>Model Registry</h2>
-                <button class="secondary" onclick="loadModels()">Refresh</button>
+                <div style="display:flex; gap:0.5rem">
+                     <button class="secondary" onclick="deleteAllModels()" style="color:#fca5a5; border-color: #ef4444; font-size: 0.8rem; padding: 0.25rem 0.5rem;">🗑 Delete All</button>
+                     <button class="secondary" onclick="loadModels()">Refresh</button>
+                </div>
             </div>
             <table>
                 <thead>
@@ -681,6 +684,36 @@ def dashboard():
             } catch(e) { console.error(e); }
         }
 
+        async function deleteAllModels() {
+            if(!confirm('⚠️ DANGER: Are you sure you want to DELETE ALL models?\n\nThis action cannot be undone.')) return;
+            
+            const verification = prompt("Type 'DELETE' to confirm wiping all models:");
+            if(verification !== 'DELETE') {
+                alert("Deletion cancelled. You must type 'DELETE' exactly.");
+                return;
+            }
+            
+            const btn = document.querySelector('button[onclick="deleteAllModels()"]');
+            const originalText = btn.innerText;
+            btn.innerText = "Deleting...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/models/all', { method: 'DELETE' });
+                if(res.ok) {
+                    alert("All models deleted successfully.");
+                    loadModels();
+                } else {
+                    const err = await res.json();
+                    alert('Failed to delete all: ' + err.detail);
+                }
+            } catch(e) { console.error(e); alert("Error: " + e); }
+            finally {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        }
+
         async function loadModels() {
             // Keep track of open errors
             const openErrors = new Set();
@@ -1038,6 +1071,25 @@ def get_model(model_id: str):
     # Actually, simpler to return as part of list or fix db.py to return dict.
     # For now, let's rely on list_models for UI.
     return {"id": model_id, "data": str(model)}
+
+@app.delete("/models/all")
+def delete_all_models_endpoint():
+    # 1. Delete all files in models dir
+    try:
+        # Check if dir exists first
+        if settings.models_dir.exists():
+            for f in settings.models_dir.glob("*.joblib"):
+                try:
+                    f.unlink()
+                except Exception as e:
+                    log.warning(f"Could not delete {f}: {e}")
+    except Exception as e:
+        log.error(f"Failed to clear models dir: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete files: {e}")
+
+    # 2. Clear DB
+    db.delete_all_models()
+    return {"status": "all deleted"}
 
 @app.delete("/models/{model_id}")
 def delete_model(model_id: str):

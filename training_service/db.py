@@ -115,4 +115,9 @@ class MetadataDB:
             conn.execute("DELETE FROM models WHERE id = ?", [model_id])
             conn.execute("DELETE FROM features_log WHERE model_id = ?", [model_id])
 
+    def delete_all_models(self):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM models")
+            conn.execute("DELETE FROM features_log")
+
 db = MetadataDB()
