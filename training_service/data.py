@@ -32,23 +32,29 @@ def get_feature_map() -> dict[str, list[str]]:
     SELECT 
         options,
         array_agg(DISTINCT regexp_extract(filename, 'features_parquet/([^/]+)/', 1)) as symbols
-    FROM read_parquet('{glob_pattern}', filename=true)
+    FROM read_parquet('{glob_pattern}', filename=true, union_by_name=true)
     GROUP BY options
     """
     
     try:
         res = duckdb.query(sql).fetchall()
         duration = time.time() - start_ts
-        log.info(f"Feature map scan completed in {duration:.2f}s. Found {len(res)} configurations.")
+        log.info(f"Feature map scan completed in {duration:.2f}s. Found {len(res)} raw groups.")
         
         mapping = {}
         for row in res:
             opt = row[0]
             syms = row[1]
-            if opt:
-                valid_syms = sorted([s for s in syms if s])
-                mapping[opt] = valid_syms
-                
+            
+            # Detailed Logging
+            log.info(f"Scan Group: '{opt}' (Type: {type(opt)}) | Symbols: {len(syms)}")
+            
+            if not opt:
+                opt = '{"desc": "Legacy / No Config"}' # Fallback for old data
+            
+            valid_syms = sorted([s for s in syms if s])
+            mapping[opt] = valid_syms
+
         if not mapping:
              log.warning("Scan returned 0 valid mappings. Check if Parquet files contain 'options' column.")
              
@@ -85,12 +91,19 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         path = settings.features_parquet_dir / sym
         if not path.exists():
             raise FileNotFoundError(f"No features data found for {sym}")
-        query = f"SELECT * FROM '{path}/**/*.parquet'"
+        
+        # We use strict union_by_name to handle files with/without 'options' column gracefully
+        query = f"SELECT * FROM read_parquet('{path}/**/*.parquet', union_by_name=true)"
         
         # Handle options filter
         if options_filter:
+            # Handle Legacy key
+            if 'Legacy / No Config' in options_filter:
+                 log.info(f"Applying legacy filter for {sym}")
+                 # Match NULL (missing column) or Empty string
+                 query += " WHERE options IS NULL OR options = ''"
             # Robust handling for empty options
-            if options_filter.strip() in ["{}", ""]:
+            elif options_filter.strip() in ["{}", ""]:
                  log.info(f"Applying flexible empty option filter for '{options_filter}'")
                  query += " WHERE options = '{}' OR options = '' OR options IS NULL"
             else:

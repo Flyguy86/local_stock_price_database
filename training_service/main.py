@@ -699,7 +699,9 @@ def dashboard():
                             label = `Train:${j.train_window} Test:${j.test_window}`; 
                         }
                     } catch(e) {}
-                    return `<option value='${o}'>${label}</option>`;
+                    // Escape single quotes for HTML attribute
+                    const safeValue = o.replace(/'/g, "&#39;");
+                    return `<option value='${safeValue}'>${label}</option>`;
                 }).join('');
                 
              } catch(e) {
