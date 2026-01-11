@@ -4,12 +4,12 @@ from sklearn.linear_model import LinearRegression, LogisticRegression, ElasticNe
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
 try:
     from xgboost import XGBRegressor, XGBClassifier
-except ImportError:
+except (ImportError, OSError):
     XGBRegressor = None
     XGBClassifier = None
 try:
     from lightgbm import LGBMRegressor, LGBMClassifier
-except ImportError:
+except (ImportError, OSError):
     LGBMRegressor = None
     LGBMClassifier = None
 from sklearn.impute import SimpleImputer

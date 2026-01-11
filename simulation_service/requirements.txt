@@ -11,3 +11,5 @@ numpy>=1.26
 jinja2
 python-multipart
 requests
+xgboost>=2.0.0
+lightgbm>=4.0.0
