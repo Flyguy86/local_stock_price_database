@@ -15,7 +15,7 @@ except (ImportError, OSError):
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.inspection import permutation_importance
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, RobustScaler, MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_selection import f_regression
 from sklearn.pipeline import Pipeline
@@ -367,30 +367,80 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
 
         # User Req: "Standardize your features" (Pipeline)
         # We wrap the estimator in a pipeline.
-        # Conditional Preprocessing logic for Regimes
+        # Conditional Preprocessing logic for Regimes & Heterogeneous Scaling
         
         # 1. Identify Algorithm Category
         is_linear = any(k in algorithm for k in ["linear", "elasticnet", "logistic", "ridge", "lasso", "svm"])
         
-        # 2. Identify Special Columns (Regimes)
-        # We look for 'regime_vix', 'regime_gmm' in the feature set.
-        one_hot_cols = [c for c in X_train.columns if c in ["regime_vix", "regime_gmm"]]
-        numeric_cols = [c for c in X_train.columns if c not in one_hot_cols]
-
-        preprocessor = None
+        # 2. Categorize Features for Scaling
+        # Heuristic Groups:
+        # A. Regimes (OneHot) - start with 'regime_vix', 'regime_gmm'
+        # B. Robust (Volume/Counts) - 'volume', 'count'
+        # C. Bounded (Passthrough/MinMax) - 'rsi', 'ibs', 'aroon', 'stoch', 'bop'
+        # D. Standard (Returns, Z-Scores) - everything else
         
-        if is_linear and one_hot_cols:
-            log.info(f"Applying One-Hot Encoding to categorical regime columns: {one_hot_cols}")
-            preprocessor = ColumnTransformer(
-                transformers=[
-                    ('num', StandardScaler(), numeric_cols),
-                    ('cat', OneHotEncoder(handle_unknown='ignore'), one_hot_cols)
-                ]
-            )
-        else:
-            # Default: Scale everything (Trees handle ordinal ints fine, or we just treat them as "numeric")
-            # If trees, we leave VIX/GMM as 1/2/3/4 or 0/1 integers.
-            preprocessor = StandardScaler()
+        cols_regime = [c for c in X_train.columns if c in ["regime_vix", "regime_gmm"]]
+        
+        # For Trees, we treat Regimes as Ordinal (do not OneHot). For Linear, we OneHot.
+        # But we still need to separate them from scaling.
+        
+        cols_robust = []
+        cols_passthrough = []
+        cols_standard = []
+        
+        remaining_cols = [c for c in X_train.columns if c not in cols_regime]
+        
+        for c in remaining_cols:
+            cl = c.lower()
+            if "volume" in cl or "count" in cl or "pro_vol" in cl:
+                cols_robust.append(c)
+            elif any(x in cl for x in ["rsi", "ibs", "aroon", "stoch", "bop", "mfi", "willr", "ultosc"]):
+                # Bounded oscillators: Leave them alone (they preserve their own scale 0-100 or 0-1)
+                cols_passthrough.append(c)
+            else:
+                # Default: Log returns, z-scores, ma_dist, etc.
+                cols_standard.append(c)
+                
+        log.info(f"Scaling Groups determined:")
+        log.info(f"  Regimes ({len(cols_regime)}): {cols_regime}")
+        log.info(f"  Robust ({len(cols_robust)}): {cols_robust}")
+        log.info(f"  Passthrough ({len(cols_passthrough)}): {cols_passthrough}")
+        log.info(f"  Standard ({len(cols_standard)}): {len(cols_standard)} cols")
+
+        transformers = []
+        
+        # 1. Regimes
+        if cols_regime:
+            if is_linear:
+                # OneHot for Linear
+                transformers.append(('regime_ohe', OneHotEncoder(handle_unknown='ignore'), cols_regime))
+            else:
+                # Passthrough (Ordinal) for Trees
+                # (Or maybe OrdinalEncoder if they were strings, but they are ints)
+                transformers.append(('regime_pass', 'passthrough', cols_regime))
+        
+        # 2. Robust
+        if cols_robust:
+            transformers.append(('robust', RobustScaler(), cols_robust))
+            
+        # 3. Standard
+        if cols_standard:
+            transformers.append(('standard', StandardScaler(), cols_standard))
+            
+        # 4. Passthrough (Explicitly listed)
+        if cols_passthrough:
+            transformers.append(('bounded', 'passthrough', cols_passthrough))
+            
+        # Create ColumnTransformer
+        # remainder='drop' by default, but we covered all columns via loops.
+        # To be safe against logic gaps, use remainder='passthrough' with a warning/scaler?
+        # Actually proper categorization covers everything. using remainder='passthrough' 
+        # is safe to catch anything missed (e.g. regime_sma_dist went to standard? yes).
+        
+        preprocessor = ColumnTransformer(
+            transformers=transformers,
+            remainder='passthrough' 
+        )
 
         final_estimator = ModelClass(**params)
         model = Pipeline([

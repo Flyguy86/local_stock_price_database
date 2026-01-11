@@ -120,6 +120,10 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Context**: Different algorithms need different input formats for Regime features.
         *   **Linear Models (ElasticNet)**: Applying One-Hot Encoding to categorical regimes (`regime_vix`, `regime_gmm`) and using continuous distance metrics (`regime_sma_dist`) for structural breaks.
         *   **Tree Models (XGBoost/RF)**: Keeping regimes as Ordinal Integers (1-4) for efficient tree splitting.
+        *   **Heterogeneous Scaling**: The trainer now intelligently scales features based on their type:
+            *   **RobustScaler**: For Volume/Count Data (Outlier Protection).
+            *   **StandardScaler**: For Returns/Z-Scores (Zero-centering).
+            *   **Passthrough**: For Bounded Oscillators (RSI, IBS) to preserve their natural 0-100 scale.
     *   **Interactions**:
         *   **Regime-Conditional Importance**: The trainer automatically partitions feature importance (SHAP) by Market Regime (if available).
         *   **Insight**: This allows you to see if a feature like `dist_vwap` is critical during "Mean Reverting" regimes but useless during "Trending" regimes.
