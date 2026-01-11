@@ -68,6 +68,9 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
 *   **Output**: "Wide" Parquet files containing all possible features.
 
 ### Phase 2: Model Training (Training Service)
+*   **Clean Model feature identification**:  Phase	Model	Goal	Output
+    * Phase 1: Filter	ElasticNet	Feature Selection. Identify which features have a linear relationship with the target.	A reduced list of features where Coeff != 0.
+    * Phase 2: Predict	XGBoost	Non-Linear Alpha. Find complex interactions (e.g., "If Volume is high AND RSI is low, then Buy").	High-fidelity price/return predictions.
 *   **Role**: The "Model" layer. Handles stateless transformations (Imputation, Scaling, Selection).
 *   **Capabilities**:
     *   **Timeframe Selection**: Train models on resampled bars (e.g., `1h`, `4h`, `8h`) derived from the base 1-minute data. Custom aggregation ensures "Test" data never leaks into "Train" buckets during resampling.
@@ -227,3 +230,32 @@ Both `ALPACA_*` and `ALPACA_API_*` names are accepted.
 - Build logging middleware (JSON) + heartbeat table.
 - Create minimal UI (Streamlit/React) for ingest queueing, status, and data browsing.
 - Add Dockerfile/docker-compose and devcontainer wiring.
+
+## Troubleshooting & Extension Pitfalls
+
+### Adding New Features
+When adding new indicators or columns to `feature_service/pipeline.py`, keep the following in mind:
+
+1.  **Dependencies**:
+    *   If your new feature requires a new library (e.g., `scikit-learn` for GMM), you MUST add it to `feature_service/requirements.txt`.
+    *   **Crucial**: You must rebuild the Docker image for the changes to take effect. Run `docker-compose up --build -d feature_builder`.
+    *   Example Error: `ModuleNotFoundError: No module named 'sklearn'`.
+
+2.  **Schema Migration**:
+    *   DuckDB schema changes (adding columns) can be brittle if not handled carefully during the `ensure_dest_schema` step.
+    *   **Common Error**: `Catalog Error: Column with name ... already exists!`.
+    *   **Fix**: Avoid generic `IF NOT EXISTS` or blind `ALTER TABLE`. Use `DESCRIBE feature_bars` to fetch the current schema and only `ALTER TABLE` for truly missing columns.
+
+3.  **Service Reloading**:
+    *   The `feature_builder` service runs `uvicorn` in production mode (without `--reload`) by default.
+    *   Code changes in `pipeline.py` or `web.py` require a container restart: `docker-compose restart feature_builder`.
+    *   Only rebuild (`--build`) if you modify `requirements.txt` or the `Dockerfile`.
+
+4.  **Column Types**:
+    *   Ensure new columns in the `CREATE TABLE` and `ALTER TABLE` statements match the data types in your Pandas DataFrame (usually `DOUBLE` or `INTEGER`).
+    *   DuckDB is strict about types; mismatched types can lead to conversion errors during insertion.
+
+5.  **Context Data Handling & Defaults**:
+    *   When using cross-sectional features (like Beta or Sector Relative Strength) that rely on external context (e.g., QQQ data), you **MUST** handle the case where that context is missing (empty DB or missing symbols).
+    *   **Fix**: Always initialize the dependent columns (e.g., `qqq_return`, `regime_sma_dist`) with default values (0.0) in the `else` block of your merge logic.
+    *   **Reason**: If these columns are missing from the DataFrame, DuckDB insertion will fail with `Binder Error: Referenced update column ... not found`.

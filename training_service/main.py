@@ -265,8 +265,11 @@ def dashboard():
             <div id="feature-selection-ui" style="display:none; margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">
                      <h3 style="font-size:1rem; margin:0">Parent Feature Selection</h3>
-                     <div style="font-size:0.8rem; color:var(--text-muted)">
-                         <button onclick="smartSelect()" class="secondary" title="Select Top 2 features per category based on SHAP/Importance">Auto-Select (Top 2 per Cat)</button>
+                     <div style="font-size:0.8rem; color:var(--text-muted); display:flex; gap:0.5rem; flex-wrap:wrap;">
+                         <button onclick="toggleFeatures(true)" class="secondary">Select All</button>
+                         <button onclick="toggleFeatures(false)" class="secondary">Select None</button>
+                         <button onclick="addByImp()" class="secondary" title="Add features with Coeff / Importance != 0">Add Imp != 0</button>
+                         <button onclick="addByPerm()" class="secondary" title="Add features with Permutation != 0">Add Perm != 0</button>
                      </div>
                 </div>
                 
@@ -297,7 +300,6 @@ def dashboard():
                                     Feature <br>
                                     <input type="text" id="feat-filter" placeholder="Contains..." style="width: 100%; font-size: 0.75rem; padding: 2px; margin-top: 2px; background: rgba(0,0,0,0.3); border: 1px solid var(--border);" onkeyup="filterFeatures()">
                                 </th>
-                                <th style="text-align:left;">Category</th>
                                 <th style="text-align:right;">SHAP</th>
                                 <th style="text-align:right;">Permutation</th>
                                 <th style="text-align:right;">Coeff / Imp</th>
@@ -438,35 +440,6 @@ def dashboard():
         const $ = id => document.getElementById(id);
         const modelsCache = {};
         
-        function classifyFeature(feat) {
-            // "Optimized Top 15 Feature List" Logic
-            if(feat.includes('VIX') || feat.includes('vix')) {
-                if(feat.includes('close')) return 'Volatility';
-                if(feat.includes('high')) return 'Stress Indicator';
-                if(feat.includes('macd')) return 'Momentum'; // macd_line_VIXY
-                return 'Volatility'; // Default VIXY
-            }
-            if(feat.includes('QQQ') || feat.includes('SPY')) {
-                if(feat.includes('vwap')) return 'Benchmark';
-                if(feat.includes('low')) return 'Support Level';
-                return 'Benchmark';
-            }
-            if(feat.includes('rsi')) return 'Overbought/Sold';
-            if(feat.includes('atr')) return 'Volatility Range';
-            if(feat.includes('sma')) return 'Trend';
-            if(feat.includes('macd_hist')) return 'Trend Change'; // Specific override
-            if(feat.includes('macd')) return 'Momentum';
-            if(feat.includes('volume_change')) return 'Conviction';
-            if(feat.includes('time_of_day')) return 'Market Microstructure';
-            if(feat.includes('lag')) return 'Autoregression';
-            if(feat.includes('open')) return 'Session Context';
-            if(feat.includes('close')) return 'Direct Correlation'; // or Price Action if target, but usually Context in selection
-            
-            // Catch-all
-            if(feat.includes('volume')) return 'Volume';
-            return 'Other';
-        }
-
         function load() {
             console.log("Dashbard load() started");
             try {
@@ -570,14 +543,14 @@ def dashboard():
                     const shap = det.shap_mean_abs || 0;
                     const perm = det.permutation_mean || 0;
                     const coeff = det.coefficient !== undefined ? det.coefficient : (det.tree_importance || 0);
-                    return {feat, shap, perm, coeff, cat: classifyFeature(feat)};
+                    return {feat, shap, perm, coeff};
                 });
                 // Sort
                 rows.sort((a,b) => Math.abs(b.shap) - Math.abs(a.shap));
             } else if (metrics.feature_importance) {
                 // Fallback for older models
                 rows = Object.entries(metrics.feature_importance).map(([feat, score]) => ({
-                    feat, shap: 0, perm: 0, coeff: score, cat: classifyFeature(feat)
+                    feat, shap: 0, perm: 0, coeff: score
                 }));
                 // Sort by score
                 rows.sort((a,b) => b.coeff - a.coeff);
@@ -590,15 +563,13 @@ def dashboard():
             const fmt = n => Math.abs(n) < 0.0001 && n !== 0 ? n.toExponential(2) : n.toFixed(5);
             
             tbody.innerHTML = rows.map(r => `
-                <tr style="border-bottom: 1px solid var(--border);" class="feat-row" data-cat="${r.cat}" data-shap="${r.shap}" data-coeff="${r.coeff}" data-perm="${r.perm}">
+                <tr style="border-bottom: 1px solid var(--border);" class="feat-row" data-shap="${r.shap}" data-coeff="${r.coeff}" data-perm="${r.perm}">
                     <td style="text-align:center;">
                         <input type="checkbox" class="feat-check" value="${r.feat}" checked onchange="updateCount()">
                     </td>
                     <td style="padding:0.4rem; font-family:monospace; font-size:0.8rem">
                         ${r.feat}
-                        
                     </td>
-                    <td style="padding:0.4rem; font-size:0.75rem;"><span class="badge" style="background:rgba(255,255,255,0.1); color:var(--text-muted)">${r.cat}</span></td>
                     <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.shap > 0 ? '#f472b6' : '#94a3b8'}">${fmt(r.shap)}</td>
                     <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${r.perm > 0 ? '#4ade80' : '#94a3b8'}">${fmt(r.perm)}</td>
                     <td style="padding:0.4rem; text-align:right; font-family:monospace; color:${Math.abs(r.coeff) > 0 ? '#60a5fa' : '#94a3b8'}">${fmt(r.coeff)}</td>
@@ -608,58 +579,40 @@ def dashboard():
             $('total-count').innerText = rows.length;
             
             ui.style.display = 'block';
-            
-            // Auto trigger smart select without alert
-            setTimeout(() => smartSelect(false), 50);
+            updateCount();
         }
         
-        function smartSelect(showAlert = true) {
-            // "We also need to only need two columns from each category"
-            // Strategy: Deselect all, then group by Category, sort by Importance (SHAP > Coeff), pick Top 2.
-            const rows = Array.from(document.querySelectorAll('.feat-row'));
-            
-            // 1. Uncheck everything
-            rows.forEach(r => r.querySelector('.feat-check').checked = false);
-            
-            // 2. Group
-            const byCat = {};
+        function addByImp() {
+            const rows = document.querySelectorAll('.feat-row');
             rows.forEach(r => {
-                const cat = r.dataset.cat;
-                if(!byCat[cat]) byCat[cat] = [];
-                byCat[cat].push(r);
+                const coeff = parseFloat(r.dataset.coeff || 0);
+                const cb = r.querySelector('.feat-check');
+                if (cb && coeff !== 0) {
+                    cb.checked = true;
+                }
             });
-            
-            // 3. Select Top 2
-            Object.values(byCat).forEach(group => {
-                // Filter out bad features
-                const candidates = group.filter(r => {
-                    const coeff = parseFloat(r.dataset.coeff || 0);
-                    const perm = parseFloat(r.dataset.perm || 0);
-                    // const shap = parseFloat(r.dataset.shap || 0); // SHAP in table is MeanAbs, so usually > 0.
-                    // Request: Check Perm < 0, Coeff < 0, SHAP < 0 (if raw values were available, but here we likely mean 'very low' or just sanity check)
-                    
-                    if (perm < 0) return false; // Permutation Importance < 0 is junk
-                    if (coeff < 0) return false; // Coeff < 0 (if stability required)
-                    // if (shap < 0) return false; // SHAP Mean Abs is never < 0. Assuming no-op or sanity check.
-                    
-                    return true;
-                });
-
-                // Sort by SHAP then Coeff (Desc)
-                candidates.sort((a,b) => {
-                    const sa = parseFloat(a.dataset.shap || 0);
-                    const sb = parseFloat(b.dataset.shap || 0);
-                    const ca = Math.abs(parseFloat(a.dataset.coeff || 0));
-                    const cb = Math.abs(parseFloat(b.dataset.coeff || 0));
-                    return (sb - sa) || (cb - ca);
-                });
-                
-                // Select first 2
-                candidates.slice(0, 2).forEach(r => r.querySelector('.feat-check').checked = true);
-            });
-            
             updateCount();
-            if(showAlert) alert("Auto-selected top 2 features per category based on parent model importance.");
+        }
+
+        function addByPerm() {
+            const rows = document.querySelectorAll('.feat-row');
+            rows.forEach(r => {
+                const perm = parseFloat(r.dataset.perm || 0);
+                const cb = r.querySelector('.feat-check');
+                if (cb && perm !== 0) {
+                    cb.checked = true;
+                }
+            });
+            updateCount();
+        }
+        
+        function toggleFeatures(state) {
+            const rows = document.querySelectorAll('.feat-row');
+            rows.forEach(r => {
+                const cb = r.querySelector('.feat-check');
+                if (cb) cb.checked = state;
+            });
+            updateCount();
         }
 
         function filterFeatures() {

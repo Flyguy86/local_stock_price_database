@@ -493,6 +493,7 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
         
         # Fill holes
         out["qqq_return"] = out["qqq_return"].ffill().fillna(0.0)
+        out["qqq_log_return"] = out["qqq_log_return"].ffill().fillna(0.0)
         
         # Beta-Adjusted Residual Return
         # Logic: Return - Beta * Market_Return
@@ -520,6 +521,8 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
         out["beta_60"] = 1.0
         out["beta_residual_ret"] = 0.0
         out["sector_rel_str_z"] = 0.0
+        out["qqq_return"] = 0.0
+        out["qqq_log_return"] = 0.0
 
     # Merge Market Regime Context
     # --------------------------------------------------------------------------------
@@ -535,10 +538,12 @@ def _calculate_features_for_chunk(df: pd.DataFrame, opts: dict) -> pd.DataFrame:
         out["regime_vix"] = out["regime_vix"].ffill().fillna(0).astype("int64")
         out["regime_gmm"] = out["regime_gmm"].ffill().fillna(0).astype("int64")
         out["regime_sma"] = out["regime_sma"].ffill().fillna(0).astype("int64")
+        out["regime_sma_dist"] = out["regime_sma_dist"].ffill().fillna(0.0)
     else:
         out["regime_vix"] = 0
         out["regime_gmm"] = 0
         out["regime_sma"] = 0
+        out["regime_sma_dist"] = 0.0
 
     # Merge VIXY Context if available
     vix_ctx = opts.get("vixy_context")
@@ -636,18 +641,50 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             dest_conn.execute("DROP TABLE feature_bars")
 
     # Migration for new columns
-    for col in ["volume_change", "lag_1_close", "dist_vwap", "intraday_intensity", "vol_adj_mom_20", 
-                "log_return_1m", "return_z_score_20", "vol_ratio_60", "atr_ratio_15",
-                "vix_log_ret", "vix_z_score", "vix_rel_vol", "vix_atr_ratio", "vix_close",
-                "amihud_illiquidity", "vol_z_score_20", "dist_vwap_std", "ibs", 
-                "parkinson_vol_20", "beta_60", "beta_residual_ret", "sector_rel_str_z", "vrp",
-                 "regime_vix", "regime_gmm", "regime_sma"]:
-        try:
-             dest_conn.execute(f"SELECT {col} FROM feature_bars LIMIT 0")
-        except duckdb.Error:
-             if _has_table(dest_conn, "feature_bars"):
-                 logger.warning(f"Adding missing column {col} to feature_bars")
-                 dest_conn.execute(f"ALTER TABLE feature_bars ADD COLUMN {col} DOUBLE")
+    col_types = {
+        "volume_change": "DOUBLE",
+        "lag_1_close": "DOUBLE",
+        "dist_vwap": "DOUBLE",
+        "intraday_intensity": "DOUBLE",
+        "vol_adj_mom_20": "DOUBLE", 
+        "log_return_1m": "DOUBLE",
+        "return_z_score_20": "DOUBLE",
+        "vol_ratio_60": "DOUBLE",
+        "atr_ratio_15": "DOUBLE",
+        "vix_log_ret": "DOUBLE",
+        "vix_z_score": "DOUBLE",
+        "vix_rel_vol": "DOUBLE",
+        "vix_atr_ratio": "DOUBLE",
+        "vix_close": "DOUBLE",
+        "amihud_illiquidity": "DOUBLE",
+        "vol_z_score_20": "DOUBLE",
+        "dist_vwap_std": "DOUBLE",
+        "ibs": "DOUBLE",
+        "parkinson_vol_20": "DOUBLE",
+        "beta_60": "DOUBLE",
+        "beta_residual_ret": "DOUBLE",
+        "sector_rel_str_z": "DOUBLE",
+        "vrp": "DOUBLE",
+        "regime_vix": "INTEGER",
+        "regime_gmm": "INTEGER",
+        "regime_sma": "INTEGER",
+        "regime_sma_dist": "DOUBLE",
+        "qqq_return": "DOUBLE",
+        "qqq_log_return": "DOUBLE"
+    }
+
+    # Robust migration using DESCRIBE
+    if _has_table(dest_conn, "feature_bars"):
+        existing_cols = {
+            row[0] for row in dest_conn.execute("DESCRIBE feature_bars").fetchall()
+        }
+        for col, dtype in col_types.items():
+            if col not in existing_cols:
+                logger.warning(f"Adding missing column {col} to feature_bars")
+                try:
+                    dest_conn.execute(f"ALTER TABLE feature_bars ADD COLUMN {col} {dtype}")
+                except duckdb.Error as e:
+                    logger.warning(f"Failed to add column {col}: {e}")
 
     dest_conn.execute(
         """
@@ -685,6 +722,8 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             beta_residual_ret DOUBLE,
             sector_rel_str_z DOUBLE,
             vrp DOUBLE,
+            qqq_return DOUBLE,
+            qqq_log_return DOUBLE,
             
             regime_vix INTEGER,
             regime_gmm INTEGER,
@@ -706,9 +745,6 @@ def ensure_dest_schema(dest_conn: duckdb.DuckDBPyConnection) -> None:
             day_of_month INTEGER,
             month INTEGER,
             days_until_earnings DOUBLE,
-            regime_vix INTEGER,
-            regime_gmm INTEGER,
-            regime_sma INTEGER,
             regime_sma_dist DOUBLE,
             data_split VARCHAR,
             options VARCHAR,

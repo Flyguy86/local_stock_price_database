@@ -97,7 +97,7 @@ def get_simulation_history(limit=50):
                      "ticker": r[3],
                      "return_pct": r[4],
                      "trades_count": r[5],
-                     "hit_rate": r[6],
+                     "hit_rate_pct": r[6], # Match frontend struct
                      "params": json.loads(r[7]) if r[7] else {}
                  })
              return history
