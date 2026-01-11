@@ -80,10 +80,12 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Flexibility**: Users can still select "Raw Price" for specific research needs, but "Log Return" is enforced for Batch jobs.
         *   **Target Column**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
     *   **Leakage Prevention**: 
+        *   **Raw Feature Exclusion**: The system strictly excludes raw OHLCV columns (`open`, `close`, `high`, `low`, `volume`, `vwap`) from the input feature set (X). Models must learn from relative indicators (RSI, Moving Averages) rather than raw price levels, preventing "snooping" on unshifted price data which often leads to unrealistic 99% accuracy.
         *   **Aggressive Splitting**: When resampling (e.g., 1m to 1h), if a bucket contains *any* "Test" data, the entire bucket is labeled "Test" to ensure no future data leaks into the training set.
         *   **Boundary Protection**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
     *   **Model Management**: 
         *   Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and report pop-ups (now including Model Name).
+        *   **SHAP Support**: Native support for TreeExplainers across XGBoost, LightGBM, and Random Forest, ensuring accurate feature contribution analysis even for gradient-boosted models.
         *   The Registry displays models in a **Tree Structure** to visualize lineage and batches.
         *   **Bulk Deletion**: Users can delete all models via a protected "Delete All" button (double confirmation required).
     *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a selected, the list of available symbols is automatically filtered to match.

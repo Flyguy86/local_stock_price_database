@@ -446,10 +446,19 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 X_eval = scaler.transform(X_test[:100])
                 
                 explainer = None
-                if "Linear" in str(type(estimator)) or "Logistic" in str(type(estimator)):
+                est_type = str(type(estimator))
+                
+                if "Linear" in est_type or "Logistic" in est_type:
                      explainer = shap.LinearExplainer(estimator, X_bg)
-                elif "Forest" in str(type(estimator)) or "Tree" in str(type(estimator)):
-                     explainer = shap.TreeExplainer(estimator)
+                elif any(k in est_type for k in ["Forest", "Tree", "XGB", "LGBM", "Boosting", "CatBoost"]):
+                     try:
+                        explainer = shap.TreeExplainer(estimator)
+                     except Exception as tree_err:
+                        log.warning(f"TreeExplainer failed for {est_type}, falling back to Explainer: {tree_err}")
+                        explainer = shap.Explainer(estimator, X_bg)
+                else:
+                     # Fallback
+                     explainer = shap.Explainer(estimator, X_bg)
                 
                 if explainer and len(X_eval) > 0:
                      shap_vals = explainer.shap_values(X_eval)

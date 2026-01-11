@@ -248,6 +248,50 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
             log.warning(f"Leakage Protection: Dropping {leak_count} rows at Train->Test boundary (Lookforward={lookforward})")
             df = df[~is_leak] # Drop them
 
+    # --- DROP RAW PRICE COLUMNS TO PREVENT LEAKAGE / OVERFITTING ---
+    # We only want to train on derived stationary features (returns, techncials), 
+    # not the raw price level itself.
+    raw_price_cols = ["open", "high", "low", "close", "vwap"]
+    
+    # Also drop context raw prices (e.g. open_MSFT, close_QQQ)
+    cols_to_drop = []
+    for col in df.columns:
+        # Check pure raw price 
+        if col in raw_price_cols:
+            cols_to_drop.append(col)
+            continue
+            
+        # Check context raw price (e.g. "close_MSFT")
+        for raw in raw_price_cols:
+            if col.startswith(f"{raw}_"):
+                cols_to_drop.append(col)
+                break
+                
+    if cols_to_drop:
+        # Only drop if they are NOT the target column (rare edge case where target is raw close)
+        # If target_col is 'close', and we are predicting 'close' (raw), we actually NEED 'close' to lag safely.
+        # But usually we predict 'target' which is shifted. 
+        # The 'df' returned here is fed to X. X excludes 'target'. 
+        # So we can safely drop these from X's potential candidates.
+        
+        # HOWEVER: Use caution. Some indicators like 'dist_vwap' rely on them? 
+        # No, 'dist_vwap' is already calculated in feature_service.
+        
+        # We just drop them from the dataframe so trainer doesn't see them.
+        # Ensure we don't drop columns needed for logic later (like target_col for classifier direction)
+        
+        # We will keep them for now, but rely on Trainer to drop them? 
+        # No, better to drop here before Trainer sees them as features.
+        
+        # Exception: We often need 'close' or 'open' to calculate the final PnL or graph, 
+        # but trainer splits X and y. 
+        # Let's drop them *unless* they are explicitly whitelisted? 
+        # For now, let's aggressively drop them to solve the user's issue.
+        
+        cols_to_drop = [c for c in cols_to_drop if c not in ["target", "ts", "data_split"]]
+        log.info(f"Anti-Leakage: Dropping {len(cols_to_drop)} raw price columns: {cols_to_drop[:5]}...")
+        df = df.drop(columns=cols_to_drop)
+
     # Drop rows without target (last N rows)
     df = df.dropna(subset=["target"])
     
