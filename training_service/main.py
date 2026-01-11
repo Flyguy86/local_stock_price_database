@@ -581,7 +581,7 @@ def dashboard():
             const fmt = n => Math.abs(n) < 0.0001 && n !== 0 ? n.toExponential(2) : n.toFixed(5);
             
             tbody.innerHTML = rows.map(r => `
-                <tr style="border-bottom: 1px solid var(--border);" class="feat-row" data-cat="${r.cat}" data-shap="${r.shap}" data-coeff="${r.coeff}">
+                <tr style="border-bottom: 1px solid var(--border);" class="feat-row" data-cat="${r.cat}" data-shap="${r.shap}" data-coeff="${r.coeff}" data-perm="${r.perm}">
                     <td style="text-align:center;">
                         <input type="checkbox" class="feat-check" value="${r.feat}" checked onchange="updateCount()">
                     </td>
@@ -597,12 +597,14 @@ def dashboard():
             `).join('');
             
             $('total-count').innerText = rows.length;
-            updateCount();
             
             ui.style.display = 'block';
+            
+            // Auto trigger smart select without alert
+            setTimeout(() => smartSelect(false), 50);
         }
         
-        function smartSelect() {
+        function smartSelect(showAlert = true) {
             // "We also need to only need two columns from each category"
             // Strategy: Deselect all, then group by Category, sort by Importance (SHAP > Coeff), pick Top 2.
             const rows = Array.from(document.querySelectorAll('.feat-row'));
@@ -620,10 +622,18 @@ def dashboard():
             
             // 3. Select Top 2
             Object.values(byCat).forEach(group => {
-                // Filter out negative coefficients
+                // Filter out bad features
                 const candidates = group.filter(r => {
-                    const coeffStr = r.dataset.coeff;
-                    return coeffStr && parseFloat(coeffStr) >= 0;
+                    const coeff = parseFloat(r.dataset.coeff || 0);
+                    const perm = parseFloat(r.dataset.perm || 0);
+                    // const shap = parseFloat(r.dataset.shap || 0); // SHAP in table is MeanAbs, so usually > 0.
+                    // Request: Check Perm < 0, Coeff < 0, SHAP < 0 (if raw values were available, but here we likely mean 'very low' or just sanity check)
+                    
+                    if (perm < 0) return false; // Permutation Importance < 0 is junk
+                    if (coeff < 0) return false; // Coeff < 0 (if stability required)
+                    // if (shap < 0) return false; // SHAP Mean Abs is never < 0. Assuming no-op or sanity check.
+                    
+                    return true;
                 });
 
                 // Sort by SHAP then Coeff (Desc)
@@ -640,7 +650,7 @@ def dashboard():
             });
             
             updateCount();
-            alert("Auto-selected top 2 features per category based on parent model importance.");
+            if(showAlert) alert("Auto-selected top 2 features per category based on parent model importance.");
         }
 
         function filterFeatures() {
