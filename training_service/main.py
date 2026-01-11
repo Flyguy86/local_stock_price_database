@@ -420,24 +420,22 @@ def dashboard():
             return 'Other';
         }
 
-        async function load() {
-            try {
-                // Load Algos
-                const res = await fetch('/algorithms');
-                if(!res.ok) throw new Error('Failed to fetch algorithms: ' + res.statusText);
-                const algos = await res.json();
-                if(!Array.isArray(algos)) throw new Error('Algorithms response is not a list: ' + JSON.stringify(algos));
-                
-                $('algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
-                
-                // Load Data Options (Global)
-                await loadOptions();
+        function load() {
+            // Load components in parallel so one slow service doesn't block the UI
+            loadAlgos();
+            loadOptions();
+            loadModels();
+        }
 
-                // Load Models
-                await loadModels();
+        async function loadAlgos() {
+            try {
+                const res = await fetch('/algorithms');
+                if(!res.ok) throw new Error(res.statusText);
+                const algos = await res.json();
+                $('algo').innerHTML = algos.map(a => `<option value="${a}">${a}</option>`).join('');
             } catch(e) {
-                console.error("Dashboard load failed:", e);
-                alert("Dashboard load failed: " + e.message);
+                console.error("Algos load failed:", e);
+                $('algo').innerHTML = '<option>Error loading algos</option>';
             }
         }
         
