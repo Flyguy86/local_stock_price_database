@@ -65,15 +65,22 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **Workflow**: Train a "Parent" model (e.g., RandomForest) to identify key features, then train a "Child" model (e.g., LinearRegression) using *only* those selected features.
         *   **Inheritance**: Child models strictly inherit the feature subset from the parent.
         *   **Feature Selection UI**: The dashboard allows you to view parent features, see their importance metrics (SHAP, Permutation, Coeff), filter by name, and manually whitelist/blacklist features for the new training job.
-        *   **Smart Selection**: "Auto-Select" button automatically picks the top 2 features per category (Volatility, Momentum, Benchmark, etc.) based on SHAP importance, optimizing for feature diversity.
-    *   **Batch Training (Grouped Models)**: 
+        *   **Smart Selection**: "Auto-Select" button automatically picks the top 2 features per category (Volatility, Momentum, Benchmark, etc.) based on SHAP importance, optimizing for feature diversity. **It automatically excludes features with negative coefficients/importance to ensure stability.**
+    *   **Batch Training (Grouped Models - Method B)**: 
+        *   **UI Separation**: Interface clearly splits "Single Model" (Method A) and "Group Model" (Method B) workflows.
         *   **"Train Group"**: One-click orchestration to spawn 4 related models simultaneously sharing a `group_id`.
         *   **Config**: Trains [Open (1m), Close (1m), High (1d), Low (1d)] parallel jobs.
         *   **Purpose**: Rapidly build a complete predict set for a ticker.
     *   **Target Selection**: Predict any column (Close, Open, High, etc.) `N` steps into the future.
-    *   **Leakage Prevention**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
-    *   **Model Management**: Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and delete old/unused models. The Registry displays models in a **Tree Structure** to visualize lineage.
+    *   **Leakage Prevention**: 
+        *   **Aggressive Splitting**: When resampling (e.g., 1m to 1h), if a bucket contains *any* "Test" data, the entire bucket is labeled "Test" to ensure no future data leaks into the training set.
+        *   **Boundary Protection**: System automatically identifies and drops rows at the Train->Test boundary where a training input's future label would be derived from the test set.
+    *   **Model Management**: 
+        *   Dashboard to view metrics, feature importance (SHAP, Standardized Coefficients), and report pop-ups (now including Model Name).
+        *   The Registry displays models in a **Tree Structure** to visualize lineage and batches.
+        *   **Bulk Deletion**: Users can delete all models via a protected "Delete All" button (double confirmation required).
     *   **Global Data Options**: The UI scans the entire database to find all unique feature configurations (e.g., "Train:30 days, Test:5 days"). Once a selected, the list of available symbols is automatically filtered to match.
+    *   **Debug & Observability**: Trainer logs detailed data shapes (`X.shape`, `y.shape`) and feature types to the terminal to aid in diagnosing data issues.
 *   **Multi-Ticker / Context Awareness**:
     *   **Primary Ticker**: The target symbol you are trying to predict.
     *   **Context Tickers**: You can select up to 3 additional tickers (e.g., `VIX`, `SPY`, `QQQ`) to feed into the model as features.
