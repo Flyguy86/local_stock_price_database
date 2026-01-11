@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 import logging
 import uuid
 from pathlib import Path
+from collections import deque
 
 from .config import settings
 from .db import db
@@ -12,10 +13,32 @@ from .trainer import start_training, train_model_task, ALGORITHMS
 from .data import get_data_options, get_feature_map
 
 settings.ensure_paths()
+
+# --- Custom Log Handler ---
+log_buffer = deque(maxlen=200)
+
+class BufferHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            log_buffer.append(msg)
+        except Exception:
+            self.handleError(record)
+
+# Setup Logging
 logging.basicConfig(level=settings.log_level)
+# Add buffer handler to root logger so we catch everything (api, trainer, data)
+_handler = BufferHandler()
+_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [%(name)s] %(message)s', datefmt='%H:%M:%S'))
+logging.getLogger().addHandler(_handler)
+
 log = logging.getLogger("training.api")
 
 app = FastAPI(title="Training Service")
+
+@app.get("/logs")
+def get_logs():
+    return list(log_buffer)
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -385,6 +408,17 @@ def dashboard():
                 <tbody id="models-body"></tbody>
             </table>
         </section>
+
+        <!-- DEBUG LOGS -->
+        <section>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h2>System Logs (Debug)</h2>
+                <button class="secondary" onclick="updateLogs()">Refresh Logs</button>
+            </div>
+            <div id="log-container" style="background:#0f172a; color:#10b981; font-family:'Courier New', monospace; height:200px; overflow-y:scroll; padding:0.75rem; font-size:0.75rem; border:1px solid #334155; border-radius:4px; white-space:pre-wrap;">
+                Loading logs...
+            </div>
+        </section>
       </div>
       
       <script>
@@ -425,6 +459,27 @@ def dashboard():
             loadAlgos();
             loadOptions();
             loadModels();
+            updateLogs();
+            setInterval(updateLogs, 3000); // Poll logs every 3s
+        }
+        
+        async function updateLogs() {
+            try {
+                const res = await fetch('/logs');
+                if(res.ok) {
+                    const logs = await res.json();
+                    const div = $('log-container');
+                    const wasAtBottom = div.scrollTop + div.clientHeight >= div.scrollHeight - 20;
+                    
+                    if(logs.length === 0) {
+                        div.innerText = "No logs yet.";
+                    } else {
+                        div.innerText = logs.join('\\n');
+                    }
+                    
+                    if(wasAtBottom) div.scrollTop = div.scrollHeight;
+                }
+            } catch(e) { console.error("Log fetch failed", e); }
         }
 
         async function loadAlgos() {
@@ -632,12 +687,6 @@ def dashboard():
                  alert("Error loading data options from Feature Builder: " + e);
              }
         }
-                    if(label.length > 60) label = label.substring(0,57) + '...';
-                    return `<option value='${o}'>${label}</option>`;
-                }).join('');
-                
-                updateSymbols();
-             } catch(e) { console.error(e); }
         }
 
         function updateSymbols() {
