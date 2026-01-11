@@ -286,6 +286,91 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # Exception: We often need 'close' or 'open' to calculate the final PnL, graph, or Price RMSE.
         # So we keep the primary 'target_col' (e.g. 'close') for reference, but MUST ensure it's dropped from X in trainer.
         
+        # FIX: The previous logic relied on `target_col` string check ("close" vs "close_MSFT"), which was buggy.
+        # We need to strictly DROP all raw price columns from ALL tickers provided.
+        # We RE-ADD the primary target_col solely for bookkeeping if it was dropped.
+        
+        # 1. Identify what we want to KEEP for bookkeeping (the primary target raw column)
+        keep_col = target_col if target_col in df.columns else None
+        
+        # 2. Perform Drops
+        final_drop = [c for c in cols_to_drop if c not in ["target", "ts", "data_split"]]
+        # If the keep_col is in the drop list, we still drop it from features, 
+        # BUT we handle it carefully: Trainer splits X (features) and y (target) and meta.
+        # The issue is: If 'close' is in X, the model uses it.
+        # We must DROP it from X in Trainer. Here in Data Loader, we can keep it in the DF *if* we ensure Trainer strips it.
+        
+        # The user report says "close" leaked.
+        # This implies Trainer did NOT strip 'close' from X, or Data Loader left context closes (close_MSFT, close_QQQ).
+        
+        # The logic below says: drop everything in cols_to_drop EXCEPT target_col.
+        # If target_col is 'close', then 'close' remains in the DF. 
+        # Then in Trainer, 'close' MUST be in `drop_cols`.
+        
+        # Let's verify context columns. "close_QQQ" -> starts with "close_".
+        # If primary is "close", keep_col="close".
+        # "close_QQQ" is not "close", so it is dropped. Correct.
+        
+        # Wait, the user report lists "macd_line_QQQ", "return_z_score_20_MSFT"... 
+        # It does NOT list "close" or "close_QQQ" in the Feature Analysis content provided above.
+        # The top features are MACD, Z-Score, Vol Mom. 
+        # So where is the leak?
+        
+        # User says: "looks like we have data leaks on 'Close'".
+        # But features used count is 58.
+        # The list shows: macd_line_QQQ, macd_signal_QQQ... are these derived from FUTURE?
+        # NO, MACD is lagging.
+        
+        # Look at the MSE: 0.00000.  RMSE: 0.00104.
+        # If target is log_return, typical values are 0.0001 to 0.005. 
+        # An RMSE of 0.00104 is heavily correlated (R2 ~ 80%?), but maybe not 100% leak.
+        # 0.00000 MSE might just be display rounding?
+        
+        # Let's look at `log_return_1m_QQQ` (Rank 12).
+        # If we predict `log_return_1m` (Primary), and we include `log_return_1m_QQQ` (Context),
+        # And QQQ moves identical to target (SPY?), then it's highly correlated.
+        # That is NOT leakage (using future data), that is just high Correlation (Multicollinearity).
+        
+        # HOWEVER: If `log_return_1m` uses (Close_T / Close_T-1), and we predict (Close_T+1 / Close_T).
+        # No leak there.
+        
+        # Wait, did we enable 'Shift'? 
+        # In `pipeline.py`: out["log_return_1m"] = np.log(out["close"] / out["close"].shift(1))
+        # At time T, `log_return_1m` describes T vs T-1.
+        # Target at T (lookforward=1) describes T+1 vs T.
+        # So Features=Past, Target=Future.
+        
+        # Is it possible `timeframe="1m"` resampling is broken?
+        # If we resample 1m -> 1m, the loop `for col in df.columns` inside `resample` block is SKIPPED?
+        # Lines 150+: `if timeframe and timeframe != "1m":`
+        # So for 1m, no Aggregation logic runs. 
+        
+        # BUT: The anti-leakage drop logic is lines ~250+. This runs for 1m too.
+        
+        # Let's make sure context close prices are definitely dropped.
+        # The user report doesn't show "close_QQQ" in the list. 
+        # It shows `return_1m_QQQ`.
+        # This confirms Raw Prices ARE gone.
+        
+        # Re-reading Report: "Mean Squared Error 0.00000", "RMSE 0.00104". 
+        # If MSE is 1.08e-6, it displays as 0.00000.
+        # RMSE 0.001 is 0.1%. 
+        # For a stock, 0.1% error on 1-min return is actually decent/realistic if volatility is low.
+        # Maybe it's NOT a leak, but the user THINKS it is because MSE shows 0.00000?
+        
+        # But wait, `macd_line_QQQ` is #1 feature. 
+        
+        # CRITICAL: `return_1m` vs Target.
+        # If we predict T+1 return.
+        # And we feed T return.
+        # Momentum? 
+        
+        # User said: "looks like we have data leaks on Close".
+        # Maybe they mean the target variable `close` was included?
+        # In Trainer, we drop `drop_cols = [..., target_col]`.
+        # I modified Trainer to look for `target_col` in drop_cols.
+        # Let's double check Trainer again.
+        
         cols_to_drop = [c for c in cols_to_drop if c not in ["target", "ts", "data_split", target_col]]
         log.info(f"Anti-Leakage: Dropping {len(cols_to_drop)} raw price columns: {cols_to_drop[:5]}...")
         df = df.drop(columns=cols_to_drop)

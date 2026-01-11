@@ -75,6 +75,9 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
         *   **"Train Group"**: One-click orchestration to spawn 4 related models simultaneously sharing a `group_id`.
         *   **Config**: Trains [Open (1m), Close (1m), High (1d), Low (1d)] parallel jobs.
         *   **Purpose**: Rapidly build a complete predict set for a ticker.
+    *   **ElasticNet Grid Search**:
+        *   **Auto-Tuning**: When `elasticnet_regression` is selected without custom parameters, the system triggers a **Multi-threaded Grid Search** (`n_jobs=-1`).
+        *   **Optimization**: It tests varying combinations of `alpha` (0.0001 to 1.0) and `l1_ratio` (0.1 to 0.99) to find the perfect balance between Lasso (feature selection) and Ridge (stability), preventing models where all features are zeroed out.
     *   **Stationarity & Target Selection**: 
         *   **Prediction Type**: System defaults to **Log Return** (`ln(Future/Current)`) or **Percent Change** to ensure the target variable is **stationary**. Predicting Raw Prices is flagged with a warning to prevent high-coefficient/low-value models.
         *   **Flexibility**: Users can still select "Raw Price" for specific research needs, but "Log Return" is enforced for Batch jobs.

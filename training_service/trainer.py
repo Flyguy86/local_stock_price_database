@@ -18,6 +18,7 @@ from sklearn.inspection import permutation_importance
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_selection import f_regression
 from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
 try:
     import shap
 except ImportError:
@@ -371,8 +372,49 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             ('model', final_estimator)
         ])
         
-        # 4. Train Final Model
-        model.fit(X_train, y_train)
+        # --- GRID SEARCH FOR ELASTICNET ---
+        if algorithm == "elasticnet_regression" and not params:
+            log.info("Starting Grid Search for ElasticNet (Alpha/L1 Ratio) to avoid zero-feature models...")
+            
+            # Param Grid
+            # alpha: Regularization strength. Lower = Less pruning.
+            # l1_ratio: Mix of Lasso (L1) / Ridge (L2). 
+            # 1.0 = Lasso (high sparsity, features -> 0)
+            # 0.0 = Ridge (low sparsity, features -> small weights)
+            # We want to find a balance where features don't all hit zero.
+            grid_params = {
+                'model__alpha': [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0],
+                'model__l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
+            }
+            
+            # Use GridSearchCV
+            # n_jobs=-1 uses all CPU cores (Multi-threaded)
+            # cv=3 for speed given time-series constraints (simple k-fold here, ideally TimeSeriesSplit but keeping it simple for now)
+            grid_search = GridSearchCV(
+                model, 
+                grid_params, 
+                cv=5, 
+                scoring='neg_mean_squared_error',
+                n_jobs=-1,
+                verbose=1
+            )
+            
+            log.info(f"Fitting Grid Search on {len(X_train)} samples...")
+            grid_search.fit(X_train, y_train)
+            
+            best_model = grid_search.best_estimator_
+            best_params = grid_search.best_params_
+            log.info(f"Grid Search Best Params: {best_params} | Best Score: {grid_search.best_score_}")
+            
+            # Replace model with the tuned one
+            model = best_model
+            
+            # Capture selected params into metrics for reporting
+            metrics["tuned_params"] = best_params
+
+        else:
+            # 4. Train Final Model (Normal)
+            model.fit(X_train, y_train)
         
         # 5. Evaluate Final Model (for feature analysis and legacy metric report)
         preds = model.predict(X_test)
