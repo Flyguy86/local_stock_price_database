@@ -88,6 +88,11 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         # 1. Load Data
         df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe, target_transform=target_transform)
         
+        # Set TS as index for explicit alignment
+        if "ts" in df.columns:
+            df = df.set_index("ts").sort_index()
+            log.info("Set 'ts' as DataFrame index for alignment verification.")
+
         # 1a. Detect Split Column (Train/Test)
         split_col_name = None
         for col in df.columns:
@@ -99,8 +104,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                     break
         
         # 2. Prepare Features
-        # Drop metadata columns and target
-        drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted"]
+        # Drop metadata columns and target AND the raw target_col (which we kept for ref but is leakage if used as feature)
+        drop_cols = ["target", "ts", "symbol", "date", "source", "options", "target_col_shifted", target_col]
         if split_col_name:
             drop_cols.append(split_col_name)
             
@@ -396,6 +401,36 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 mse = mean_squared_error(y_test, preds)
                 metrics["mse"] = mse
                 metrics["rmse"] = float(mse ** 0.5)
+                
+                # --- PRICE RECONSTRUCTION METRIC ---
+                # User wants to verify RMSE in Price units ($) even if we trained on Log Returns
+                try:
+                    if target_transform in ["log_return", "pct_change"] and target_col in df.columns:
+                        # 1. Get Base Prices for Test Set
+                        # Note: X_test was sliced sequentially or via mask.
+                        # We need the matching rows from df.
+                        # X_test index should match df index if we preserved it.
+                        test_indices = X_test.index
+                        base_prices = df.loc[test_indices, target_col]
+                        
+                        if target_transform == "log_return":
+                            # Pred Price = Base * exp(Pred Log Ret)
+                            # True Price = Base * exp(True Log Ret)
+                            # (Or just use Future Price if we had it? We can derive True Price)
+                            rec_preds = base_prices * np.exp(preds)
+                            rec_true = base_prices * np.exp(y_test)
+                        elif target_transform == "pct_change":
+                            rec_preds = base_prices * (1 + preds)
+                            rec_true = base_prices * (1 + y_test)
+                            
+                        rec_mse = mean_squared_error(rec_true, rec_preds)
+                        metrics["rmse_price"] = float(rec_mse ** 0.5)
+                        metrics["rmse_price_unit"] = "$"
+                        log.info(f"Reconstructed Price RMSE: {metrics['rmse_price']}")
+                except Exception as rec_err:
+                    log.warning(f"Failed to calculate reconstructed price metrics: {rec_err}")
+                # -----------------------------------
+
             else:
                 acc = accuracy_score(y_test, preds)
                 metrics["accuracy"] = acc

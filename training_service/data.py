@@ -283,12 +283,10 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # We will keep them for now, but rely on Trainer to drop them? 
         # No, better to drop here before Trainer sees them as features.
         
-        # Exception: We often need 'close' or 'open' to calculate the final PnL or graph, 
-        # but trainer splits X and y. 
-        # Let's drop them *unless* they are explicitly whitelisted? 
-        # For now, let's aggressively drop them to solve the user's issue.
+        # Exception: We often need 'close' or 'open' to calculate the final PnL, graph, or Price RMSE.
+        # So we keep the primary 'target_col' (e.g. 'close') for reference, but MUST ensure it's dropped from X in trainer.
         
-        cols_to_drop = [c for c in cols_to_drop if c not in ["target", "ts", "data_split"]]
+        cols_to_drop = [c for c in cols_to_drop if c not in ["target", "ts", "data_split", target_col]]
         log.info(f"Anti-Leakage: Dropping {len(cols_to_drop)} raw price columns: {cols_to_drop[:5]}...")
         df = df.drop(columns=cols_to_drop)
 

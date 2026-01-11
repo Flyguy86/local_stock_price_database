@@ -248,6 +248,15 @@ def dashboard():
                      <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
                 </div>
             </div>
+            
+            <!-- Hyperparameters Config -->
+            <div id="hyperparams-ui" style="display:block; margin-top: 1rem; border-top: 1px dashed var(--border); padding-top: 1rem;">
+                <h3 style="font-size:1rem; margin-bottom: 0.5rem">Hyperparameters (JSON)</h3>
+                <textarea id="hyperparameters" style="width: 100%; height: 60px; font-family: monospace; font-size: 0.85rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.5rem; border-radius: 4px;" placeholder='e.g. {"n_estimators": 100, "max_depth": 5, "learning_rate": 0.05, "objective": "reg:squarederror"}'></textarea>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+                    Enter valid JSON to override default algorithm parameters. Leave empty for defaults.
+                </div>
+            </div>
 
 
 
@@ -776,14 +785,15 @@ def dashboard():
             let html = `<h3>Performance Metrics</h3><ul>`;
             
             const definitions = {
-                'mse': { title: 'Mean Squared Error', desc: 'Average squared difference between predicted and actual values. Lower is better. Punishes large errors heavily.' },
-                'rmse': { title: 'Root Mean Squared Error', desc: 'Square root of MSE. Same unit as the target (e.g. price $). Lower is better. Good/Bad depends on stock price (e.g. RMSE 2.0 is great for NVDA @ 1000, bad for penny stocks).' },
-                'accuracy': { title: 'Accuracy Score', desc: 'Percentage of correct predictions. 0.5 is random guessing for binary. >0.55 is often considered "good" in trading. >0.65 is suspicious (overfitting?).' },
+                'mse': { title: 'Mean Squared Error', desc: 'Average squared difference between predicted and actual values. Lower is better.' },
+                'rmse': { title: 'RMSE (Model Unit)', desc: 'Error in model units (e.g. Log Return or Price). If < 0.01 with Log Return, it is normal.' },
+                'rmse_price': { title: 'Reconstructed Price RMSE ($)', desc: 'Actual dollar error. Useful for comparing Log Return models against Raw Price models.' },
+                'accuracy': { title: 'Accuracy Score', desc: 'Percentage of correct predictions.' },
                 'features_count': { title: 'Features Used', desc: 'Number of input variables used by the model.' }
             };
 
             // Prioritize standard metrics
-            const priority = ['mse', 'rmse', 'accuracy', 'features_count'];
+            const priority = ['mse', 'rmse', 'rmse_price', 'accuracy', 'features_count'];
             priority.forEach(k => {
                 if(metrics[k] !== undefined) {
                     const def = definitions[k] || { title: k.toUpperCase(), desc: '' };
@@ -1107,6 +1117,19 @@ def dashboard():
                 featureWhitelist = checked;
             }
 
+            // Parse Hyperparameters
+            let params = null;
+            const paramsStr = $('hyperparameters').value.trim();
+            if(paramsStr) {
+                try {
+                    params = JSON.parse(paramsStr);
+                } catch(e) {
+                    alert('Invalid JSON in Hyperparameters field: ' + e);
+                    if(btn) { btn.disabled = false; btn.innerText = 'Start Single Job'; }
+                    return;
+                }
+            }
+
             const btn = document.querySelector('button[onclick="train()"]');
             if(btn) {
                 btn.disabled = true;
@@ -1125,7 +1148,8 @@ def dashboard():
                         timeframe: $('timeframe').value,
                         parent_model_id: $('parent_model').value || null,
                         feature_whitelist: featureWhitelist,
-                        target_transform: $('target_transform').value
+                        target_transform: $('target_transform').value,
+                        hyperparameters: params
                     })
                 });
                 
@@ -1426,7 +1450,17 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
     
-    training_id = start_training(req.symbol, req.algorithm, req.target_col, params, req.data_options, req.timeframe, req.parent_model_id, req.group_id)
+    training_id = start_training(
+        req.symbol, 
+        req.algorithm, 
+        req.target_col, 
+        params, 
+        req.data_options, 
+        req.timeframe, 
+        req.parent_model_id, 
+        req.group_id,
+        target_transform=req.target_transform
+    )
     
     background_tasks.add_task(
         train_model_task, 
@@ -1439,7 +1473,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.timeframe,
         req.parent_model_id,
         req.feature_whitelist,
-        req.group_id # Pass group_id
+        req.group_id, # Pass group_id
+        req.target_transform
     )
     
     return {"id": training_id, "status": "started"}
