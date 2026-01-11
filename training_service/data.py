@@ -7,6 +7,8 @@ import duckdb
 
 log = logging.getLogger("training.data")
 
+import time
+
 def get_feature_map() -> dict[str, list[str]]:
     """
     Scans all feature parquet files to build a map of:
@@ -14,9 +16,13 @@ def get_feature_map() -> dict[str, list[str]]:
     """
     base_path = settings.features_parquet_dir
     if not base_path.exists():
+        log.warning(f"Feature path does not exist: {base_path}")
         return {}
     
     glob_pattern = str(base_path / "**/*.parquet")
+    log.info(f"Scanning feature map with pattern: {glob_pattern}")
+    
+    start_ts = time.time()
     
     # We use regex to extract the symbol from the path.
     # Path structure: .../features_parquet/SYMBOL/dt=...
@@ -32,6 +38,9 @@ def get_feature_map() -> dict[str, list[str]]:
     
     try:
         res = duckdb.query(sql).fetchall()
+        duration = time.time() - start_ts
+        log.info(f"Feature map scan completed in {duration:.2f}s. Found {len(res)} configurations.")
+        
         mapping = {}
         for row in res:
             opt = row[0]
@@ -39,6 +48,10 @@ def get_feature_map() -> dict[str, list[str]]:
             if opt:
                 valid_syms = sorted([s for s in syms if s])
                 mapping[opt] = valid_syms
+                
+        if not mapping:
+             log.warning("Scan returned 0 valid mappings. Check if Parquet files contain 'options' column.")
+             
         return mapping
     except Exception as e:
         log.error(f"Failed to scan feature map: {e}")

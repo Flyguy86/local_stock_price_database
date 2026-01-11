@@ -598,15 +598,22 @@ def dashboard():
         let featureMap = {};
 
         async function loadOptions() {
+             console.log("Loading data options...");
+             const startTime = performance.now();
+             const select = $('data_options');
+             
              try {
                 const res = await fetch('/data/map');
-                featureMap = await res.json();
+                if(!res.ok) throw new Error(res.statusText);
                 
-                const select = $('data_options');
+                featureMap = await res.json();
+                const duration = (performance.now() - startTime).toFixed(0);
+                console.log(`Data options loaded in ${duration}ms`, featureMap);
+                
                 const options = Object.keys(featureMap).sort();
                 
                 if (options.length === 0) {
-                     select.innerHTML = '<option value="">No features found</option>';
+                     select.innerHTML = '<option value="">(No features found)</option>';
                      return;
                 }
                 
@@ -618,6 +625,15 @@ def dashboard():
                             label = `Train:${j.train_window} Test:${j.test_window}`; 
                         }
                     } catch(e) {}
+                    return `<option value='${o}'>${label}</option>`;
+                }).join('');
+                
+             } catch(e) {
+                 console.error("Failed to load data map:", e);
+                 select.innerHTML = '<option value="">Error Loading Data</option>';
+                 alert("Error loading data options from Feature Builder: " + e);
+             }
+        }
                     if(label.length > 60) label = label.substring(0,57) + '...';
                     return `<option value='${o}'>${label}</option>`;
                 }).join('');
@@ -1132,6 +1148,7 @@ def list_options(symbol: str):
 
 @app.get("/data/map")
 def get_map():
+    log.info("Request received: GET /data/map (Scanning Parquet features)")
     return get_feature_map()
 
 class TrainRequest(BaseModel):
