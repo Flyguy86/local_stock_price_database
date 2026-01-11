@@ -145,10 +145,15 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
                 # This is conservative: avoids leaking test data into a 'train' bucket
                 def aggressive_test_label(series):
                     vals = set(series.astype(str).unique())
+                    # Priority: Test > Train. If bucket contains any 'test' data, label it 'test'
+                    # so it gets excluded from training (or handled as test boundary).
                     if "test" in vals: return "test"
                     return "train" # fallback
+                
                 agg_dict[col] = aggressive_test_label
                 split_col_found = col
+                log.info(f"Leakage Protection: Applied aggressive split aggregation to '{col}'")
+
             elif col == "open": agg_dict[col] = "first"
             elif col == "high": agg_dict[col] = "max"
             elif col == "low": agg_dict[col] = "min"
@@ -181,6 +186,9 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
     # At Row T (Train), the target comes from Row T+1. If T+1 is 'test', then training on Row T
     # uses 'test' data as a label. This is a leak.
     
+    # Key concept: 1m -> 1h resampling has ALREADY conservatively marked mixed buckets as 'test'.
+    # Now we check the boundary between the last pure 'train' bucket and the first 'test' bucket.
+
     # 1. Detect split column again (if not already found during resample loop)
     split_col = None
     for c in df.columns:
@@ -190,6 +198,8 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
             
     if split_col:
         # Check source of future target
+        # If lookforward=1, Row[i] uses Row[i+1][target_col]
+        # We perform check: If Row[i].split == 'train' AND Row[i+1].split == 'test', DROP Row[i].
         future_split = df[split_col].shift(-lookforward)
         
         # Identify leak rows: Current is Train, Future is Test
@@ -198,7 +208,7 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         leak_count = is_leak.sum()
         
         if leak_count > 0:
-            log.warning(f"Dropping {leak_count} rows to prevent Train->Test leakage (Lookforward={lookforward})")
+            log.warning(f"Leakage Protection: Dropping {leak_count} rows at Train->Test boundary (Lookforward={lookforward})")
             df = df[~is_leak] # Drop them
 
     # Drop rows without target (last N rows)
