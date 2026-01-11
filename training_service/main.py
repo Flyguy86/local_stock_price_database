@@ -1333,7 +1333,7 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
                 log.warning(f"Could not parse hyperparameters for {model_id}, using empty dict")
                 
         # Start new training job
-        training_id = start_training(symbol, algo, target, params, d_opt, tf, target_transform=transform)
+        training_id = start_training(symbol, algo, target, params, d_opt, tf, parent_model_id=model_id, target_transform=transform)
     
         background_tasks.add_task(
             train_model_task, 
@@ -1344,7 +1344,7 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
             params,
             d_opt,
             tf,
-            None, # parent
+            model_id, # parent is now the original model
             None, # features
             None, # group
             transform
