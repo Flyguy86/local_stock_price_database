@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np
 import duckdb
+import uuid
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
@@ -16,6 +17,93 @@ MODELS_DIR = Path("/app/data/models")
 BOTS_DIR = Path("/app/data/models/bots")
 FEATURES_PATH = Path("/app/data/features_parquet")
 METADATA_DB_PATH = Path("/app/data/duckdb/models.db")
+
+def ensure_sim_history_table():
+    """Ensures the simulation history table exists in DuckDB."""
+    if not METADATA_DB_PATH.parent.exists():
+        METADATA_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
+    try:
+        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS simulation_history (
+                    id VARCHAR PRIMARY KEY,
+                    timestamp VARCHAR,
+                    model_id VARCHAR,
+                    ticker VARCHAR,
+                    return_pct DOUBLE,
+                    trades_count INTEGER,
+                    hit_rate DOUBLE,
+                    params JSON
+                )
+            """)
+    except Exception as e:
+        log.error(f"Failed to ensure sim_history table: {e}")
+
+def save_simulation_history(model_id, ticker, stats, params):
+    """Saves a simulation run result to DB."""
+    try:
+        ensure_sim_history_table()
+        
+        record_id = str(uuid.uuid4())
+        ts = datetime.now(timezone.utc).isoformat()
+        
+        # params dict to json string
+        params_json = json.dumps(params)
+        
+        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
+            conn.execute("""
+                INSERT INTO simulation_history 
+                (id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, params)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                record_id, 
+                ts, 
+                model_id, 
+                ticker, 
+                stats.get('strategy_return_pct', 0.0),
+                stats.get('total_trades', 0),
+                stats.get('hit_rate_pct', 0.0),
+                params_json
+            ])
+            log.info(f"Saved simulation history: {record_id}")
+            
+    except Exception as e:
+        log.error(f"Failed to save simulation history: {e}")
+
+def get_simulation_history(limit=50):
+    """Retrieves recent simulation history."""
+    try:
+        ensure_sim_history_table()
+        with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
+             # Check if table exists (it might not if valid but empty)
+             tables = conn.execute("SHOW TABLES").fetchall()
+             if not any(t[0] == 'simulation_history' for t in tables):
+                 return []
+                 
+             rows = conn.execute(f"""
+                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, params 
+                FROM simulation_history 
+                ORDER BY timestamp DESC 
+                LIMIT {limit}
+             """).fetchall()
+             
+             history = []
+             for r in rows:
+                 history.append({
+                     "id": r[0],
+                     "timestamp": r[1],
+                     "model_id": r[2],
+                     "ticker": r[3],
+                     "return_pct": r[4],
+                     "trades_count": r[5],
+                     "hit_rate": r[6],
+                     "params": json.loads(r[7]) if r[7] else {}
+                 })
+             return history
+    except Exception as e:
+        log.error(f"Failed to get history: {e}")
+        return []
 
 def get_available_models():
     """Lists available trained models (.joblib files) with metadata."""
@@ -543,6 +631,16 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
     chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity", "rolling_hit_rate"]].fillna(0).copy()
     chart_data["ts"] = chart_data["ts"].dt.strftime('%Y-%m-%d %H:%M:%S')
     
+    # Save History
+    run_params = {
+        "initial_cash": initial_cash,
+        "use_bot": use_bot,
+        "min_prediction_threshold": min_prediction_threshold,
+        "enable_z_score_check": enable_z_score_check,
+        "volatility_normalization": volatility_normalization
+    }
+    save_simulation_history(model_id, ticker, stats, run_params)
+
     return {
         "stats": stats,
         "trades": trades,

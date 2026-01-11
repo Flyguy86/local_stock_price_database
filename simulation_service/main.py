@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import logging
 from pathlib import Path
-from .core import get_available_models, get_available_tickers, run_simulation, train_trading_bot
+from .core import get_available_models, get_available_tickers, run_simulation, train_trading_bot, get_simulation_history
 
 app = FastAPI(title="Simulation Service")
 log = logging.getLogger("simulation.web")
@@ -26,9 +26,22 @@ async def get_config():
         "tickers": get_available_tickers()
     }
 
+@app.get("/api/history")
+async def get_history_endpoint():
+    return get_simulation_history()
+
 class SimulationRequest(BaseModel):
     model_id: str
     ticker: str
+    initial_cash: float = 10000.0
+    use_bot: bool = False
+    min_prediction_threshold: float = 0.0
+    enable_z_score_check: bool = False
+    volatility_normalization: bool = False
+
+class BatchSimulationRequest(BaseModel):
+    model_id: str
+    tickers: list[str]
     initial_cash: float = 10000.0
     use_bot: bool = False
     min_prediction_threshold: float = 0.0
@@ -55,6 +68,35 @@ async def simulate(req: SimulationRequest):
         return result
     except Exception as e:
         log.error(f"Simulation failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+@app.post("/api/batch_simulate")
+async def batch_simulate(req: BatchSimulationRequest):
+    try:
+        log.info(f"Batch Request: {req}")
+        results = []
+        for ticker in req.tickers:
+            try:
+                res = run_simulation(
+                    req.model_id, ticker, req.initial_cash, req.use_bot,
+                    min_prediction_threshold=req.min_prediction_threshold,
+                    enable_z_score_check=req.enable_z_score_check,
+                    volatility_normalization=req.volatility_normalization
+                )
+                results.append({
+                    "ticker": ticker, 
+                    "status": "success", 
+                    "return_pct": res["stats"]["strategy_return_pct"],
+                    "hit_rate_pct": res["stats"]["hit_rate_pct"],
+                    "trades": res["stats"]["total_trades"]
+                })
+            except Exception as e:
+                log.error(f"Batch sim failed for {ticker}: {e}")
+                results.append({"ticker": ticker, "status": "error", "message": str(e)})
+                
+        return {"results": results}
+    except Exception as e:
+        log.error(f"Batch simulation failed: {e}", exc_info=True)
         return {"error": str(e)}
 
 @app.post("/api/train_bot")

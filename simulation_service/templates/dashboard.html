@@ -18,111 +18,214 @@
         <h1>Model Simulation Dashboard</h1>
         <span class="badge bg-info text-dark">Simulation Service</span>
     </div>
+
+    <!-- Navigation Tabs -->
+    <ul class="nav nav-tabs mb-4" id="simTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="single-tab" data-bs-toggle="tab" data-bs-target="#single-pane" type="button" role="tab">Single Run</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="batch-tab" data-bs-toggle="tab" data-bs-target="#batch-pane" type="button" role="tab">Batch Run</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-pane" type="button" role="tab" onclick="loadHistory()">History</button>
+        </li>
+    </ul>
     
-    <div class="card mb-4 shadow-sm">
-        <div class="card-header bg-white">
-            <h5 class="mb-0">Configuration</h5>
-        </div>
-        <div class="card-body">
-            <div class="row g-3">
-                <div class="col-md-4">
-                    <label for="modelSelect" class="form-label">Trained Model</label>
-                    <select id="modelSelect" class="form-select">
-                        <option selected disabled>Loading models...</option>
-                    </select>
+    <div class="tab-content" id="myTabContent">
+        <!-- SINGLE RUN TAB -->
+        <div class="tab-pane fade show active" id="single-pane" role="tabpanel">
+            <div class="card mb-4 shadow-sm">
+                <div class="card-header bg-white">
+                    <h5 class="mb-0">Single Simulation Configuration</h5>
                 </div>
-                <div class="col-md-4">
-                    <label for="tickerSelect" class="form-label">Ticker (Features)</label>
-                    <select id="tickerSelect" class="form-select">
-                        <option selected disabled>Loading tickers...</option>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <label for="initialCash" class="form-label">Initial Cash ($)</label>
-                    <input type="number" class="form-control" id="initialCash" value="10000">
-                </div>
-                <div class="col-md-2">
-                    <label for="minPredInput" class="form-label">Min Threshold</label>
-                    <input type="number" class="form-control" id="minPredInput" value="0.0005" step="0.0001">
-                </div>
-                <div class="col-md-12 pt-3 d-flex align-items-center gap-4 border-bottom pb-3 mb-3">
-                     <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="zScoreCheck">
-                        <label class="form-check-label" for="zScoreCheck">Z-Score Check (>4&sigma;)</label>
-                    </div>
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="volNormCheck">
-                        <label class="form-check-label" for="volNormCheck">Vol Normalization</label>
-                    </div>
-                    <button id="runBtn" class="btn btn-primary ms-auto px-5" onclick="runSimulation()">
-                        Run Simulation
-                    </button>
-                </div>
-                
-                <!-- Bot Controls -->
-                <div class="col-md-12 mt-3 pt-3 border-top">
-                    <div class="d-flex align-items-center gap-3">
-                        <button id="trainBotBtn" class="btn btn-outline-dark" onclick="trainBot()">
-                            🤖 Train Trading Bot
-                        </button>
-                        <div class="form-check form-switch ms-3">
-                            <input class="form-check-input" type="checkbox" role="switch" id="useBotCheck">
-                            <label class="form-check-label" for="useBotCheck">Use Trading Bot Filter</label>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label for="modelSelect" class="form-label">Trained Model</label>
+                            <select id="modelSelect" class="form-select">
+                                <option selected disabled>Loading models...</option>
+                            </select>
                         </div>
-                        <span id="botStatus" class="ms-2 small"></span>
+                        <div class="col-md-4">
+                            <label for="tickerSelect" class="form-label">Ticker (Features)</label>
+                            <select id="tickerSelect" class="form-select">
+                                <option selected disabled>Loading tickers...</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                             <label for="initialCash" class="form-label">Initial Cash ($)</label>
+                             <input type="number" class="form-control" id="initialCash" value="10000">
+                        </div>
+                        <div class="col-md-2">
+                            <label for="minPredInput" class="form-label">Min Threshold</label>
+                            <input type="number" class="form-control" id="minPredInput" value="0.0005" step="0.0001">
+                        </div>
+                        <div class="col-md-12 pt-3 d-flex align-items-center gap-4 border-bottom pb-3 mb-3">
+                             <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="zScoreCheck">
+                                <label class="form-check-label" for="zScoreCheck">Z-Score Check (>4&sigma;)</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="volNormCheck">
+                                <label class="form-check-label" for="volNormCheck">Vol Normalization</label>
+                            </div>
+                            <button id="runBtn" class="btn btn-primary ms-auto px-5" onclick="runSimulation()">
+                                Run Simulation
+                            </button>
+                        </div>
+                        
+                        <!-- Bot Controls -->
+                        <div class="col-md-12 mt-3 pt-3 border-top">
+                            <div class="d-flex align-items-center gap-3">
+                                <button id="trainBotBtn" class="btn btn-outline-dark" onclick="trainBot()">
+                                    🤖 Train Trading Bot
+                                </button>
+                                <div class="form-check form-switch ms-3">
+                                    <input class="form-check-input" type="checkbox" role="switch" id="useBotCheck">
+                                    <label class="form-check-label" for="useBotCheck">Use Trading Bot Filter</label>
+                                </div>
+                                <span id="botStatus" class="ms-2 small"></span>
+                            </div>
+                            <small class="text-muted d-block mt-1">
+                                Trains a secondary model to verify the base model's predictions before trading. Helps filter out false signals.
+                            </small>
+                        </div>
                     </div>
-                    <small class="text-muted d-block mt-1">
-                        Trains a secondary model to verify the base model's predictions before trading. Helps filter out false signals.
-                    </small>
+                </div>
+            </div>
+
+            <div id="loadingProgress" class="progress mb-4" style="display: none;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-label="Simulation in progress" style="width: 100%"></div>
+            </div>
+
+            <div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
+                <strong>Error!</strong> <span id="errorText"></span>
+                <button type="button" class="btn-close" aria-label="Close" onclick="this.parentElement.style.display='none'"></button>
+            </div>
+
+            <div id="results" style="display: none;">
+                <!-- Stats Panel -->
+                <div class="row mb-4">
+                     <div class="col-md-12">
+                        <div class="card shadow-sm">
+                            <div class="card-body">
+                                <h5 class="card-title text-muted mb-3">Simulation Statistics</h5>
+                                <div class="row" id="statsContainer">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chart Panel -->
+                <div class="row mb-4">
+                    <div class="col-md-12">
+                        <div class="card shadow-sm">
+                            <div class="card-header bg-white">Equity Curve</div>
+                            <div class="card-body">
+                                 <div class="chart-container">
+                                    <canvas id="equityChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trades -->
+                <h5 class="mb-3">Trade Log</h5>
+                <div class="accordion mb-4 shadow-sm" id="tradesAccordionContainer">
+                     <!-- Populated via JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- BATCH RUN TAB -->
+        <div class="tab-pane fade" id="batch-pane" role="tabpanel">
+            <div class="card mb-4 shadow-sm">
+                <div class="card-header bg-white">
+                     <h5 class="mb-0">Batch Simulation</h5>
+                </div>
+                <div class="card-body">
+                     <div class="row g-3">
+                        <div class="col-md-4">
+                            <label for="batchModelSelect" class="form-label">Trained Model</label>
+                            <select id="batchModelSelect" class="form-select">
+                                <option selected disabled>Loading models...</option>
+                            </select>
+                        </div>
+                        <div class="col-md-8">
+                             <label class="form-label">Tickers</label>
+                             <div class="d-flex gap-2">
+                                <select id="batchTickerSelect" class="form-select" multiple size="4">
+                                    <!-- Populated JS -->
+                                </select>
+                                <div class="d-flex flex-column justify-content-center">
+                                    <button class="btn btn-sm btn-outline-secondary mb-2" onclick="selectAllTickers()">All</button>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="clearTickers()">None</button>
+                                </div>
+                             </div>
+                             <small class="text-muted">Hold Ctrl/Cmd to select multiple.</small>
+                        </div>
+                        <div class="col-md-12 pt-3 border-top">
+                             <button id="runBatchBtn" class="btn btn-primary w-100 py-2" onclick="runBatchSimulation()">
+                                Run Batch Simulation
+                            </button>
+                        </div>
+                     </div>
+                </div>
+            </div>
+            
+            <div id="batchProgress" class="progress mb-4" style="display: none;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%"></div>
+            </div>
+
+            <div id="batchResults" style="display: none;">
+                 <table class="table table-hover table-bordered bg-white shadow-sm">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Ticker</th>
+                            <th>Status</th>
+                            <th>Return %</th>
+                            <th>Hit Rate %</th>
+                            <th>Trades</th>
+                        </tr>
+                    </thead>
+                    <tbody id="batchResultsBody"></tbody>
+                 </table>
+            </div>
+        </div>
+
+        <!-- HISTORY TAB -->
+        <div class="tab-pane fade" id="history-pane" role="tabpanel">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">Run History</h5>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="loadHistory()">Refresh</button>
+                </div>
+                <div class="card-body p-0">
+                    <table class="table table-striped mb-0">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Model</th>
+                                <th>Ticker</th>
+                                <th>Return %</th>
+                                <th>Hit Rate %</th>
+                                <th>Trades</th>
+                                <th>Params</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyTableBody">
+                            <tr><td colspan="7" class="text-center py-4">Loading...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
     </div>
 
-    <div id="loadingProgress" class="progress mb-4" style="display: none;">
-        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-label="Simulation in progress" style="width: 100%"></div>
-    </div>
-
-    <div id="errorAlert" class="alert alert-danger alert-dismissible fade show" role="alert" style="display: none;">
-        <strong>Error!</strong> <span id="errorText"></span>
-        <button type="button" class="btn-close" aria-label="Close" onclick="this.parentElement.style.display='none'"></button>
-    </div>
-
-    <div id="results" style="display: none;">
-        <!-- Stats Panel -->
-        <div class="row mb-4">
-             <div class="col-md-12">
-                <div class="card shadow-sm">
-                    <div class="card-body">
-                        <h5 class="card-title text-muted mb-3">Simulation Statistics</h5>
-                        <div class="row" id="statsContainer">
-                            <!-- Populated by JS -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Chart Panel -->
-        <div class="row mb-4">
-            <div class="col-md-12">
-                <div class="card shadow-sm">
-                    <div class="card-header bg-white">Equity Curve</div>
-                    <div class="card-body">
-                         <div class="chart-container">
-                            <canvas id="equityChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Trades -->
-        <h5 class="mb-3">Trade Log</h5>
-        <div class="accordion mb-4 shadow-sm" id="tradesAccordionContainer">
-             <!-- Populated via JS -->
-        </div>
-    </div>
 </div>
 
 <script>
@@ -133,35 +236,55 @@
             const response = await fetch('/api/config');
             const data = await response.json();
             
+            // Populate Single Run Model Select
             const modelSelect = document.getElementById('modelSelect');
             modelSelect.innerHTML = '<option disabled selected>Select Model</option>';
-            if (data.models.length === 0) {
+            
+            // Populate Batch Run Model Select
+            const batchModelSelect = document.getElementById('batchModelSelect');
+            batchModelSelect.innerHTML = '<option disabled selected>Select Model</option>';
+
+            const models = data.models || [];
+            if (models.length === 0) {
                  const opt = document.createElement('option');
                  opt.innerText = "No models found";
                  opt.disabled = true;
                  modelSelect.appendChild(opt);
+                 batchModelSelect.appendChild(opt.cloneNode(true));
+            } else {
+                models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.innerText = m.name + " (" + m.id.substring(0, 8) + ")";
+                    modelSelect.appendChild(opt);
+                    batchModelSelect.appendChild(opt.cloneNode(true));
+                });
             }
-            data.models.forEach(m => {
-                const opt = document.createElement('option');
-                opt.value = m.id;
-                opt.innerText = m.name + " (" + m.id.substring(0, 8) + ")";
-                modelSelect.appendChild(opt);
-            });
 
+            // Populate Single Run Ticker Select
             const tickerSelect = document.getElementById('tickerSelect');
             tickerSelect.innerHTML = '<option disabled selected>Select Ticker</option>';
-            if (data.tickers.length === 0) {
+            
+            // Populate Batch Run Ticker Select
+            const batchTickerSelect = document.getElementById('batchTickerSelect');
+            batchTickerSelect.innerHTML = '';
+
+            const tickers = data.tickers || [];
+            if (tickers.length === 0) {
                  const opt = document.createElement('option');
                  opt.innerText = "No features found";
                  opt.disabled = true;
                  tickerSelect.appendChild(opt);
+                 batchTickerSelect.appendChild(opt.cloneNode(true));
+            } else {
+                tickers.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t;
+                    opt.innerText = t;
+                    tickerSelect.appendChild(opt);
+                    batchTickerSelect.appendChild(opt.cloneNode(true));
+                });
             }
-            data.tickers.forEach(t => {
-                const opt = document.createElement('option');
-                opt.value = t;
-                opt.innerText = t;
-                tickerSelect.appendChild(opt);
-            });
         } catch (e) {
             console.error("Failed to load config", e);
             alert("Failed to load models/tickers configuration.");
@@ -532,6 +655,142 @@
 
     // Init
     loadConfig();
+
+    // --- Helper Functions for Batch ---
+
+    function selectAllTickers() {
+        const select = document.getElementById('batchTickerSelect');
+        for (let i = 0; i < select.options.length; i++) {
+            select.options[i].selected = true;
+        }
+    }
+    
+    function clearTickers() {
+         const select = document.getElementById('batchTickerSelect');
+        for (let i = 0; i < select.options.length; i++) {
+            select.options[i].selected = false;
+        }
+    }
+
+    async function runBatchSimulation() {
+        const modelId = document.getElementById('batchModelSelect').value;
+        const select = document.getElementById('batchTickerSelect');
+        const tickers = Array.from(select.selectedOptions).map(o => o.value);
+        
+        const initialCash = parseFloat(document.getElementById('initialCash').value); // Use shared input
+        const minPred = parseFloat(document.getElementById('minPredInput').value) || 0;
+        const enableZ = document.getElementById('zScoreCheck').checked;
+        const volNorm = document.getElementById('volNormCheck').checked;
+        const useBot = document.getElementById('useBotCheck').checked;
+
+        if (!modelId || modelId.includes('Select') || tickers.length === 0) {
+            alert("Please select a Model and at least one Ticker.");
+            return;
+        }
+
+        const btn = document.getElementById('runBatchBtn');
+        const progress = document.getElementById('batchProgress');
+        const resultsDiv = document.getElementById('batchResults');
+        const tbody = document.getElementById('batchResultsBody');
+        const oldText = btn.innerText;
+
+        btn.disabled = true;
+        btn.innerText = "Running Batch...";
+        progress.style.display = 'flex';
+        resultsDiv.style.display = 'none';
+        tbody.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/batch_simulate', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    model_id: modelId,
+                    tickers: tickers,
+                    initial_cash: initialCash,
+                    use_bot: useBot,
+                    min_prediction_threshold: minPred,
+                    enable_z_score_check: enableZ,
+                    volatility_normalization: volNorm
+                })
+            });
+            const data = await response.json();
+            
+            if (data.results) {
+                // Populate table
+                data.results.forEach(r => {
+                    const row = document.createElement('tr');
+                    const isSuccess = r.status === 'success';
+                    const retColor = isSuccess && r.return_pct >= 0 ? 'text-success' : 'text-danger';
+                    
+                    row.innerHTML = `
+                         <td><strong>${r.ticker}</strong></td>
+                         <td>${isSuccess ? '<span class="badge bg-success">Success</span>' : '<span class="badge bg-danger">Error</span>'}</td>
+                         <td class="${retColor}">${isSuccess ? r.return_pct.toFixed(2) + '%' : '-'}</td>
+                         <td>${isSuccess ? r.hit_rate_pct.toFixed(2) + '%' : '-'}</td>
+                         <td>${isSuccess ? r.trades : '-'}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+                resultsDiv.style.display = 'block';
+            } else {
+                 alert("Batch execution failed: " + (data.error || "Unknown error"));
+            }
+        } catch (e) {
+            console.error(e);
+            alert("Failed to run batch simulation.");
+        } finally {
+            btn.disabled = false;
+            btn.innerText = oldText;
+            progress.style.display = 'none';
+        }
+    }
+    
+    async function loadHistory() {
+        const tbody = document.getElementById('historyTableBody');
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">Loading...</td></tr>';
+        
+        try {
+            const response = await fetch('/api/history');
+            const data = await response.json();
+            
+            tbody.innerHTML = '';
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No history found</td></tr>';
+                return;
+            }
+            
+            data.forEach(item => {
+                const ts = item.timestamp.replace('T', ' ').substring(0, 19);
+                const retColor = item.return_pct >= 0 ? 'text-success' : 'text-danger';
+                
+                let paramStr = ``;
+                if(item.params) {
+                    // Small badges for active boolean flags
+                    if(item.params.enable_z_score_check) paramStr += `<span class="badge bg-info text-dark me-1">Z-Score</span>`;
+                    if(item.params.volatility_normalization) paramStr += `<span class="badge bg-warning text-dark me-1">VolNorm</span>`;
+                    if(item.params.use_bot) paramStr += `<span class="badge bg-dark me-1">Bot</span>`;
+                    if(item.params.min_prediction_threshold > 0) paramStr += `<span class="badge bg-light text-dark border">Thresh ${item.params.min_prediction_threshold}</span>`;
+                }
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td><small>${ts}</small></td>
+                    <td>${item.model_id.substring(0,8)}...</td>
+                    <td>${item.ticker}</td>
+                    <td class="${retColor} fw-bold">${item.return_pct.toFixed(2)}%</td>
+                    <td>${item.hit_rate_pct.toFixed(1)}%</td>
+                    <td>${item.trades_count}</td>
+                    <td>${paramStr}</td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+        } catch (e) {
+             console.error(e);
+             tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger py-4">Failed to load history</td></tr>';
+        }
+    }
 
 </script>
 </body>
