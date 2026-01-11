@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import numpy as np
 import duckdb
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
 
 log = logging.getLogger("simulation.core")
 
@@ -189,7 +190,10 @@ def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter:
 
     return df
 
-def _prepare_simulation_inputs(model_id: str, ticker: str):
+def _prepare_simulation_inputs(model_id: str, ticker: str, 
+                             min_prediction_threshold: float = 0.0, 
+                             enable_z_score_check: bool = False, 
+                             volatility_normalization: bool = False):
     """
     Shared logic to load Model, Data, and prepare Features/Predictions/Signals.
     Returns (df_sim, X, model)
@@ -260,6 +264,43 @@ def _prepare_simulation_inputs(model_id: str, ticker: str):
     
     X = X.fillna(0)
     
+    # -------------------------------------------------------------
+    # 1. Z-Score Scaling Checks (Outlier Removal)
+    # -------------------------------------------------------------
+    if enable_z_score_check:
+        # Calculate Z-scores (skip constant columns to avoid NaN)
+        # Simple Z-score: (x - mean) / std
+        # Handle division by zero for constant cols
+        desc = X.describe().T
+        std = desc['std']
+        mean = desc['mean']
+        
+        # Only check columns with std > 0
+        valid_cols = std[std > 1e-9].index
+        
+        if len(valid_cols) > 0:
+            X_valid = X[valid_cols]
+            z_scores = (X_valid - mean[valid_cols]) / std[valid_cols]
+            
+            # Identify outliers (> 4 sigma)
+            outliers = (z_scores.abs() > 4).any(axis=1)
+            n_outliers = outliers.sum()
+            
+            if n_outliers > 0:
+                log.info(f"Z-Score Check: Dropping {n_outliers} outlier rows (Sigma > 4).")
+                X = X[~outliers]
+                df = df[~outliers]
+
+    # -------------------------------------------------------------
+    # 2. Volatility Normalization (Rescaling)
+    # -------------------------------------------------------------
+    if volatility_normalization:
+        log.info("Applying Volatility Normalization (StandardScaler) to Simulation Data.")
+        scaler = StandardScaler()
+        # Keep DataFrame structure
+        X_scaled = scaler.fit_transform(X)
+        X = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
+
     # Predict
     try:
         preds = model.predict(X)
@@ -276,7 +317,12 @@ def _prepare_simulation_inputs(model_id: str, ticker: str):
         df_sim["signal"] = df_sim["prediction"].apply(lambda x: 1 if x == 1 else 0)
         df_sim["pred_dir"] = df_sim["signal"]
     else:
-        df_sim["signal"] = df_sim.apply(lambda row: 1 if row["prediction"] > row["close"] else 0, axis=1)
+        # Regression Logic with Threshold
+        # (Predicted Price - Close) / Close > Threshold
+        df_sim["signal"] = df_sim.apply(
+            lambda row: 1 if (row["prediction"] - row["close"]) / row["close"] > min_prediction_threshold else 0, 
+            axis=1
+        )
         df_sim["pred_dir"] = df_sim["signal"]
 
     df_sim["next_close"] = df_sim["close"].shift(-1)
@@ -291,13 +337,21 @@ def _prepare_simulation_inputs(model_id: str, ticker: str):
     return df_sim, X, model
 
 
-def train_trading_bot(model_id: str, ticker: str):
+def train_trading_bot(model_id: str, ticker: str, 
+                      min_prediction_threshold: float = 0.0,
+                      enable_z_score_check: bool = False,
+                      volatility_normalization: bool = False):
     """
     Trains a secondary model (Bot) to predict if the Base Model's signal will hit.
     """
     try:
         log.info(f"Training Bot for Model={model_id}, Ticker={ticker}")
-        df_sim, X, _ = _prepare_simulation_inputs(model_id, ticker)
+        df_sim, X, _ = _prepare_simulation_inputs(
+            model_id, ticker,
+            min_prediction_threshold=min_prediction_threshold,
+            enable_z_score_check=enable_z_score_check,
+            volatility_normalization=volatility_normalization
+        )
         
         # Target: Is the base model correct?
         # Labels: 'hit' (1=Correct, 0=Incorrect)
@@ -330,12 +384,20 @@ def train_trading_bot(model_id: str, ticker: str):
         return {"status": "error", "message": str(e)}
 
 
-def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: bool = False):
+def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: bool = False,
+                   min_prediction_threshold: float = 0.0,
+                   enable_z_score_check: bool = False,
+                   volatility_normalization: bool = False):
     """
     Runs a backtest simulation.
     """
     # 1. Prepare Data
-    df_sim, X, base_model = _prepare_simulation_inputs(model_id, ticker)
+    df_sim, X, base_model = _prepare_simulation_inputs(
+        model_id, ticker,
+        min_prediction_threshold=min_prediction_threshold,
+        enable_z_score_check=enable_z_score_check,
+        volatility_normalization=volatility_normalization
+    )
     
     # 2. Apply Bot Logic (if enabled)
     if use_bot:

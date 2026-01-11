@@ -41,8 +41,20 @@
                     <label for="initialCash" class="form-label">Initial Cash ($)</label>
                     <input type="number" class="form-control" id="initialCash" value="10000">
                 </div>
-                <div class="col-md-2 d-flex align-items-end">
-                    <button id="runBtn" class="btn btn-primary w-100" onclick="runSimulation()">
+                <div class="col-md-2">
+                    <label for="minPredInput" class="form-label">Min Threshold</label>
+                    <input type="number" class="form-control" id="minPredInput" value="0.0005" step="0.0001">
+                </div>
+                <div class="col-md-12 pt-3 d-flex align-items-center gap-4 border-bottom pb-3 mb-3">
+                     <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="zScoreCheck">
+                        <label class="form-check-label" for="zScoreCheck">Z-Score Check (>4&sigma;)</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="volNormCheck">
+                        <label class="form-check-label" for="volNormCheck">Vol Normalization</label>
+                    </div>
+                    <button id="runBtn" class="btn btn-primary ms-auto px-5" onclick="runSimulation()">
                         Run Simulation
                     </button>
                 </div>
@@ -160,6 +172,9 @@
         const modelId = document.getElementById('modelSelect').value;
         const ticker = document.getElementById('tickerSelect').value;
         const initialCash = parseFloat(document.getElementById('initialCash').value);
+        const minPred = parseFloat(document.getElementById('minPredInput').value) || 0;
+        const enableZ = document.getElementById('zScoreCheck').checked;
+        const volNorm = document.getElementById('volNormCheck').checked;
         
         // Hide previous errors and results
         const errorAlert = document.getElementById('errorAlert');
@@ -189,7 +204,10 @@
                     model_id: modelId, 
                     ticker: ticker, 
                     initial_cash: initialCash,
-                    use_bot: useBot
+                    use_bot: useBot,
+                    min_prediction_threshold: minPred,
+                    enable_z_score_check: enableZ,
+                    volatility_normalization: volNorm
                 })
             });
             
@@ -465,6 +483,9 @@
     async function trainBot() {
         const modelId = document.getElementById('modelSelect').value;
         const ticker = document.getElementById('tickerSelect').value;
+        const minPred = parseFloat(document.getElementById('minPredInput').value) || 0;
+        const enableZ = document.getElementById('zScoreCheck').checked;
+        const volNorm = document.getElementById('volNormCheck').checked;
         
         if (!modelId || modelId.includes('Select') || !ticker || ticker.includes('Select')) {
             alert("Please select Model and Ticker first.");
@@ -483,7 +504,13 @@
             const response = await fetch('/api/train_bot', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ model_id: modelId, ticker: ticker })
+                body: JSON.stringify({ 
+                    model_id: modelId, 
+                    ticker: ticker,
+                    min_prediction_threshold: minPred,
+                    enable_z_score_check: enableZ,
+                    volatility_normalization: volNorm
+                })
             });
             const data = await response.json();
             

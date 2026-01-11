@@ -31,16 +31,27 @@ class SimulationRequest(BaseModel):
     ticker: str
     initial_cash: float = 10000.0
     use_bot: bool = False
+    min_prediction_threshold: float = 0.0
+    enable_z_score_check: bool = False
+    volatility_normalization: bool = False
 
 class TrainBotRequest(BaseModel):
     model_id: str
     ticker: str
+    min_prediction_threshold: float = 0.0
+    enable_z_score_check: bool = False
+    volatility_normalization: bool = False
 
 @app.post("/api/simulate")
 async def simulate(req: SimulationRequest):
     try:
         log.info(f"Request: {req}")
-        result = run_simulation(req.model_id, req.ticker, req.initial_cash, req.use_bot)
+        result = run_simulation(
+            req.model_id, req.ticker, req.initial_cash, req.use_bot,
+            min_prediction_threshold=req.min_prediction_threshold,
+            enable_z_score_check=req.enable_z_score_check,
+            volatility_normalization=req.volatility_normalization
+        )
         return result
     except Exception as e:
         log.error(f"Simulation failed: {e}", exc_info=True)
@@ -49,7 +60,12 @@ async def simulate(req: SimulationRequest):
 @app.post("/api/train_bot")
 async def train_bot_endpoint(req: TrainBotRequest):
     try:
-        result = train_trading_bot(req.model_id, req.ticker)
+        result = train_trading_bot(
+             req.model_id, req.ticker,
+             min_prediction_threshold=req.min_prediction_threshold,
+             enable_z_score_check=req.enable_z_score_check,
+             volatility_normalization=req.volatility_normalization
+        )
         return result
     except Exception as e:
         log.error(f"Bot training failed: {e}", exc_info=True)
