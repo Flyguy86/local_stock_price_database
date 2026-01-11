@@ -114,6 +114,12 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         X = X.dropna(axis=1, how='all')
         if X.empty:
             raise ValueError("All feature columns were entirely NaN.")
+            
+        # DEBUG: Log data shape and types
+        log.info(f"Data Loaded: X.shape={X.shape}, y.shape={y.shape}")
+        log.info(f"Feature Types: {X.dtypes.value_counts().to_dict()}")
+        if len(X) < 10:
+             log.warning("Data Set extremely small (<10 rows).")
 
         feature_cols_used = list(X.columns)
         dropped_feature_cols = sorted(list(set(initial_feature_cols) - set(feature_cols_used)))
@@ -165,6 +171,9 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                      X_sel_arr = imp_sel.fit_transform(X_sel)
                      X_sel = pd.DataFrame(X_sel_arr, columns=X_sel.columns, index=X_sel.index)
 
+                log.info(f"Data ready for pruning check. X shape: {X_sel.shape}, y shape: {y.shape}")
+                log.info(f"X types sample: {X_sel.dtypes.value_counts()}")
+
                 # Standardize (User req: "Standardize your features")
                 scaler_sel = StandardScaler()
                 X_sel_scaled = pd.DataFrame(scaler_sel.fit_transform(X_sel), columns=X_sel.columns)
@@ -172,6 +181,11 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 # Calculate P-values
                 # f_regression returns (F, p_values)
                 # It is robust for initial pruning.
+                if X_sel_scaled.shape[1] == 0:
+                     raise ValueError("X has 0 features after preprocessing, cannot run f_regression")
+                if len(y) == 0:
+                     raise ValueError("y has 0 samples, cannot run f_regression")
+
                 _, p_vals = f_regression(X_sel_scaled, y)
                 
                 # Filter

@@ -100,14 +100,14 @@ def dashboard():
 
         <dialog id="report-modal">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:0.5rem">
-                <h2 style="margin:0; border:none; color: var(--primary);">Training Report</h2>
+                <h2 style="margin:0; border:none; color: var(--primary);" id="report-title">Training Report</h2>
                 <button class="secondary" onclick="closeReport()">Close</button>
             </div>
             <div id="report-content" style="max-height: 70vh; overflow-y: auto;"></div>
         </dialog>
         
         <section>
-            <h2>Start New Training</h2>
+            <h2>Training Configuration</h2>
             <div class="row">
                 <div class="group">
                     <label>Algorithm</label>
@@ -134,62 +134,13 @@ def dashboard():
                      <select id="ctx3" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
                 </div>
                 <div class="group">
-                     <label>Target</label>
-                     <select id="target">
-                        <option value="close">Close</option>
-                        <option value="open">Open</option>
-                        <option value="high">High</option>
-                        <option value="low">Low</option>
-                        <option value="volume">Volume</option>
-                        <option value="vwap">VWAP</option>
-                     </select>
-                </div>
-                <div class="group">
-                     <label>Timeframe</label>
-                     <select id="timeframe">
-                        <option value="1m">1 min</option>
-                        <option value="10m">10 min</option>
-                        <option value="30m">30 min</option>
-                        <option value="1h">1 hour</option>
-                        <option value="4h">4 hours</option>
-                        <option value="8h">8 hours</option>
-                     </select>
-                </div>
-                <div class="group">
                      <label>Parent Model (Features)</label>
                      <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
                 </div>
             </div>
 
-            <div style="border-top:1px solid var(--border); margin-top:1rem; padding-top:1rem;">
-                <div style="display:flex; gap:2rem; align-items:flex-end;">
-                     <div class="group">
-                        <label style="color:#60a5fa">Open/Close Timeframe</label>
-                        <select id="tf_oc">
-                            <option value="1m" selected>1 min</option>
-                            <option value="10m">10 min</option>
-                            <option value="30m">30 min</option>
-                            <option value="1h">1 hour</option>
-                            <option value="4h">4 hours</option>
-                        </select>
-                    </div>
-                    <div class="group">
-                        <label style="color:#f472b6">High/Low Timeframe</label>
-                        <select id="tf_hl">
-                            <option value="1d" selected>1 day</option>
-                            <option value="4h">4 hours</option>
-                            <option value="1h">1 hour</option>
-                            <option value="30m">30 min</option>
-                            <option value="10m">10 min</option>
-                            <option value="1m">1 min</option>
-                        </select>
-                    </div>
-                    <div style="margin-left:auto; display:flex; gap:0.5rem">
-                        <button onclick="train()">Start Single Job</button>
-                        <button class="secondary" onclick="trainBatch()" title="Trains 4 models: Open/Close (TF1) + High/Low (TF2)">Train High/Low/Open/Close</button>
-                    </div>
-                </div>
-            </div>
+
+
             
              <!-- Feature Selection UI (Hidden by default) -->
             <div id="feature-selection-ui" style="display:none; margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
@@ -241,6 +192,78 @@ def dashboard():
                 </div>
             </div>
         </section>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+            <!-- Left: Single Model -->
+            <section style="height: 100%; display: flex; flex-direction: column;">
+                <h2 style="color: #a78bfa; border-bottom: 1px solid rgba(167, 139, 250, 0.3); padding-bottom: 0.5rem;">Method A: Train Single Model</h2>
+                <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
+                    <div class="group">
+                         <label>Target Variable</label>
+                         <select id="target">
+                            <option value="close">Close</option>
+                            <option value="open">Open</option>
+                            <option value="high">High</option>
+                            <option value="low">Low</option>
+                            <option value="volume">Volume</option>
+                            <option value="vwap">VWAP</option>
+                         </select>
+                    </div>
+                    <div class="group">
+                         <label>Timeframe</label>
+                         <select id="timeframe">
+                            <option value="1m">1 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="30m">30 min</option>
+                            <option value="1h">1 hour</option>
+                            <option value="4h">4 hours</option>
+                            <option value="8h">8 hours</option>
+                         </select>
+                    </div>
+                    <div style="margin-top:auto">
+                        <button onclick="train()" style="width:100%">Start Single Job</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right: Group Model -->
+            <section style="height: 100%; display: flex; flex-direction: column;">
+                <h2 style="color: #5eead4; border-bottom: 1px solid rgba(94, 234, 212, 0.3); padding-bottom: 0.5rem;">Method B: Train Group</h2>
+                <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
+                    <div style="background: rgba(94, 234, 212, 0.05); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(94, 234, 212, 0.2); font-size:0.85rem; color: #99f6e4;">
+                        Batch trains 4 models linked by a Group ID:
+                        <ul style="margin:0.25rem 0 0 1.2rem; padding:0">
+                            <li>Open & Close (Timeframe 1)</li>
+                            <li>High & Low (Timeframe 2)</li>
+                        </ul>
+                    </div>
+                    <div class="group">
+                        <label style="color:#60a5fa">Open/Close Timeframe</label>
+                        <select id="tf_oc">
+                            <option value="1m" selected>1 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="30m">30 min</option>
+                            <option value="1h">1 hour</option>
+                            <option value="4h">4 hours</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label style="color:#f472b6">High/Low Timeframe</label>
+                        <select id="tf_hl">
+                            <option value="1d" selected>1 day</option>
+                            <option value="4h">4 hours</option>
+                            <option value="1h">1 hour</option>
+                            <option value="30m">30 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="1m">1 min</option>
+                        </select>
+                    </div>
+                    <div style="margin-top:auto">
+                        <button class="secondary" onclick="trainBatch()" style="width:100%; border-color:#5eead4; color: #5eead4;">Train High/Low/Open/Close</button>
+                    </div>
+                </div>
+            </section>
+        </div>
         
         <section>
             <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -417,8 +440,14 @@ def dashboard():
             
             // 3. Select Top 2
             Object.values(byCat).forEach(group => {
+                // Filter out negative coefficients
+                const candidates = group.filter(r => {
+                    const coeffStr = r.dataset.coeff;
+                    return coeffStr && parseFloat(coeffStr) >= 0;
+                });
+
                 // Sort by SHAP then Coeff (Desc)
-                group.sort((a,b) => {
+                candidates.sort((a,b) => {
                     const sa = parseFloat(a.dataset.shap || 0);
                     const sb = parseFloat(b.dataset.shap || 0);
                     const ca = Math.abs(parseFloat(a.dataset.coeff || 0));
@@ -427,7 +456,7 @@ def dashboard():
                 });
                 
                 // Select first 2
-                group.slice(0, 2).forEach(r => r.querySelector('.feat-check').checked = true);
+                candidates.slice(0, 2).forEach(r => r.querySelector('.feat-check').checked = true);
             });
             
             updateCount();
@@ -529,6 +558,10 @@ def dashboard():
         function showReport(id) {
             const m = modelsCache[id];
             if(!m || !m.metrics) return;
+            
+            // Update Title
+            const titleEl = $('report-title');
+            if(titleEl) titleEl.innerText = `Report: ${m.name} (${m.algorithm})`;
             
             let metrics = {};
             try {
@@ -843,9 +876,11 @@ def dashboard():
                 featureWhitelist = checked;
             }
 
-            const btn = document.querySelector('button');
-            btn.disabled = true;
-            btn.innerText = 'Starting...';
+            const btn = document.querySelector('button[onclick="train()"]');
+            if(btn) {
+                btn.disabled = true;
+                btn.innerText = 'Starting...';
+            }
             
             try {
                 const res = await fetch('/train', {
@@ -871,8 +906,10 @@ def dashboard():
             } catch(e) {
                 alert('Request failed: ' + e);
             } finally {
-                btn.disabled = false;
-                btn.innerText = 'Start Training Job';
+                if(btn) {
+                    btn.disabled = false;
+                    btn.innerText = 'Start Single Job';
+                }
             }
         }
         
