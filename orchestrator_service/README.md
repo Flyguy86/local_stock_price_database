@@ -66,7 +66,7 @@ The Orchestrator Service automates the **Train → Prune → Simulate** evolutio
 Configurable success thresholds for model promotion:
 
 | Metric | Default Range | Purpose |
-|--------|--------------|---------|
+|--------|---------------|---------|
 | **SQN** | 3.0 - 5.0 | System Quality Number (statistical robustness) |
 | **Profit Factor** | 2.0 - 4.0 | Gross Profit / Gross Loss |
 | **Trade Count** | 200 - 10,000 | Ensure sufficient statistical sample |
@@ -242,11 +242,11 @@ Deduplication lookup table.
 
 ```sql
 fingerprint VARCHAR(64) PRIMARY KEY,  -- SHA-256 hash
-model_id VARCHAR(64),                  -- Training service model UUID
-features_json JSONB,                   -- Sorted feature list
-hyperparameters_json JSONB,
+model_id VARCHAR(64) NOT NULL,         -- Training service model UUID
+features_json JSONB NOT NULL,          -- Sorted feature list
+hyperparameters_json JSONB NOT NULL,
 target_transform VARCHAR(32),
-symbol VARCHAR(16)
+symbol VARCHAR(16) NOT NULL
 ```
 
 #### `evolution_runs`
@@ -255,14 +255,14 @@ Top-level tracking for evolution jobs.
 ```sql
 id VARCHAR(64) PRIMARY KEY,
 seed_model_id VARCHAR(64),
-symbol VARCHAR(16),
-max_generations INTEGER,
-current_generation INTEGER,
-status VARCHAR(16),                    -- PENDING/RUNNING/COMPLETED/PROMOTED/FAILED
-config JSONB,
+symbol VARCHAR(16) NOT NULL,
+max_generations INTEGER NOT NULL,
+current_generation INTEGER NOT NULL,
+status VARCHAR(16) NOT NULL,           -- PENDING/RUNNING/COMPLETED/STOPPED/FAILED
+config JSONB NOT NULL,
 best_sqn DOUBLE PRECISION,
 best_model_id VARCHAR(64),
-promoted BOOLEAN
+promoted BOOLEAN DEFAULT FALSE
 ```
 
 #### `evolution_log`
@@ -500,7 +500,7 @@ def evolve_with_adaptive_criteria(symbol):
 - [Training Service](../training_service/README.md) - Model training workflows
 - [Simulation Service](../simulation_service/README.md) - Backtesting engine
 - [Feature Service](../feature_service/README.md) - Technical indicator pipeline
-- [Architecture Plan](.github/orchestrator-agent-plan.md) - Design document
+- [Architecture Plan](../.github/orchestrator-agent-plan.md) - Design document
 
 ## Contributing
 
