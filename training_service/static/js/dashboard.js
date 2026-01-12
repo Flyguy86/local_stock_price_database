@@ -130,9 +130,12 @@ async function onParentModelChange(prefix) {
 }
 
 // --- TRAIN ---
-async function trainModel(prefix, algo) {
+async function trainModel(prefix) {
     const symbol = $(`${prefix}_symbol`).value;
     if(!symbol) return alert("Please select a symbol");
+
+    // Get specific algorithm from dropdown
+    const algo = $(`${prefix}_model_type`).value;
     
     // Config
     const contexts = [1,2,3].map(i => {
@@ -148,11 +151,11 @@ async function trainModel(prefix, algo) {
     // Helper to safely get value (prevent crash if element missing)
     const val = (id, def) => { const el = $(id); return el ? el.value : def; };
 
-    // 1. Gather specific inputs based on algo
-    if(algo === 'elastic_net') {
+    // 1. Gather specific inputs based on prefix (UI Section)
+    if(prefix === 'enet') {
         params.alpha = parseFloat(val('enet_alpha', '1.0'));
         params.l1_ratio = parseFloat(val('enet_l1_ratio', '0.5'));
-    } else if (algo === 'xgboost') {
+    } else if (prefix === 'xgb') {
         params.n_estimators = parseInt(val('xgb_n_estimators', '100'));
         params.max_depth = parseInt(val('xgb_max_depth', '6'));
         params.learning_rate = parseFloat(val('xgb_learning_rate', '0.1'));
@@ -162,13 +165,10 @@ async function trainModel(prefix, algo) {
         params.reg_alpha = parseFloat(val('xgb_reg_alpha', '0.0'));
         params.reg_lambda = parseFloat(val('xgb_reg_lambda', '1.0'));
         
-        // Hybrid / Residual Learning
         const residBase = val('xgb_residual_base_model', '');
-        if(residBase) {
-            params.residual_base_model_id = residBase;
-        }
+        if(residBase) params.residual_base_model_id = residBase;
 
-    } else if (algo === 'lightgbm') {
+    } else if (prefix === 'lgbm') {
         params.n_estimators = parseInt(val('lgbm_n_estimators', '100'));
         params.learning_rate = parseFloat(val('lgbm_learning_rate', '0.1'));
         params.num_leaves = parseInt(val('lgbm_num_leaves', '31'));

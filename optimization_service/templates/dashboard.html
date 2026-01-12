@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Optimization C2 - Strategy Heatmap</title>
+    <link rel="icon" href="data:,">
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; padding: 20px; background: #0a0e27; color: #e0e0e0; }
+        .card { background: #1a1f3a; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #2a3a5a; }
+        h1 { color: #4fc3f7; font-weight: 300; }
+        h2 { color: #81c784; font-size: 18px; border-bottom: 2px solid #2a3a5a; padding-bottom: 8px; }
+        .stat-box { display: inline-block; padding: 15px 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; margin-right: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        .stat-val { font-size: 32px; font-weight: bold; color: white; }
+        .stat-label { font-size: 11px; color: rgba(255,255,255,0.8); text-transform: uppercase; letter-spacing: 1px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #2a3a5a; }
+        th { background-color: #2a3a5a; color: #81c784; font-weight: 600; }
+        tr:hover { background-color: #252b4a; }
+        .btn { padding: 12px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.3s; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102,126,234,0.4); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: #2a3a5a; }
+        .btn-secondary:hover { background: #3a4a6a; }
+        .btn-danger { background: linear-gradient(135deg, #f44336 0%, #e91e63 100%); }
+        .btn-danger:hover { box-shadow: 0 4px 12px rgba(244,67,54,0.4); }
+        .worker-box { padding: 12px; background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); border-left: 4px solid #0fb8ad; margin-bottom: 10px; border-radius: 6px; color: white; }
+        .worker-idle { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); border-left-color: #f5576c; }
+        .progress-bar { width: 100%; height: 24px; background: rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; margin-top: 6px; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #00d2ff 0%, #3a7bd5 100%); transition: width 0.3s; box-shadow: 0 0 10px rgba(0,210,255,0.5); }
+        select { width: 100%; padding: 10px; background: #2a3a5a; color: #e0e0e0; border: 1px solid #3a4a6a; border-radius: 4px; font-size: 13px; }
+        option { background: #1a1f3a; }
+        label { display: block; margin-bottom: 6px; color: #81c784; font-weight: 600; font-size: 13px; }
+        .grid-config { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 15px; }
+        .config-section { background: #252b4a; padding: 15px; border-radius: 6px; }
+        .config-section h3 { margin-top: 0; color: #4fc3f7; font-size: 14px; }
+        input[type="number"] { width: 60px; padding: 6px; background: #1a1f3a; color: #e0e0e0; border: 1px solid #3a4a6a; border-radius: 4px; }
+        .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .badge-success { background: #4caf50; color: white; }
+        .badge-warning { background: #ff9800; color: white; }
+        .badge-danger { background: #f44336; color: white; }
+        .heatmap-hint { background: #2a3a5a; padding: 12px; border-radius: 6px; margin-top: 15px; font-size: 12px; color: #b0bec5; border-left: 3px solid #4fc3f7; }
+        .params-toggle { cursor: pointer; color: #4fc3f7; font-size: 11px; text-decoration: underline; }
+        .params-toggle:hover { color: #81c784; }
+        .params-json { display: none; margin-top: 8px; padding: 10px; background: #1a1f3a; border-left: 3px solid #4fc3f7; border-radius: 4px; font-family: monospace; font-size: 10px; white-space: pre-wrap; word-wrap: break-word; max-width: 300px; }
+        .params-json.expanded { display: block; }
+        .sim-methods { display: none; margin-top: 8px; padding: 10px; background: #1a1f3a; border-left: 3px solid #ffa726; border-radius: 4px; font-family: monospace; font-size: 10px; white-space: pre-wrap; word-wrap: break-word; max-width: 400px; line-height: 1.6; }
+        .sim-methods.expanded { display: block; }
+        .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 8px; }
+        .pagination { display: flex; gap: 0.5rem; align-items: center; }
+        .page-info { font-size: 0.9rem; color: #e0e0e0; min-width: 150px; text-align: center; padding: 0.5rem 1rem; background: #1a1f3a; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Optimization Command & Control - 3D Strategy Heatmap</h1>
+    
+    <div class="card">
+        <h2>Job Queue Status</h2>
+        <div style="display: flex; gap: 10px;">
+            <div class="stat-box"><div class="stat-label">Pending</div><div id="s-pending" class="stat-val">0</div></div>
+            <div class="stat-box"><div class="stat-label">Running</div><div id="s-running" class="stat-val">0</div></div>
+            <div class="stat-box"><div class="stat-label">Completed</div><div id="s-completed" class="stat-val">0</div></div>
+            <div class="stat-box"><div class="stat-label">Failed</div><div id="s-failed" class="stat-val">0</div></div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>Active Workers</h2>
+        <div id="workers-list"></div>
+    </div>
+
+    <div class="card">
+        <h2>Launch 3D Grid Search</h2>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+                <label>Models (Axis X)</label>
+                <select id="models" multiple style="height: 120px;">
+                    {% for model in models %}<option value="{{ model.id }}" title="{{ model.name }}">{{ model.name }}</option>{% endfor %}
+                </select>
+            </div>
+            <div>
+                <label>Tickers (Test Assets)</label>
+                <select id="tickers" multiple style="height: 120px;">
+                    {% for ticker in tickers %}<option value="{{ ticker }}">{{ ticker }}</option>{% endfor %}
+                </select>
+            </div>
+        </div>
+        
+        <div class="grid-config">
+            <div class="config-section">
+                <h3>Thresholds (Axis Z)</h3>
+                <label>Min Confidence Levels:</label>
+                <input type="number" class="threshold-input" value="0.0001" step="0.0001" min="0">
+                <input type="number" class="threshold-input" value="0.0005" step="0.0001" min="0">
+                <input type="number" class="threshold-input" value="0.0010" step="0.0001" min="0">
+                <input type="number" class="threshold-input" value="0.0020" step="0.0001" min="0">
+            </div>
+            
+            <div class="config-section">
+                <h3>Regime Filters (Axis Y)</h3>
+                <p style="font-size: 11px; color: #b0bec5; margin-bottom: 10px;">Simulations created for all combinations of checked regimes.</p>
+                <label style="display: block; margin-bottom: 8px;"><input type="checkbox" id="regime-none" checked> <strong>No Filter (Baseline)</strong></label>
+                <hr style="border: none; border-top: 1px solid #3a4a6a; margin: 12px 0;">
+                <label style="display: block; font-weight: 600; margin-bottom: 6px;">VIX Regime:</label>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px;">
+                    <label><input type="checkbox" name="regime_vix" value="0" checked> 0 - Bear Volatile</label>
+                    <label><input type="checkbox" name="regime_vix" value="1" checked> 1 - Bear Quiet</label>
+                    <label><input type="checkbox" name="regime_vix" value="2" checked> 2 - Bull Volatile</label>
+                    <label><input type="checkbox" name="regime_vix" value="3" checked> 3 - Bull Quiet</label>
+                </div>
+                <hr style="border: none; border-top: 1px solid #3a4a6a; margin: 12px 0;">
+                <label style="display: block; font-weight: 600; margin-bottom: 6px;">GMM Regime:</label>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                    <label><input type="checkbox" name="regime_gmm" value="0" checked> 0 - Low Vol</label>
+                    <label><input type="checkbox" name="regime_gmm" value="1" checked> 1 - Medium Vol</label>
+                    <label><input type="checkbox" name="regime_gmm" value="2" checked> 2 - High Vol</label>
+                    <label><input type="checkbox" name="regime_gmm" value="3" checked> 3 - Extreme</label>
+                </div>
+            </div>
+            
+            <div class="config-section">
+                <h3>Advanced Options</h3>
+                <label><input type="checkbox" id="z-score"> Z-Score Outlier Removal</label>
+                <label><input type="checkbox" id="vol-norm"> Volatility Normalization</label>
+                <label><input type="checkbox" id="use-bot"> Enable Trading Bot Filter</label>
+            </div>
+        </div>
+        
+        <div class="heatmap-hint"><strong>Strategy Heatmap:</strong> This grid search creates a 3D optimization space: Model x Regime x Threshold.</div>
+        <br>
+        <button class="btn" onclick="createJob()">Queue Heatmap Batch</button>
+    </div>
+
+    <div class="card">
+        <h2>Top Strategies (Sorted by SQN)</h2>
+        <p style="font-size: 12px; color: #b0bec5; margin-top: -10px;">System Quality Number: &gt;3 = Excellent, 2-3 = Good, 1-2 = Fair, &lt;1 = Poor</p>
+        
+        <div class="toolbar">
+            <div class="pagination">
+                <button class="btn btn-secondary" onclick="goToPage('first')" id="btn-first">⏮ First</button>
+                <button class="btn btn-secondary" onclick="goToPage('prev')" id="btn-prev">◀ Prev</button>
+                <span class="page-info" id="page-info">Page 1 of 1</span>
+                <button class="btn btn-secondary" onclick="goToPage('next')" id="btn-next">Next ▶</button>
+                <button class="btn btn-secondary" onclick="goToPage('last')" id="btn-last">Last ⏭</button>
+            </div>
+            <div style="display:flex; gap:0.5rem;">
+                <button class="btn btn-secondary" onclick="refreshStats()">🔄 Refresh</button>
+                <button class="btn btn-danger" onclick="deleteAllHistory()">🗑️ Delete All</button>
+            </div>
+        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>Rank</th><th>Ticker</th><th>Model</th><th>SQN</th><th>Return %</th><th>Hit Rate</th>
+                    <th>Trades</th><th>Expectancy</th><th>Profit Factor</th><th>Threshold</th>
+                    <th>Z</th><th>V</th><th>Bot</th><th>Regime</th><th>Allowed</th><th>Methods</th><th>Params</th>
+                </tr>
+            </thead>
+            <tbody id="leaderboard-body"></tbody>
+        </table>
+    </div>
+
+    <script>
+        let currentOffset = 0;
+        const pageSize = 15;
+        let totalRecords = 0;
+        
+        function escapeHtml(s) {
+            if (!s) return '';
+            return s.toString().replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+        }
+
+        function getCombinations(values) {
+            let result = [];
+            const f = (prefix, vals) => {
+                for (let i = 0; i < vals.length; i++) {
+                    result.push(prefix.concat(vals[i]));
+                    f(prefix.concat(vals[i]), vals.slice(i + 1));
+                }
+            };
+            f([], values);
+            return result;
+        }
+        
+        function updatePaginationButtons() {
+            document.getElementById('btn-first').disabled = currentOffset === 0;
+            document.getElementById('btn-prev').disabled = currentOffset === 0;
+            document.getElementById('btn-next').disabled = currentOffset + pageSize >= totalRecords;
+            document.getElementById('btn-last').disabled = currentOffset + pageSize >= totalRecords;
+        }
+        
+        function goToPage(action) {
+            const totalPages = Math.ceil(totalRecords / pageSize) || 1;
+            if (action === 'first') currentOffset = 0;
+            else if (action === 'prev') currentOffset = Math.max(0, currentOffset - pageSize);
+            else if (action === 'next' && currentOffset + pageSize < totalRecords) currentOffset += pageSize;
+            else if (action === 'last') currentOffset = Math.max(0, (totalPages - 1) * pageSize);
+            refreshStats();
+        }
+        
+        async function deleteAllHistory() {
+            if (!confirm("Delete ALL history?")) return;
+            if (prompt("Type DELETE:") !== "DELETE") return;
+            try {
+                const res = await fetch('/history/all', { method: 'DELETE' });
+                if (res.ok) { currentOffset = 0; refreshStats(); alert("Deleted!"); }
+                else alert("Failed");
+            } catch(e) { alert("Error: " + e.message); }
+        }
+        
+        async function refreshStats() {
+            try {
+                const res = await fetch('/api/stats', { credentials: 'include' });
+                if (!res.ok) { console.error('API error:', res.status); return; }
+                const data = await res.json();
+                
+                document.getElementById('s-pending').innerText = data.counts.PENDING || 0;
+                document.getElementById('s-running').innerText = data.counts.RUNNING || 0;
+                document.getElementById('s-completed').innerText = data.counts.COMPLETED || 0;
+                document.getElementById('s-failed').innerText = data.counts.FAILED || 0;
+                
+                const workersDiv = document.getElementById('workers-list');
+                workersDiv.innerHTML = '';
+                if (data.workers && data.workers.length > 0) {
+                    data.workers.forEach(w => {
+                        const cls = w.current_job_id ? 'worker-box' : 'worker-box worker-idle';
+                        const info = w.job_params ? `${w.job_params.ticker} | ${w.job_params.model_id.substring(0,12)}` : 'Idle';
+                        const pct = (w.progress || 0) * 100;
+                        workersDiv.innerHTML += `<div class="${cls}"><strong>Worker ${w.id}</strong>: ${info}<div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div></div>`;
+                    });
+                } else {
+                    workersDiv.innerHTML = '<p style="color:#f5576c;text-align:center;">No active workers</p>';
+                }
+                
+                const lb = data.leaderboard || [];
+                totalRecords = lb.length;
+                const totalPages = Math.ceil(totalRecords / pageSize) || 1;
+                document.getElementById('page-info').innerText = `Page ${Math.floor(currentOffset/pageSize)+1} of ${totalPages} (${totalRecords})`;
+                updatePaginationButtons();
+                
+                const tbody = document.getElementById('leaderboard-body');
+                const page = lb.slice(currentOffset, currentOffset + pageSize);
+                
+                if (page.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="17" style="text-align:center;">No data</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = page.map((r, i) => {
+                    const rank = currentOffset + i + 1;
+                    const sqnCls = r.sqn > 3 ? 'badge-success' : r.sqn > 2 ? 'badge-warning' : 'badge-danger';
+                    const retCls = r.return > 0 ? 'badge-success' : 'badge-danger';
+                    const hitCls = r.hit_rate > 55 ? 'badge-success' : r.hit_rate > 50 ? 'badge-warning' : 'badge-danger';
+                    return `<tr>
+                        <td><strong>${rank}</strong></td>
+                        <td>${escapeHtml(r.ticker)}</td>
+                        <td title="${escapeHtml(r.model)}" style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.model)}</td>
+                        <td><span class="badge ${sqnCls}">${r.sqn.toFixed(2)}</span></td>
+                        <td><span class="badge ${retCls}">${r.return.toFixed(2)}%</span></td>
+                        <td><span class="badge ${hitCls}">${r.hit_rate ? r.hit_rate.toFixed(1) : 0}%</span></td>
+                        <td>${r.trades || 0}</td>
+                        <td>${r.expectancy ? r.expectancy.toFixed(2) : 0}</td>
+                        <td>${r.profit_factor ? r.profit_factor.toFixed(2) : 0}</td>
+                        <td>${r.threshold ? r.threshold.toFixed(4) : 0}</td>
+                        <td>${r.z_score ? 'Y' : 'N'}</td>
+                        <td>${r.vol_norm ? 'Y' : 'N'}</td>
+                        <td>${r.use_bot ? 'Y' : 'N'}</td>
+                        <td style="font-size:10px;">${escapeHtml(r.regime_col || 'None')}</td>
+                        <td style="font-size:10px;">${escapeHtml(r.allowed_regimes || 'All')}</td>
+                        <td style="font-size:10px;">${r.sim_methods ? 'Yes' : '-'}</td>
+                        <td style="font-size:10px;">-</td>
+                    </tr>`;
+                }).join('');
+            } catch(e) { console.error('Refresh error:', e); }
+        }
+        
+        async function createJob() {
+            const models = Array.from(document.getElementById('models').selectedOptions).map(o => o.value);
+            const tickers = Array.from(document.getElementById('tickers').selectedOptions).map(o => o.value);
+            if (!models.length) { alert('Select a model'); return; }
+            if (!tickers.length) { alert('Select a ticker'); return; }
+            
+            const thresholds = Array.from(document.querySelectorAll('.threshold-input'))
+                .map(inp => parseFloat(inp.value)).filter(v => !isNaN(v) && v >= 0);
+            
+            const regimeConfigs = [];
+            if (document.getElementById('regime-none').checked) regimeConfigs.push(null);
+            
+            const vix = Array.from(document.querySelectorAll('input[name="regime_vix"]:checked')).map(c => parseInt(c.value));
+            if (vix.length) getCombinations(vix).forEach(c => regimeConfigs.push({col:'regime_vix', allowed:c.sort((a,b)=>a-b)}));
+            
+            const gmm = Array.from(document.querySelectorAll('input[name="regime_gmm"]:checked')).map(c => parseInt(c.value));
+            if (gmm.length) getCombinations(gmm).forEach(c => regimeConfigs.push({col:'regime_gmm', allowed:c.sort((a,b)=>a-b)}));
+            
+            try {
+                const res = await fetch('/api/create_batch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        models, tickers,
+                        thresholds: thresholds.length ? thresholds : [0.0, 0.001, 0.002],
+                        z_score: [document.getElementById('z-score').checked],
+                        use_bot: [document.getElementById('use-bot').checked],
+                        volatility_normalization: [document.getElementById('vol-norm').checked],
+                        regime_configs: regimeConfigs
+                    })
+                });
+                const result = await res.json();
+                if (result.error) { alert('Error: ' + result.error); return; }
+                alert('Batch created: ' + result.jobs_created + ' jobs');
+                refreshStats();
+            } catch(e) { alert('Failed: ' + e.message); }
+        }
+        
+        setInterval(refreshStats, 3000);
+        window.onload = refreshStats;
+    </script>
+</body>
+</html>

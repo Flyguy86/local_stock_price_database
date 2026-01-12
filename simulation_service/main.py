@@ -1,10 +1,18 @@
-from fastapi import FastAPI, Request
-from fastapi.templating import Jinja2Templates
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import logging
 from pathlib import Path
-from .core import get_available_models, get_available_tickers, run_simulation, train_trading_bot, get_simulation_history
+from .core import (
+    get_available_models,
+    get_available_tickers,
+    run_simulation,
+    train_trading_bot,
+    get_simulation_history,
+    get_top_strategies,
+    delete_all_simulation_history
+)
 
 app = FastAPI(title="Simulation Service")
 log = logging.getLogger("simulation.web")
@@ -29,6 +37,34 @@ async def get_config():
 @app.get("/api/history")
 async def get_history_endpoint():
     return get_simulation_history()
+
+@app.get("/history/top")
+def get_top_history_endpoint(limit: int = 15, offset: int = 0):
+    """
+    Returns paginated top strategies sorted by SQN.
+    
+    Query params:
+        limit: Number of records per page (default 15)
+        offset: Starting record index (default 0)
+    
+    Returns:
+        {"items": [...], "total": N}
+    """
+    return get_top_strategies(limit, offset)
+
+
+@app.delete("/history/all")
+def delete_all_history_endpoint():
+    """
+    Deletes all simulation history records.
+    
+    Returns:
+        {"status": "deleted"} on success
+    """
+    success = delete_all_simulation_history()
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete history")
+    return {"status": "deleted", "message": "All simulation history has been deleted"}
 
 class SimulationRequest(BaseModel):
     model_id: str

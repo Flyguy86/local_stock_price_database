@@ -2,6 +2,7 @@
     <html lang="en">
     <head>
       <meta charset="utf-8" />
+      <link rel="icon" href="data:,">
       <title> Training Service Dashboard</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
@@ -22,7 +23,7 @@
         .layout { max-width: 1200px; margin: 0 auto; padding: 2rem; display: grid; gap: 2rem; }
         
         header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
-        h1 { margin: 0; font-size: 1.5rem; font-weight: 600; background: linear-gradient(to right, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        h1 { margin: 0; font-size: 1.5rem; font-weight: 600; background: linear-gradient(to right, #a78bfa, #f472b6); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
         
         section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
         h2 { margin: 0; font-size: 1.1rem; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
@@ -111,6 +112,14 @@
                 <div class="group"><label>Data Options</label><select id="enet_data_options" onchange="updateSymbols('enet')" style="max-width: 200px;"><option value="">Loading...</option></select></div>
                 <div class="group"><label>Symbol</label><select id="enet_symbol" style="min-width: 100px;"><option value="">--</option></select></div>
                 <div class="group"><label>Parent (Feat)</label><select id="enet_parent_model" class="parent-model-select" onchange="onParentModelChange('enet')"><option value="">(None)</option></select></div>
+                <div class="group">
+                    <label>Model</label>
+                    <select id="enet_model_type" style="min-width:140px">
+                        <option value="elasticnet_regression" selected>ElasticNet Reg</option>
+                        <option value="linear_regression">Linear Reg</option>
+                        <option value="logistic_classification">Logistic Class</option>
+                    </select>
+                </div>
                 <div class="group"><label>Pred. Type</label>
                     <select id="enet_target_transform">
                         <option value="log_return" selected>Log Return</option>
@@ -158,7 +167,7 @@
                 <!-- Method A Inputs -->
                 <div class="group"><label>Target</label><select id="enet_target"><option value="close">Close</option><option value="open">Open</option><option value="high">High</option><option value="low">Low</option></select></div>
                 <div class="group"><label>Timeframe</label><select id="enet_timeframe"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
-                <button onclick="trainModel('enet', 'elastic_net')">Train Elastic Net</button>
+                <button onclick="trainModel('enet')">Train Elastic Net</button>
             </div>
             
             <details>
@@ -191,6 +200,13 @@
                 <div class="group"><label>Data Options</label><select id="xgb_data_options" onchange="updateSymbols('xgb')" style="max-width: 200px;"><option value="">Loading...</option></select></div>
                 <div class="group"><label>Symbol</label><select id="xgb_symbol" style="min-width: 100px;"><option value="">--</option></select></div>
                 <div class="group"><label>Parent (Feat)</label><select id="xgb_parent_model" class="parent-model-select" onchange="onParentModelChange('xgb')"><option value="">(None)</option></select></div>
+                <div class="group">
+                    <label>Model</label>
+                    <select id="xgb_model_type" style="min-width:130px">
+                        <option value="xgboost_regressor" selected>XGB Regressor</option>
+                        <option value="xgboost_classifier">XGB Classifier</option>
+                    </select>
+                </div>
                 <div class="group"><label>Pred. Type</label>
                     <select id="xgb_target_transform">
                         <option value="log_return" selected>Log Return</option>
@@ -233,7 +249,7 @@
                     <div class="group">
                         <label style="display:flex; align-items:center;">
                             L1 (Alpha)
-                            <div class="help-tip">ℹ️<div class="tip-content">
+                            <div class="help-tip">ℹ️<div class="tip-content>
                                 <strong>L1 Regularization (Alpha)</strong><br>
                                 Lasso-style sparse feature selection.<br>
                                 <strong>Strategy: "Sniper"</strong><br>
@@ -246,12 +262,20 @@
                                 <em>Range: 0-100</em>
                             </div></div>
                         </label>
-                        <input type="number" step="0.1" id="xgb_reg_alpha" value="0.0" min="0" style="width:60px">
+                        <select id="xgb_reg_alpha" style="width:70px">
+                            <option value="0" selected>0</option>
+                            <option value="0.01">0.01</option>
+                            <option value="0.1">0.1</option>
+                            <option value="1">1</option>
+                            <option value="10">10</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
                     </div>
                     <div class="group">
                         <label style="display:flex; align-items:center;">
                             L2 (Lambda)
-                            <div class="help-tip">ℹ️<div class="tip-content">
+                            <div class="help-tip">ℹ️<div class="tip-content>
                                 <strong>L2 Regularization (Lambda)</strong><br>
                                 Ridge-style smoothing.<br>
                                 <strong>Strategy: "Sniper"</strong><br>
@@ -261,7 +285,15 @@
                                 <em>Range: 0-100</em>
                             </div></div>
                         </label>
-                        <input type="number" step="0.1" id="xgb_reg_lambda" value="1.0" min="0" style="width:60px">
+                        <select id="xgb_reg_lambda" style="width:70px">
+                            <option value="0">0</option>
+                            <option value="0.01">0.01</option>
+                            <option value="0.1">0.1</option>
+                            <option value="1" selected>1</option>
+                            <option value="10">10</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
                     </div>
                 </div>
 
@@ -271,7 +303,7 @@
                 <div style="display:flex; gap:1rem; align-items: flex-end;">
                     <div class="group"><label>Target</label><select id="xgb_target"><option value="close">Close</option><option value="open">Open</option><option value="high">High</option><option value="low">Low</option></select></div>
                     <div class="group"><label>Timeframe</label><select id="xgb_timeframe"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
-                    <button onclick="trainModel('xgb', 'xgboost')">Train XGBoost</button>
+                    <button onclick="trainModel('xgb')">Train XGBoost</button>
                 </div>
             </div>
 
@@ -282,7 +314,7 @@
                     <div class="group">
                         <label style="display:flex; align-items:center;">
                             Hybrid Base (Resid)
-                            <div class="help-tip">ℹ️<div class="tip-content>
+                            <div class="help-tip">ℹ️<div class="tip-content">
                                 <strong>Residual Learning / Hybrid</strong><br>
                                 Select an Elastic Net model.<br>
                                 XGBoost train on errors (residuals).
@@ -317,6 +349,13 @@
                 <div class="group"><label>Data Options</label><select id="lgbm_data_options" onchange="updateSymbols('lgbm')" style="max-width: 200px;"><option value="">Loading...</option></select></div>
                 <div class="group"><label>Symbol</label><select id="lgbm_symbol" style="min-width: 100px;"><option value="">--</option></select></div>
                 <div class="group"><label>Parent (Feat)</label><select id="lgbm_parent_model" class="parent-model-select" onchange="onParentModelChange('lgbm')"><option value="">(None)</option></select></div>
+                <div class="group">
+                    <label>Model</label>
+                    <select id="lgbm_model_type" style="min-width:135px">
+                        <option value="lightgbm_regressor" selected>LGBM Regressor</option>
+                        <option value="lightgbm_classifier">LGBM Classifier</option>
+                    </select>
+                </div>
                 <div class="group"><label>Pred. Type</label>
                     <select id="lgbm_target_transform">
                         <option value="log_return" selected>Log Return</option>
@@ -419,7 +458,7 @@
                 <span style="flex-grow:1"></span>
                 <div class="group"><label>Target</label><select id="lgbm_target"><option value="close">Close</option><option value="open">Open</option><option value="high">High</option><option value="low">Low</option></select></div>
                 <div class="group"><label>Timeframe</label><select id="lgbm_timeframe"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
-                <button onclick="trainModel('lgbm', 'lightgbm')">Train LightGBM</button>
+                <button onclick="trainModel('lgbm')">Train LightGBM</button>
             </div>
             <details>
                 <summary>Advanced / Features / Context</summary>

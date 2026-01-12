@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Optimization Service Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
+    <style>
+        :root {
+            --bg: #0f172a; --bg-card: #1e293b; --text: #e2e8f0; --text-muted: #94a3b8;
+            --border: #334155; --primary: #3b82f6; --primary-hover: #2563eb;
+            --danger: #ef4444; --success: #10b981;
+        }
+        body { margin: 0; font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+        .layout { max-width: 1600px; margin: 0 auto; padding: 2rem; display: grid; gap: 2rem; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+        h1 { margin: 0; font-size: 1.5rem; }
+        section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+        h2 { margin: 0 0 1rem 0; font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; color: #fbbf24; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+        th { color: var(--text-muted); font-weight: 600; background: rgba(0,0,0,0.2); }
+        tr:hover { background: rgba(255,255,255,0.02); }
+        
+        .btn { 
+            background: var(--primary); color: white; border: none; 
+            padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; 
+            font-size: 0.85rem; font-weight: 500; transition: all 0.2s;
+        }
+        .btn:hover { background: var(--primary-hover); transform: translateY(-1px); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: var(--border); }
+        .btn-secondary:hover { background: #475569; }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover { background: #dc2626; }
+        
+        .toolbar {
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;
+            padding: 1rem; background: rgba(0,0,0,0.2); border-radius: 8px;
+        }
+        .pagination { display: flex; gap: 0.5rem; align-items: center; }
+        .page-info {
+            font-size: 0.9rem; color: var(--text); min-width: 150px;
+            text-align: center; padding: 0.5rem 1rem;
+            background: var(--bg); border-radius: 4px;
+        }
+        .divider { width: 1px; height: 30px; background: var(--border); margin: 0 0.5rem; }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <header>
+            <h1>⚡ Optimization Service</h1>
+            <span style="color:var(--text-muted)">Port: 8300</span>
+        </header>
+
+        <section>
+            <h2>Top Strategies (Sorted by SQN)</h2>
+            <p style="margin:0 0 1rem 0; color:var(--text-muted); font-size:0.85rem;">
+                System Quality Number: &gt;3 = Excellent, 2-3 = Good, 1-2 = Fair, &lt;1 = Poor
+            </p>
+            
+            <div class="toolbar">
+                <div class="pagination">
+                    <button class="btn btn-secondary" onclick="goToPage('first')" id="btn-first">⏮ First</button>
+                    <button class="btn btn-secondary" onclick="goToPage('prev')" id="btn-prev">◀ Previous</button>
+                    <span class="page-info" id="page-info">Page 1 of 1</span>
+                    <button class="btn btn-secondary" onclick="goToPage('next')" id="btn-next">Next ▶</button>
+                    <button class="btn btn-secondary" onclick="goToPage('last')" id="btn-last">Last ⏭</button>
+                </div>
+                <div class="divider"></div>
+                <div style="display:flex; gap:0.5rem;">
+                    <button class="btn btn-secondary" onclick="loadTopStrategies()">🔄 Refresh</button>
+                    <button class="btn btn-danger" onclick="deleteAllHistory()">🗑️ Delete All History</button>
+                </div>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th><th>Ticker</th><th>Model</th><th>SQN</th><th>Return %</th>
+                        <th>Hit Rate</th><th>Trades</th><th>Threshold</th><th>Z-Score</th>
+                        <th>Vol Norm</th><th>Use Bot</th>
+                    </tr>
+                </thead>
+                <tbody id="top-strategies-body">
+                    <tr><td colspan="11" style="text-align:center; padding:2rem;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <script>
+        let currentOffset = 0;
+        const pageSize = 15;
+        let totalRecords = 0;
+
+        function updateButtons() {
+            document.getElementById('btn-first').disabled = currentOffset === 0;
+            document.getElementById('btn-prev').disabled = currentOffset === 0;
+            document.getElementById('btn-next').disabled = currentOffset + pageSize >= totalRecords;
+            document.getElementById('btn-last').disabled = currentOffset + pageSize >= totalRecords;
+        }
+
+        function goToPage(action) {
+            const totalPages = Math.ceil(totalRecords / pageSize) || 1;
+            if (action === 'first') currentOffset = 0;
+            else if (action === 'prev') currentOffset = Math.max(0, currentOffset - pageSize);
+            else if (action === 'next' && currentOffset + pageSize < totalRecords) currentOffset += pageSize;
+            else if (action === 'last') currentOffset = Math.max(0, (totalPages - 1) * pageSize);
+            loadTopStrategies();
+        }
+
+        async function deleteAllHistory() {
+            if (!confirm("Delete ALL history?")) return;
+            if (prompt("Type 'DELETE':") !== "DELETE") return;
+            const res = await fetch('/history/all', { method: 'DELETE' });
+            if (res.ok) { currentOffset = 0; loadTopStrategies(); alert("Deleted!"); }
+            else alert("Failed");
+        }
+
+        async function loadTopStrategies() {
+            const tbody = document.getElementById('top-strategies-body');
+            try {
+                const res = await fetch(`/history/top?limit=${pageSize}&offset=${currentOffset}`);
+                const data = await res.json();
+                const rows = data.items || [];
+                totalRecords = data.total || 0;
+                
+                const totalPages = Math.ceil(totalRecords / pageSize) || 1;
+                document.getElementById('page-info').innerText = `Page ${Math.floor(currentOffset/pageSize)+1} of ${totalPages} (${totalRecords} total)`;
+                updateButtons();
+                
+                if (!rows.length) {
+                    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;">No results</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = rows.map((r, i) => {
+                    const rank = currentOffset + i + 1;
+                    const sqnColor = r.sqn >= 3 ? '#34d399' : r.sqn >= 2 ? '#fbbf24' : r.sqn >= 1 ? '#60a5fa' : '#ef4444';
+                    const retColor = r.return_pct >= 0 ? '#34d399' : '#ef4444';
+                    const p = r.params || {};
+                    return `<tr>
+                        <td><strong>${rank}</strong></td>
+                        <td><strong>${r.ticker || 'N/A'}</strong></td>
+                        <td style="font-family:monospace;font-size:0.75rem;">${r.model_id?.substring(0,12) || 'N/A'}...</td>
+                        <td style="font-weight:bold;color:${sqnColor}">${r.sqn?.toFixed(2) || 'N/A'}</td>
+                        <td style="color:${retColor};font-weight:600">${r.return_pct?.toFixed(2) || 0}%</td>
+                        <td>${r.hit_rate_pct?.toFixed(1) || 0}%</td>
+                        <td>${r.trades_count || 0}</td>
+                        <td>${p.min_prediction_threshold?.toFixed(4) || '-'}</td>
+                        <td style="color:${p.enable_z_score_check ? '#34d399' : '#ef4444'}">${p.enable_z_score_check ? 'Y' : 'N'}</td>
+                        <td style="color:${p.volatility_normalization ? '#34d399' : '#ef4444'}">${p.volatility_normalization ? 'Y' : 'N'}</td>
+                        <td style="color:${p.use_bot ? '#34d399' : '#ef4444'}">${p.use_bot ? 'Y' : 'N'}</td>
+                    </tr>`;
+                }).join('');
+            } catch(e) {
+                tbody.innerHTML = `<tr><td colspan="11" style="color:#ef4444">Error: ${e.message}</td></tr>`;
+            }
+        }
+
+        window.addEventListener("load", () => { loadTopStrategies(); setInterval(loadTopStrategies, 30000); });
+    </script>
+</body>
+</html>

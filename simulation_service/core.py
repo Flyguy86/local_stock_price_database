@@ -40,6 +40,7 @@ def ensure_sim_history_table():
                     return_pct DOUBLE,
                     trades_count INTEGER,
                     hit_rate DOUBLE,
+                    sqn DOUBLE,
                     params JSON
                 )
             """)
@@ -49,6 +50,11 @@ def ensure_sim_history_table():
                 conn.execute("ALTER TABLE simulation_history ADD COLUMN hit_rate DOUBLE")
             except Exception:
                 pass # Already exists or other error
+
+            try:
+                conn.execute("ALTER TABLE simulation_history ADD COLUMN sqn DOUBLE")
+            except Exception:
+                pass 
                 
             try:
                 conn.execute("ALTER TABLE simulation_history ADD COLUMN params JSON")
@@ -72,8 +78,8 @@ def save_simulation_history(model_id, ticker, stats, params):
         with duckdb.connect(str(METADATA_DB_PATH)) as conn:
             conn.execute("""
                 INSERT INTO simulation_history 
-                (id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, params)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 record_id, 
                 ts, 
@@ -82,6 +88,7 @@ def save_simulation_history(model_id, ticker, stats, params):
                 stats.get('strategy_return_pct', 0.0),
                 stats.get('total_trades', 0),
                 stats.get('hit_rate_pct', 0.0),
+                stats.get('sqn', 0.0),
                 params_json
             ])
             log.info(f"Saved simulation history: {record_id}")
@@ -99,8 +106,12 @@ def get_simulation_history(limit=50):
              if not any(t[0] == 'simulation_history' for t in tables):
                  return []
                  
+             # Handle schema evolution gracefully
+             columns = "id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params"
+             # If columns missing in old valid DB, this might fail, but ensure_table tries to add them.
+             
              rows = conn.execute(f"""
-                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, params 
+                SELECT {columns}
                 FROM simulation_history 
                 ORDER BY timestamp DESC 
                 LIMIT {limit}
@@ -115,13 +126,74 @@ def get_simulation_history(limit=50):
                      "ticker": r[3],
                      "return_pct": r[4],
                      "trades_count": r[5],
-                     "hit_rate_pct": r[6], # Match frontend struct
-                     "params": json.loads(r[7]) if r[7] else {}
+                     "hit_rate_pct": r[6],
+                     "sqn": r[7],
+                     "params": json.loads(r[8]) if r[8] else {}
                  })
              return history
     except Exception as e:
         log.error(f"Failed to get history: {e}")
         return []
+
+def get_top_strategies(limit=15, offset=0):
+    """Retrieves top strategies sorted by SQN with pagination."""
+    try:
+        ensure_sim_history_table()
+        with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
+             tables = conn.execute("SHOW TABLES").fetchall()
+             if not any(t[0] == 'simulation_history' for t in tables):
+                 return {"items": [], "total": 0}
+             
+             # Get total count for pagination
+             total_result = conn.execute(
+                 "SELECT COUNT(*) FROM simulation_history WHERE trades_count > 5"
+             ).fetchone()
+             total = total_result[0] if total_result else 0
+             
+             # Fetch paginated results
+             rows = conn.execute("""
+                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params 
+                FROM simulation_history 
+                WHERE trades_count > 5 
+                ORDER BY sqn DESC 
+                LIMIT ? OFFSET ?
+             """, [limit, offset]).fetchall()
+             
+             history = []
+             for r in rows:
+                 params = {}
+                 if r[8]:
+                     try:
+                         params = json.loads(r[8])
+                     except:
+                         pass
+                 history.append({
+                     "id": r[0],
+                     "timestamp": r[1],
+                     "model_id": r[2],
+                     "ticker": r[3],
+                     "return_pct": r[4],
+                     "trades_count": r[5],
+                     "hit_rate_pct": r[6],
+                     "sqn": r[7],
+                     "params": params
+                 })
+             return {"items": history, "total": total}
+    except Exception as e:
+        log.error(f"Failed to get top strategies: {e}")
+        return {"items": [], "total": 0}
+
+def delete_all_simulation_history():
+    """Deletes all records from simulation_history."""
+    try:
+        ensure_sim_history_table()
+        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
+            conn.execute("DELETE FROM simulation_history")
+            log.info("Deleted all simulation history.")
+        return True
+    except Exception as e:
+        log.error(f"Failed to delete history: {e}")
+        return False
 
 def get_available_models():
     """Lists available trained models (.joblib files) with metadata."""
@@ -140,15 +212,9 @@ def get_available_models():
     metadata_map = {}
     if METADATA_DB_PATH.exists():
         try:
-            # Connect read-only to avoid locks
             with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
-                # Check if table exists
                 tables = conn.execute("SHOW TABLES").fetchall()
                 if any(t[0] == 'models' for t in tables):
-                    # Fetch extra columns: timeframe, data_options
-                    # We might need to handle schemas where columns don't exist yet via try/except or rigorous selecting
-                    # Using SELECT * is risky if schema changed. Explicit select is better.
-                    # We try to select all including new columns.
                     try:
                         rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics, timeframe, data_options FROM models").fetchall()
                         for r in rows:
@@ -163,7 +229,6 @@ def get_available_models():
                             }
                     except Exception as e:
                          log.warning(f"Error reading extended metadata (using fallback): {e}")
-                         # Fallback for old schema
                          rows = conn.execute("SELECT id, algorithm, symbol, created_at, metrics FROM models").fetchall()
                          for r in rows:
                             mid, algo, sym, created, metrics = r
@@ -186,17 +251,27 @@ def get_available_models():
         
         # Build a nice display name
         if meta:
-            # Format: Symbol(TF) - Algo - Date
-            # e.g. "AAPL(1h) - RandomForest - 2023-10-27"
-            date_str = str(meta.get("created_at", ""))[:10]
+            # Format: Symbol(TF) - Algo - DateTime
+            # e.g. "AAPL (1h) | RandomForest | 2023-10-27 14:30"
+            created_str = str(meta.get("created_at", ""))
+            # Include time if available (first 16 chars = "YYYY-MM-DD HH:MM" or first 19 = "YYYY-MM-DDTHH:MM:SS")
+            if len(created_str) >= 16:
+                # Handle ISO format with T separator
+                date_time_str = created_str[:19].replace('T', ' ')
+            elif len(created_str) >= 10:
+                date_time_str = created_str[:10]
+            else:
+                date_time_str = created_str
+                
             tf = meta.get("timeframe", "1m")
             sym = meta.get("symbol", "?")
-            display = f"{sym} ({tf}) | {meta.get('algorithm', 'Unknown')} | {date_str}"
+            algo = meta.get("algorithm", "Unknown")
+            display = f"{sym} ({tf}) | {algo} | {date_time_str}"
         else:
             display = f"Unknown Model ({mid[:8]})"
             
         result.append({
-            "id": mid, # Note: mid is filename stem (uuid)
+            "id": mid,
             "name": display,
             "path": info["path"],
             "metadata": meta
@@ -690,9 +765,18 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
     last_buy_price = 0.0
     total_fees = 0.0
     
-    # Track wins and losses for expectancy calculation
+    # Initialize metrics to defaults to avoid UnboundLocalError if no trades occur
     winning_trades = []
     losing_trades = []
+    win_rate = 0.0
+
+    if len(trades) > 0:
+        winning_trades = [t for t in trades if t['pnl'] > 0]
+        losing_trades = [t for t in trades if t['pnl'] <= 0]
+        win_rate = len(winning_trades) / len(trades)
+
+    log.info(f"Total Round-Trip Trades: {len(trades)}")
+    log.info(f"Win Rate: {win_rate*100:.1f}% ({len(winning_trades)} wins, {len(losing_trades)} losses)")
     
     # Benchmark: Buy and Hold
     initial_price = df_sim.iloc[0]["close"]

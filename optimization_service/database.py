@@ -166,6 +166,20 @@ def _get_active_workers_inner(conn):
 def get_dashboard_stats():
     ensure_tables()
     
+    # Import here to avoid circular imports
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    
+    try:
+        from simulation_service.core import get_available_models
+        models_list = get_available_models()
+        # Build lookup: model_id -> model_name
+        model_name_lookup = {m['id']: m['name'] for m in models_list}
+    except Exception as e:
+        log.warning(f"Could not load model names: {e}")
+        model_name_lookup = {}
+    
     with duckdb.connect(str(DB_PATH)) as conn:
         try:
             status_counts = conn.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall()
@@ -179,7 +193,7 @@ def get_dashboard_stats():
             
             leaderboard = []
             try:
-                all_completed = conn.execute("SELECT params, result FROM jobs WHERE status = 'COMPLETED' LIMIT 200").fetchall()
+                all_completed = conn.execute("SELECT params, result FROM jobs WHERE status = 'COMPLETED'").fetchall()
                 for p_raw, r_raw in all_completed:
                     if r_raw:
                         r = json.loads(r_raw)
@@ -197,45 +211,38 @@ def get_dashboard_stats():
                         sim_methods.append(f"Initial Capital: ${p.get('initial_cash', 10000):,.2f}")
                         sim_methods.append(f"Prediction Threshold: {p.get('min_prediction_threshold', 0.0):.4f}")
                         
-                        # Slippage
                         if r.get("slippage_enabled", True):
                             bars = r.get("slippage_bars", 4)
-                            sim_methods.append(f"SLIPPAGE: {bars}-bar execution delay with midpoint pricing")
-                            sim_methods.append(f"  → Orders fill at mean(open, close) of bar T+{bars}")
+                            sim_methods.append(f"SLIPPAGE: {bars}-bar execution delay")
                         else:
-                            sim_methods.append("SLIPPAGE: DISABLED (instant fills - UNREALISTIC)")
+                            sim_methods.append("SLIPPAGE: DISABLED")
                         
-                        # Transaction costs
                         total_fees = r.get("total_fees", 0.0)
                         avg_fee = r.get("avg_fee_per_trade", 0.02)
-                        sim_methods.append(f"TRANSACTION COSTS: ${avg_fee:.2f} per trade")
-                        sim_methods.append(f"  → Total fees paid: ${total_fees:.2f}")
+                        sim_methods.append(f"TRANSACTION COSTS: ${avg_fee:.2f}/trade, Total: ${total_fees:.2f}")
                         
-                        # Trading bot
                         if p.get("use_bot", False):
-                            sim_methods.append("TRADING BOT: Enabled (ML-based signal confirmation)")
-                        else:
-                            sim_methods.append("TRADING BOT: Disabled (raw model predictions)")
+                            sim_methods.append("TRADING BOT: Enabled")
                         
-                        # Regime filter
                         regime_col = p.get("regime_col")
                         if regime_col:
                             allowed = p.get("allowed_regimes", [])
-                            sim_methods.append(f"REGIME FILTER: {regime_col} in {allowed}")
-                        else:
-                            sim_methods.append("REGIME FILTER: Disabled (all market conditions)")
+                            sim_methods.append(f"REGIME: {regime_col} in {allowed}")
                         
-                        # Z-score check
                         if p.get("enable_z_score_check", False):
-                            sim_methods.append("Z-SCORE CHECK: Enabled (outlier removal >4σ)")
+                            sim_methods.append("Z-SCORE: Enabled")
                         
-                        # Volatility normalization
                         if p.get("volatility_normalization", False):
-                            sim_methods.append("VOLATILITY NORM: Enabled (StandardScaler)")
+                            sim_methods.append("VOL NORM: Enabled")
+                        
+                        # Get model display name from lookup, fallback to ID
+                        model_id = p.get("model_id", "")
+                        model_display_name = model_name_lookup.get(model_id, model_id)
                         
                         leaderboard.append({
                             "ticker": p.get("ticker"),
-                            "model": p.get("model_id", "")[:12] + "...",
+                            "model": model_display_name,  # Use display name
+                            "model_id": model_id,  # Keep ID for reference
                             "return": metric,
                             "hit_rate": hit_rate,
                             "trades": r.get("total_trades"),
@@ -250,11 +257,11 @@ def get_dashboard_stats():
                             "allowed_regimes": ",".join(map(str, p.get("allowed_regimes", []))) if p.get("allowed_regimes") else "All",
                             "initial_cash": p.get("initial_cash", 10000),
                             "full_params": p,
-                            "sim_methods": "\n".join(sim_methods)  # NEW: Simulation methods text
+                            "sim_methods": "\n".join(sim_methods)
                         })
                         
                 leaderboard.sort(key=lambda x: (x["sqn"], x["return"]), reverse=True)
-                leaderboard = leaderboard[:15]
+                
             except Exception as e:
                 log.error(f"Leaderboard error: {e}")
                 leaderboard = []
