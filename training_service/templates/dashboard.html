@@ -199,91 +199,82 @@
                     </select>
                 </div>
             </div>
-            <div class="row" style="margin-top:0.5rem">
-                <!-- n_estimators -->
-                <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        Est.
-                        <div class="help-tip">ℹ️<div class="tip-content>
-                            <strong>Number of Trees (n_estimators)</strong><br>
-                            Pair high count with low learning rate.<br>
-                            <em>Range: 100-1000 (Default: 100)</em>
-                        </div></div>
-                    </label>
-                    <input type="number" id="xgb_n_estimators" value="100" step="50" style="width:70px">
-                </div>
 
-                <!-- learning_rate -->
-                <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        Eta
-                        <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Learning Rate (eta)</strong><br>
-                            Lower is safer / prevents overfitting.<br>
-                            <em>Range: 0.01 to 0.1 (Default: 0.1)</em>
-                        </div></div>
-                    </label>
-                    <input type="number" step="0.01" id="xgb_learning_rate" value="0.1" style="width:70px">
-                </div>
+            <!-- Main Parameters and Train Button -->
+            <div class="row" style="margin-top:0.5rem; align-items:flex-end">
                 
-                <!-- max_depth -->
-                <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        Depth
-                        <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Max Tree Depth</strong><br>
-                            Deep trees overfit financial noise.<br>
-                            <em>Range: 3-9 (Default: 6)</em>
-                        </div></div>
-                    </label>
-                    <input type="number" id="xgb_max_depth" value="6" min="1" max="15" style="width:60px">
-                </div>
-
-                <!-- subsample -->
-                <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        Sub
-                        <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Subsample Ratio</strong><br>
-                            Randomly drops data rows to prevent "memorizing".<br>
-                            <em>Range: 0.6 to 0.9 (Default: 1.0)</em>
-                        </div></div>
-                    </label>
-                    <input type="number" step="0.1" id="xgb_subsample" value="1.0" min="0.1" max="1.0" style="width:60px">
-                </div>
-
-                <!-- colsample_bytree -->
-                <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        Col
-                        <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Feature Subsample</strong><br>
-                            Randomly drops features per tree.<br>
-                            <em>Range: 0.5 to 0.8 (Default: 1.0)</em>
-                        </div></div>
-                    </label>
-                    <input type="number" step="0.1" id="xgb_colsample_bytree" value="1.0" min="0.1" max="1.0" style="width:60px">
-                </div>
-
-                 <!-- min_child_weight -->
-                 <div class="group">
-                    <label style="display:flex; align-items:center;">
-                        ChildW
-                        <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Min Child Weight</strong><br>
-                            Prevents leaves based on outliers.<br>
-                            Target [1, 5, 10] for SQN > 3.0.<br>
-                            <em>Default: 1</em>
-                        </div></div>
-                    </label>
-                    <input type="number" id="xgb_min_child_weight" value="1" min="0" style="width:60px">
+                <!-- Hyperparameters Container -->
+                <div style="display:flex; flex-wrap:wrap; gap:1rem; border-right: 1px solid var(--border); padding-right:1rem; margin-right:0.5rem">
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">Est.<div class="help-tip">ℹ️<div class="tip-content"><strong>Number of Trees</strong><br>Pair high count with low learning rate.<br><em>Range: 100-1000</em></div></div></label>
+                        <input type="number" id="xgb_n_estimators" value="100" step="50" style="width:70px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">Eta<div class="help-tip">ℹ️<div class="tip-content"><strong>Learning Rate</strong><br>Lower is safer.<br><em>Range: 0.01-0.1</em></div></div></label>
+                        <input type="number" step="0.01" id="xgb_learning_rate" value="0.1" style="width:70px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">Depth<div class="help-tip">ℹ️<div class="tip-content"><strong>Max Depth</strong><br>Deep trees overfit financial noise.<br><em>Range: 3-9</em></div></div></label>
+                        <input type="number" id="xgb_max_depth" value="6" min="1" max="15" style="width:60px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">Sub<div class="help-tip">ℹ️<div class="tip-content"><strong>Subsample</strong><br>Data rows per tree.<br><em>Range: 0.6-0.9</em></div></div></label>
+                        <input type="number" step="0.1" id="xgb_subsample" value="1.0" min="0.1" max="1.0" style="width:60px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">Col<div class="help-tip">ℹ️<div class="tip-content"><strong>Colsample</strong><br>Features per tree.<br><em>Range: 0.5-0.8</em></div></div></label>
+                        <input type="number" step="0.1" id="xgb_colsample_bytree" value="1.0" min="0.1" max="1.0" style="width:60px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">ChildW<div class="help-tip">ℹ️<div class="tip-content"><strong>Min Child Weight</strong><br>Prevents overfitting on outliers.<br>Target [1, 5, 10]</div></div></label>
+                        <input type="number" id="xgb_min_child_weight" value="1" min="0" style="width:60px">
+                    </div>
+                    <!-- New L1/L2 Inputs for XGBoost -->
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">
+                            L1 (Alpha)
+                            <div class="help-tip">ℹ️<div class="tip-content">
+                                <strong>L1 Regularization (Alpha)</strong><br>
+                                Lasso-style sparse feature selection.<br>
+                                <strong>Strategy: "Sniper"</strong><br>
+                                Set Alpha=10, Lambda=1.<br>
+                                Forces model to be picky. High Profit Factor, fewer trades.<br>
+                                <hr style="border:0; border-top:1px solid #475569; margin:4px 0;">
+                                <strong>Strategy: "Grinder"</strong><br>
+                                Set Alpha=0, Lambda=50.<br>
+                                Uses all data but dampens shocks. Smooth equity curve.<br>
+                                <em>Range: 0-100</em>
+                            </div></div>
+                        </label>
+                        <input type="number" step="0.1" id="xgb_reg_alpha" value="0.0" min="0" style="width:60px">
+                    </div>
+                    <div class="group">
+                        <label style="display:flex; align-items:center;">
+                            L2 (Lambda)
+                            <div class="help-tip">ℹ️<div class="tip-content">
+                                <strong>L2 Regularization (Lambda)</strong><br>
+                                Ridge-style smoothing.<br>
+                                <strong>Strategy: "Sniper"</strong><br>
+                                Set Alpha=10, Lambda=1.<br>
+                                <strong>Strategy: "Grinder"</strong><br>
+                                Set Alpha=0, Lambda=50.<br>
+                                <em>Range: 0-100</em>
+                            </div></div>
+                        </label>
+                        <input type="number" step="0.1" id="xgb_reg_lambda" value="1.0" min="0" style="width:60px">
+                    </div>
                 </div>
 
                 <span style="flex-grow:1"></span>
-                <div class="group"><label>Target</label><select id="xgb_target"><option value="close">Close</option><option value="open">Open</option><option value="high">High</option><option value="low">Low</option></select></div>
-                <div class="group"><label>Timeframe</label><select id="xgb_timeframe"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
-                <button onclick="trainModel('xgb', 'xgboost')">Train XGBoost</button>
+
+                <!-- Execution Container -->
+                <div style="display:flex; gap:1rem; align-items: flex-end;">
+                    <div class="group"><label>Target</label><select id="xgb_target"><option value="close">Close</option><option value="open">Open</option><option value="high">High</option><option value="low">Low</option></select></div>
+                    <div class="group"><label>Timeframe</label><select id="xgb_timeframe"><option value="1m">1m</option><option value="5m">5m</option><option value="1h">1h</option><option value="1d">1d</option></select></div>
+                    <button onclick="trainModel('xgb', 'xgboost')">Train XGBoost</button>
+                </div>
             </div>
+
             <details>
                 <summary>Advanced / Features / Context</summary>
                 <div class="row" style="margin-top:0.5rem">
@@ -291,11 +282,10 @@
                     <div class="group">
                         <label style="display:flex; align-items:center;">
                             Hybrid Base (Resid)
-                            <div class="help-tip">ℹ️<div class="tip-content">
+                            <div class="help-tip">ℹ️<div class="tip-content>
                                 <strong>Residual Learning / Hybrid</strong><br>
                                 Select an Elastic Net model.<br>
-                                XGBoost will train on the <em>errors</em> (residuals) of this linear model.<br>
-                                Good for capturing non-linear alpha missed by the baseline.
+                                XGBoost train on errors (residuals).
                             </div></div>
                         </label>
                         <select id="xgb_residual_base_model" style="max-width:200px"><option value="">(None)</option></select>
@@ -402,11 +392,11 @@
                 <!-- lambda_l1 -->
                 <div class="group">
                     <label style="display:flex; align-items:center;">
-                        L1
+                        L1 (Alpha)
                         <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Lambda L1</strong><br>
-                            Lasso Regularization.<br>
-                            <em>Range: 0-100 (Default: 0)</em>
+                            <strong>Lambda L1 (Lasso)</strong><br>
+                            Aggressive: 1 to 100 (for 50+ features).<br>
+                            <em>Log Steps: 0, 0.01, 0.1, 1, 10</em>
                         </div></div>
                     </label>
                     <input type="number" id="lgbm_lambda_l1" value="0.0" step="0.1" min="0" style="width:60px">
@@ -415,14 +405,15 @@
                 <!-- lambda_l2 -->
                 <div class="group">
                     <label style="display:flex; align-items:center;">
-                        L2
+                        L2 (Lambda)
                         <div class="help-tip">ℹ️<div class="tip-content">
-                            <strong>Lambda L2</strong><br>
-                            Ridge Regularization.<br>
-                            <em>Range: 0-100 (Default: 0)</em>
+                            <strong>Lambda L2 (Ridge)</strong><br>
+                            Financial Range: 1 to 100.<br>
+                            Use high values (10-50) to "dampen" noise.<br>
+                            <em>Linear Steps: 1, 5, 10, 50, 100</em>
                         </div></div>
                     </label>
-                    <input type="number" id="lgbm_lambda_l2" value="0.0" step="0.1" min="0" style="width:60px">
+                    <input type="number" id="lgbm_lambda_l2" value="0.0" step="1.0" min="0" style="width:60px">
                 </div>
 
                 <span style="flex-grow:1"></span>

@@ -135,45 +135,52 @@ async function trainModel(prefix, algo) {
     if(!symbol) return alert("Please select a symbol");
     
     // Config
-    const contexts = [1,2,3].map(i => $(`${prefix}_ctx${i}`).value).filter(x => x && x !== symbol);
+    const contexts = [1,2,3].map(i => {
+        const el = $(`${prefix}_ctx${i}`);
+        return el ? el.value : '';
+    }).filter(x => x && x !== symbol);
+    
     const fullSymbol = [symbol, ...contexts].join(',');
     
     // Params Construction
     const params = {};
     
+    // Helper to safely get value (prevent crash if element missing)
+    const val = (id, def) => { const el = $(id); return el ? el.value : def; };
+
     // 1. Gather specific inputs based on algo
     if(algo === 'elastic_net') {
-        params.alpha = parseFloat($('enet_alpha').value);
-        params.l1_ratio = parseFloat($('enet_l1_ratio').value);
+        params.alpha = parseFloat(val('enet_alpha', '1.0'));
+        params.l1_ratio = parseFloat(val('enet_l1_ratio', '0.5'));
     } else if (algo === 'xgboost') {
-        params.n_estimators = parseInt($('xgb_n_estimators').value);
-        params.max_depth = parseInt($('xgb_max_depth').value);
-        params.learning_rate = parseFloat($('xgb_learning_rate').value);
-        // New params
-        params.subsample = parseFloat($('xgb_subsample').value);
-        params.colsample_bytree = parseFloat($('xgb_colsample_bytree').value);
-        params.min_child_weight = parseInt($('xgb_min_child_weight').value);
+        params.n_estimators = parseInt(val('xgb_n_estimators', '100'));
+        params.max_depth = parseInt(val('xgb_max_depth', '6'));
+        params.learning_rate = parseFloat(val('xgb_learning_rate', '0.1'));
+        params.subsample = parseFloat(val('xgb_subsample', '1.0'));
+        params.colsample_bytree = parseFloat(val('xgb_colsample_bytree', '1.0'));
+        params.min_child_weight = parseInt(val('xgb_min_child_weight', '1'));
+        params.reg_alpha = parseFloat(val('xgb_reg_alpha', '0.0'));
+        params.reg_lambda = parseFloat(val('xgb_reg_lambda', '1.0'));
         
         // Hybrid / Residual Learning
-        const residBase = $('xgb_residual_base_model').value;
+        const residBase = val('xgb_residual_base_model', '');
         if(residBase) {
             params.residual_base_model_id = residBase;
         }
 
     } else if (algo === 'lightgbm') {
-        params.n_estimators = parseInt($('lgbm_n_estimators').value);
-        params.learning_rate = parseFloat($('lgbm_learning_rate').value);
-        params.num_leaves = parseInt($('lgbm_num_leaves').value);
-        // New params
-        params.min_child_samples = parseInt($('lgbm_min_data_in_leaf').value); // Maps to min_data_in_leaf
-        params.feature_fraction = parseFloat($('lgbm_feature_fraction').value);
-        params.reg_alpha = parseFloat($('lgbm_lambda_l1').value);   // Maps to lambda_l1
-        params.reg_lambda = parseFloat($('lgbm_lambda_l2').value); // Maps to lambda_l2
+        params.n_estimators = parseInt(val('lgbm_n_estimators', '100'));
+        params.learning_rate = parseFloat(val('lgbm_learning_rate', '0.1'));
+        params.num_leaves = parseInt(val('lgbm_num_leaves', '31'));
+        params.min_child_samples = parseInt(val('lgbm_min_data_in_leaf', '20')); 
+        params.feature_fraction = parseFloat(val('lgbm_feature_fraction', '1.0'));
+        params.reg_alpha = parseFloat(val('lgbm_lambda_l1', '0.0'));
+        params.reg_lambda = parseFloat(val('lgbm_lambda_l2', '0.0'));
     }
     
     // 2. Merge with JSON overrides
-    const jsonStr = $(`${prefix}_hyperparameters`).value.trim();
-    if(jsonStr) {
+    const jsonStr = val(`${prefix}_hyperparameters`, '');
+    if(jsonStr.trim()) {
         try {
             const overrides = JSON.parse(jsonStr);
             Object.assign(params, overrides);
@@ -184,7 +191,7 @@ async function trainModel(prefix, algo) {
 
     // 3. Feature Whitelist
     let featureWhitelist = null;
-    if($(`${prefix}_parent_model`).value) {
+    if(val(`${prefix}_parent_model`, '')) {
         const checked = document.querySelectorAll(`.${prefix}-feat-check:checked`);
         featureWhitelist = Array.from(checked).map(c => c.value);
     }
