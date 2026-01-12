@@ -384,6 +384,49 @@ async def list_runs(status: Optional[str] = None, limit: int = 50):
     return {"runs": runs, "count": len(runs)}
 
 
+@app.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    """Cancel/fail a stale or running evolution run."""
+    run = await db.get_evolution_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    if run["status"] not in ("RUNNING", "PENDING"):
+        raise HTTPException(status_code=400, detail=f"Run is already {run['status']}")
+    
+    await db.update_evolution_run(run_id, status="CANCELLED", step_status="Cancelled by user")
+    log.info(f"Cancelled evolution run {run_id}")
+    return {"status": "cancelled", "run_id": run_id}
+
+
+@app.post("/runs/cleanup-stale")
+async def cleanup_stale_runs(stale_minutes: int = 10):
+    """Mark runs as FAILED if they haven't been updated in stale_minutes."""
+    from datetime import datetime, timedelta, timezone
+    
+    runs = await db.list_evolution_runs(status="RUNNING", limit=100)
+    cleaned = []
+    
+    now = datetime.now(timezone.utc)
+    for run in runs:
+        updated_at = run.get("updated_at")
+        if updated_at:
+            # Handle both aware and naive datetimes
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            age_minutes = (now - updated_at).total_seconds() / 60
+            if age_minutes > stale_minutes:
+                await db.update_evolution_run(
+                    run["id"], 
+                    status="FAILED", 
+                    step_status=f"Stale - no update for {int(age_minutes)} minutes"
+                )
+                cleaned.append(run["id"])
+                log.info(f"Cleaned up stale run {run['id']} (last updated {int(age_minutes)} min ago)")
+    
+    return {"cleaned": len(cleaned), "run_ids": cleaned}
+
+
 @app.get("/runs/{run_id}")
 async def get_run(run_id: str):
     """Get evolution run details with full lineage."""

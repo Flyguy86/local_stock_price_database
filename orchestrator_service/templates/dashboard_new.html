@@ -206,12 +206,14 @@
       <h2>📜 Evolution History</h2>
       <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
         <button class="secondary" onclick="loadRuns()">🔄 Refresh</button>
+        <button class="secondary" onclick="cleanupStaleRuns()" title="Mark runs as FAILED if no update for 10+ minutes">🧹 Cleanup Stale</button>
         <select id="filter-status" onchange="loadRuns()">
           <option value="">All Statuses</option>
           <option value="RUNNING">Running</option>
           <option value="COMPLETED">Completed</option>
           <option value="PROMOTED">Promoted</option>
           <option value="FAILED">Failed</option>
+          <option value="CANCELLED">Cancelled</option>
         </select>
       </div>
       <table>

@@ -311,6 +311,37 @@ open http://localhost:8400
 
 See [orchestrator_service/README.md](orchestrator_service/README.md) for detailed documentation.
 
+### Recent Orchestrator Updates (2026-01)
+
+#### 🔄 Direct Parquet Access
+- **Removed API Dependencies**: Orchestrator now reads feature data directly from mounted `/app/data/features_parquet` via PyArrow instead of calling the Feature Service API.
+- **Eliminates Timeouts**: No more HTTP timeout issues when loading large datasets.
+- **Functions Added**: `_get_options_from_parquet()`, `_get_symbols_from_parquet()`, `_get_feature_columns_from_parquet()` in `main.py`.
+
+#### 📊 Live Step Status Tracking
+- **New Column**: Added `step_status` column to `evolution_runs` table for real-time progress visibility.
+- **Dashboard Updates**: 
+  - New "Current Step" column in Evolution History table.
+  - Active run cards display current step with 📍 icon.
+- **Step Stages Tracked**:
+  - `Gen X: Loading data folds`
+  - `Gen X: Training model`
+  - `Gen X: Checking model training`
+  - `Gen X: Queueing simulations`
+  - `Gen X: Waiting for simulation results...`
+  - `Gen X: Evaluating results (SQN=X.XX)`
+
+#### 🛠️ Bug Fixes
+- **Pruning Logic**: Changed from `importance <= 0` to `importance == 0` - small negative coefficients are now retained as valid predictive signals.
+- **DuckDB Locking**: Training service uses `read_only=True` for read operations to prevent lock conflicts.
+- **Options Filter**: Training service strips `reference_symbols` from options filter before matching parquet options column.
+- **Priority Worker**: Fixed JSON parsing for params field (`'str' object has no attribute 'get'` error).
+- **Algorithm Dropdown**: Fixed values (e.g., `RandomForest` → `random_forest_regressor`).
+
+#### 🎯 Fold-First Workflow
+- **3-Step Selection**: Load Data Folds → Select Fold → Load Symbols (ensures consistent data options).
+- **Radio Button UI**: Select specific fold option before loading available symbols.
+
 ## Optimization Service (Grid Search)
 
 The optimization service allows running automated grid searches across models, tickers, and parameters to find the best performing configurations. It uses a "Commander-Worker" architecture.

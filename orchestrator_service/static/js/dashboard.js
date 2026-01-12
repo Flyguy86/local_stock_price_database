@@ -282,7 +282,10 @@ function renderActiveRunCard(run) {
           <strong>${run.symbol}</strong>
           <span class="badge ${run.status.toLowerCase()}" style="margin-left: 0.5rem;">${run.status}</span>
         </div>
-        <code style="font-size: 0.8rem;">${run.id.substring(0, 8)}</code>
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <code style="font-size: 0.8rem;">${run.id.substring(0, 8)}</code>
+          <button class="secondary" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="event.stopPropagation(); cancelRun('${run.id}')">✕ Cancel</button>
+        </div>
       </div>
       <div style="margin-top: 0.5rem;">
         <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted);">
@@ -296,6 +299,37 @@ function renderActiveRunCard(run) {
       </div>
     </div>
   `;
+}
+
+async function cancelRun(runId) {
+  if (!confirm(`Cancel run ${runId.substring(0, 8)}...?`)) return;
+  try {
+    const res = await fetch(`${API}/runs/${runId}/cancel`, { method: 'POST' });
+    if (res.ok) {
+      showStatus('Run cancelled', 'success');
+      loadRuns();
+    } else {
+      const data = await res.json();
+      showStatus(data.detail || 'Failed to cancel', 'error');
+    }
+  } catch (e) {
+    showStatus('Error cancelling run', 'error');
+  }
+}
+
+async function cleanupStaleRuns() {
+  try {
+    const res = await fetch(`${API}/runs/cleanup-stale`, { method: 'POST' });
+    const data = await res.json();
+    if (data.cleaned > 0) {
+      showStatus(`Cleaned up ${data.cleaned} stale run(s)`, 'success');
+    } else {
+      showStatus('No stale runs found', 'info');
+    }
+    loadRuns();
+  } catch (e) {
+    showStatus('Error cleaning up stale runs', 'error');
+  }
 }
 
 // ============================================
