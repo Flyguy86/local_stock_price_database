@@ -145,7 +145,7 @@ async def get_feature_options():
             return response.json()
     except Exception as e:
         log.error(f"Failed to fetch options from feature service: {e}")
-        return {"error": str(e), "options": []}
+        return []  # Return empty array to match expected format
 
 
 @app.get("/api/features/symbols")
