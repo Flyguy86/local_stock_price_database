@@ -619,6 +619,529 @@ When modifying the optimization service, follow these patterns:
 - [ ] Simulation results match manual run
 - [ ] Transaction fees correctly deducted from equity
 
+## Orchestrator Service - Recursive Strategy Factory
+
+The orchestrator service is an evolutionary ML system that automatically discovers, trains, and validates trading strategies through multi-generation optimization.
+
+**Access:** `http://localhost:8003`
+
+### 🧬 Core Concept: Evolutionary Model Development
+
+Traditional ML workflow requires manual hyperparameter tuning and feature selection. The orchestrator automates this through a **recursive feedback loop**:
+
+```
+Generation 1: Train baseline models
+    ↓ (simulate + rank by SQN/PF)
+Generation 2: Train on best Gen1 features + new hyperparams
+    ↓ (simulate + rank)
+Generation 3: Train on best Gen2 features + new hyperparams
+    ↓ (converge to Holy Grail criteria)
+Promoted Model: Export winner to production
+```
+
+### 🎯 Features
+
+#### 1. Multi-Generation Evolution Runs
+
+- **Seed Options:**
+  - **From Scratch:** Auto-fetch features from feature_service, start with empty lineage
+  - **From Parent Model:** Inherit feature subset from a promoted model
+
+- **Per-Generation Workflow:**
+  1. **Training Phase:** Spawns `N` parallel training jobs with mutated hyperparameters
+  2. **Simulation Phase:** Tests each model across grid of thresholds/regime filters
+  3. **Selection Phase:** Ranks by Holy Grail criteria (SQN, Profit Factor, Trade Count)
+  4. **Inheritance Phase:** Best model's features → seed for next generation
+
+- **Automatic Termination:** Stops early if Holy Grail criteria met before `max_generations`
+
+#### 2. Data Fold Workflow (Critical for Train/Test Integrity)
+
+**UI Flow: Options → Symbols → Features**
+
+**Step 1: Load Data Folds**
+```
+📁 Available Folds (from feature_service):
+  ○ {"train_days":30, "test_days":5, "regime_col":"regime_vix"}
+  ○ {"train_days":60, "test_days":10, "regime_col":"regime_gmm"}
+  ○ Legacy / No Config
+```
+
+**Step 2: Select Fold → Auto-load Symbols**
+```
+Fold Selected: {"train_days":30, "test_days":5}
+✅ 8 symbols available: AAPL, GOOGL, MSFT, NVDA, QQQ, RDDT, VIXY, XOM
+```
+
+**Step 3: Configure Evolution**
+- **Target Symbol:** AAPL (what you're predicting)
+- **Reference Symbols:** ☑ SPY ☑ QQQ (relational context features)
+- **Data Options:** Passed as JSON to training_service (fold configuration)
+
+**Why This Matters:**
+- Prevents using folds/symbols that don't have computed features
+- Ensures train/test splits are consistent across all training jobs
+- Enables multi-ticker TS-aligned training (merge on timestamp index)
+
+#### 3. Multi-Ticker TS-Aligned Training
+
+**Problem:** Predicting AAPL in isolation ignores market-wide trends (SPY, QQQ movements)
+
+**Solution:** Load multiple tickers, align on timestamp, merge features
+
+**Implementation:**
+```python
+# Orchestrator sends:
+{
+  "symbol": "AAPL",
+  "reference_symbols": ["SPY", "QQQ"],
+  "data_options": "{\"train_days\":30}"
+}
+
+# Training service loads:
+df_aapl = load_features("AAPL")  # columns: ts, rsi, macd, ...
+df_spy = load_features("SPY")    # columns: ts, rsi, macd, ...
+df_qqq = load_features("QQQ")    # columns: ts, rsi, macd, ...
+
+# Rename to avoid collisions:
+df_spy.columns = ["ts", "rsi_SPY", "macd_SPY", ...]
+df_qqq.columns = ["ts", "rsi_QQQ", "macd_QQQ", ...]
+
+# Inner join on ts (drops misaligned rows):
+df_merged = df_aapl.merge(df_spy, on="ts").merge(df_qqq, on="ts")
+
+# Result: Features from 3 tickers, TS-aligned
+# X: [rsi_AAPL, macd_AAPL, rsi_SPY, rsi_QQQ, ...]
+# y: AAPL_close (future target)
+```
+
+**Benefits:**
+- Captures regime-dependent behavior (AAPL behaves differently when SPY is rallying)
+- Improves feature selection (model learns which cross-ticker signals matter)
+- Prevents data leakage (inner join ensures exact timestamp matches)
+
+#### 4. Holy Grail Criteria Filtering
+
+**Purpose:** Eliminate overfit/lucky models, promote only robust strategies
+
+**Default Thresholds:**
+```python
+{
+  "sqn_min": 3.0,      # System Quality Number (Van Tharp metric)
+  "sqn_max": 10.0,     # Upper bound (too high = overfitting)
+  "profit_factor_min": 1.5,
+  "profit_factor_max": 5.0,
+  "trade_count_min": 20,
+  "trade_count_max": 200
+}
+```
+
+**Validation Logic:**
+```python
+def is_holy_grail(sim_result):
+    return (
+        sqn_min <= sim_result['sqn'] <= sqn_max and
+        pf_min <= sim_result['profit_factor'] <= pf_max and
+        tc_min <= sim_result['trade_count'] <= tc_max
+    )
+```
+
+**Outcome:**
+- ✅ **Promoted:** Model meets all criteria → saved to `promoted_models` table
+- ⏭️ **Next Gen:** Best model (even if not Holy Grail) seeds next generation
+- 🛑 **Early Stop:** If Holy Grail found, skip remaining generations
+
+#### 5. Simulation Grid Search (Per Model)
+
+For each trained model, orchestrator runs simulations across:
+
+**Parameters:**
+- **Thresholds:** `[0.0001, 0.0003, 0.0005, 0.0007]` (prediction confidence levels)
+- **Regime Configs:** 
+  ```python
+  [
+    {"regime_gmm": [0]},      # Only trade in calm GMM cluster
+    {"regime_gmm": [1]},      # Only trade in volatile GMM cluster
+    {"regime_vix": [0, 1]}    # Trade in bear/quiet VIX regimes
+  ]
+  ```
+
+**Example Scale:**
+- 1 model × 4 thresholds × 3 regime configs = **12 simulations**
+- 10 models/generation × 12 sims = **120 simulations/generation**
+- 4 generations × 120 sims = **480 total simulations/run**
+
+#### 6. Web Dashboard Features
+
+**Modern Architecture (Separated HTML/CSS/JS):**
+```
+orchestrator_service/
+  ├── templates/dashboard_new.html    (Clean HTML structure)
+  ├── static/css/dashboard.css        (280 lines, all styling)
+  └── static/js/dashboard.js          (664 lines, all logic)
+```
+
+**Benefits:**
+- Easier maintenance (edit CSS without touching Python)
+- Browser caching (CSS/JS served as static files)
+- Cleaner git diffs (changes isolated to relevant files)
+
+**Dashboard Sections:**
+
+**1. Evolution Setup**
+- Load data folds → Select fold → Choose symbols
+- Configure algorithm, target column, max generations
+- Select reference symbols (multi-ticker training)
+- Set Holy Grail thresholds
+
+**2. Active Runs**
+- Real-time status (PENDING / RUNNING / COMPLETED)
+- Current generation progress
+- Live job counts (training/simulation)
+- Expandable details (per-generation results)
+
+**3. Promoted Models**
+- Filter by Holy Grail criteria met
+- View full model config (features, hyperparams, lineage)
+- Download model artifacts
+- See simulation performance that earned promotion
+
+**4. System Stats**
+- Total runs / active runs / completed runs
+- Job queue depth (pending / running)
+- Promoted model count
+
+#### 7. API Endpoints
+
+```http
+POST /api/evolve
+  Body: {
+    "symbol": "AAPL",
+    "reference_symbols": ["SPY", "QQQ"],
+    "data_options": "{\"train_days\":30}",
+    "algorithm": "XGBoost",
+    "max_generations": 4,
+    "thresholds": [0.0001, 0.0005],
+    "sqn_min": 3.0, ...
+  }
+  Response: {"run_id": "abc-123", "status": "queued"}
+
+GET /api/runs
+  Response: {
+    "runs": [
+      {"run_id": "abc-123", "symbol": "AAPL", "status": "running", "generation": 2, ...}
+    ],
+    "count": 1
+  }
+
+GET /api/runs/{run_id}
+  Response: {
+    "run_id": "abc-123",
+    "symbol": "AAPL",
+    "current_generation": 2,
+    "max_generations": 4,
+    "lineage": ["model-gen1-id", "model-gen2-id"],
+    "jobs": [...],
+    "promoted_models": [...]
+  }
+
+GET /api/runs/{run_id}/generations
+  Response: {
+    "generations": [
+      {
+        "generation": 1,
+        "models_trained": 10,
+        "simulations_run": 120,
+        "best_model": {"sqn": 2.8, "pf": 1.9, ...},
+        "top_3": [...]
+      },
+      ...
+    ]
+  }
+
+GET /api/promoted
+  Response: {
+    "models": [
+      {
+        "model_id": "xyz-789",
+        "run_id": "abc-123",
+        "symbol": "AAPL",
+        "generation": 3,
+        "sqn": 3.2,
+        "profit_factor": 2.1,
+        "feature_count": 45,
+        "lineage_depth": 2,
+        ...
+      }
+    ],
+    "count": 1
+  }
+
+GET /api/promoted/{model_id}
+  Response: {
+    "model_id": "xyz-789",
+    "features": ["rsi_14", "macd", "rsi_SPY", ...],
+    "hyperparameters": {"n_estimators": 200, "max_depth": 6, ...},
+    "lineage": ["parent-id", "grandparent-id"],
+    "simulation_config": {"threshold": 0.0005, "regime": "gmm_0"},
+    "performance": {"sqn": 3.2, "sharpe": 1.8, ...}
+  }
+
+GET /api/features/options
+  Response: [
+    "{\"train_days\":30, \"test_days\":5}",
+    "Legacy / No Config"
+  ]
+
+GET /api/features/symbols?options={...}
+  Response: ["AAPL", "GOOGL", "MSFT", ...]
+
+GET /api/features/columns?symbol=AAPL
+  Response: {
+    "columns": ["ts", "close", "rsi_14", "macd", ...],
+    "sample_data": [...]
+  }
+```
+
+### 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│             Orchestrator Service (FastAPI)              │
+│  - Evolution logic (evolution.py)                       │
+│  - Job queue management (database.py)                   │
+│  - Dashboard UI (templates/static)                      │
+│  - Feature service integration                          │
+└────────────┬────────────────────────────────────────────┘
+             │
+      ┌──────┴──────┬───────────┬───────────────┐
+      ▼             ▼           ▼               ▼
+ Training API  Simulation  Feature API    Job Workers
+ (port 8001)   (port 8004) (port 8100)    (async tasks)
+      │             │           │               │
+      └─────────────┴───────────┴───────────────┘
+                    │
+            ┌───────▼───────┐
+            │  DuckDB Jobs  │
+            │  orchestrator.db
+            │   - runs
+            │   - jobs
+            │   - promoted_models
+            └───────────────┘
+```
+
+### 🔄 Evolution Lifecycle Example
+
+**Run Configuration:**
+```json
+{
+  "symbol": "AAPL",
+  "reference_symbols": ["SPY", "QQQ"],
+  "data_options": "{\"train_days\":30, \"test_days\":5}",
+  "algorithm": "xgboost_regressor",
+  "max_generations": 3,
+  "thresholds": [0.0001, 0.0005],
+  "regime_configs": [{"regime_gmm": [0]}, {"regime_gmm": [1]}]
+}
+```
+
+**Generation 1:**
+1. Auto-fetch 50 features from feature_service (exclude OHLCV)
+2. Train 5 XGBoost models with random hyperparams
+3. Run 5 models × 2 thresholds × 2 regimes = **20 simulations**
+4. Best model: SQN=2.5 (below 3.0 threshold)
+5. Extract 40 features used by best model → seed for Gen 2
+
+**Generation 2:**
+1. Inherit 40 features from Gen 1 best model
+2. Train 5 XGBoost models (mutate learning_rate, max_depth)
+3. Run **20 simulations**
+4. Best model: SQN=3.1, PF=2.0, Trades=45 ✅ **Holy Grail!**
+5. **Promote model** → `promoted_models` table
+6. Early termination (Holy Grail reached)
+
+**Result:**
+- Total jobs: 10 training + 40 simulation = 50 jobs
+- Best model found: Generation 2, Model 3
+- Features evolved: 50 → 40 (10 pruned by selection)
+- Ready for production deployment
+
+### 🧪 Usage Examples
+
+**Start Evolution (API):**
+```bash
+curl -X POST http://localhost:8003/api/evolve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "AAPL",
+    "reference_symbols": ["SPY", "QQQ"],
+    "algorithm": "xgboost_regressor",
+    "max_generations": 4,
+    "sqn_min": 3.0,
+    "profit_factor_min": 1.5
+  }'
+```
+
+**Check Run Status:**
+```bash
+curl http://localhost:8003/api/runs/{run_id}
+```
+
+**List Promoted Models:**
+```bash
+curl http://localhost:8003/api/promoted
+```
+
+**Web UI Workflow:**
+1. Navigate to `http://localhost:8003`
+2. Click "Load Data Folds" → Select fold
+3. Select target symbol: AAPL
+4. Check reference symbols: ☑ SPY ☑ QQQ
+5. Configure Holy Grail thresholds
+6. Click "Start Evolution"
+7. Monitor Active Runs section (auto-refresh 10s)
+8. View promoted models in Promoted Models section
+
+### 🎛️ Hyperparameter Mutation Strategy
+
+Each generation mutates hyperparameters to explore optimization space:
+
+**XGBoost Mutations:**
+```python
+{
+  "n_estimators": random.choice([100, 200, 300, 500]),
+  "max_depth": random.choice([3, 4, 5, 6, 8]),
+  "learning_rate": random.choice([0.01, 0.05, 0.1, 0.2]),
+  "subsample": random.uniform(0.7, 1.0),
+  "colsample_bytree": random.uniform(0.7, 1.0),
+  "reg_alpha": random.choice([0, 0.1, 1, 10]),
+  "reg_lambda": random.choice([1, 10, 50, 100])
+}
+```
+
+**ElasticNet Grid Search (Automatic):**
+```python
+{
+  "alpha": [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0],  # 6 values
+  "l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]  # 7 values
+}
+# 6 × 7 × 5 CV folds = 210 models tested per job
+```
+
+### 📊 Database Schema
+
+```sql
+-- orchestrator.db
+
+CREATE TABLE runs (
+    id VARCHAR PRIMARY KEY,
+    symbol VARCHAR,
+    algorithm VARCHAR,
+    max_generations INTEGER,
+    current_generation INTEGER,
+    status VARCHAR,  -- PENDING | RUNNING | COMPLETED | FAILED
+    config JSON,     -- Full evolution config
+    lineage JSON,    -- ["gen1_model_id", "gen2_model_id", ...]
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE jobs (
+    id VARCHAR PRIMARY KEY,
+    run_id VARCHAR,
+    generation INTEGER,
+    job_type VARCHAR,  -- TRAINING | SIMULATION
+    status VARCHAR,
+    params JSON,
+    result JSON,
+    created_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE TABLE promoted_models (
+    id VARCHAR PRIMARY KEY,
+    run_id VARCHAR,
+    model_id VARCHAR,      -- training_service model ID
+    generation INTEGER,
+    symbol VARCHAR,
+    sqn DOUBLE,
+    profit_factor DOUBLE,
+    sharpe_ratio DOUBLE,
+    trade_count INTEGER,
+    total_return DOUBLE,
+    features JSON,         -- ["rsi_14", "macd", ...]
+    hyperparameters JSON,
+    simulation_config JSON,
+    promoted_at TIMESTAMP
+);
+```
+
+### 🚨 Known Limitations & Future Enhancements
+
+**Current:**
+- Single-objective optimization (SQN primary, PF secondary)
+- Fixed mutation strategy (random sampling)
+- No genetic crossover (features don't blend between models)
+- Manual Holy Grail threshold tuning
+
+**Planned:**
+- **Multi-objective Pareto optimization** (SQN vs Sharpe vs Drawdown)
+- **Bayesian hyperparameter optimization** (smarter than random)
+- **Genetic operators:** Crossover (blend top 2 models' features), mutation (add/remove features)
+- **Adaptive thresholds:** Learn Holy Grail criteria from historical promoted models
+- **Ensemble promotion:** Auto-create voting ensembles from top 3 models
+- **Live trading integration:** Direct deployment to paper trading accounts
+
+### 🔗 Service Integration
+
+**Orchestrator depends on:**
+- **Feature Service (8100):** Fetches available folds, symbols, feature columns
+- **Training Service (8001):** Spawns model training jobs
+- **Simulation Service (8004):** Runs backtests on trained models
+
+**Flow:**
+```
+User → Orchestrator UI
+  ↓
+Orchestrator → Feature Service (/options, /symbols)
+  ↓
+Orchestrator → Training Service (/train)
+  ↓
+Training Service → Feature Service (loads data)
+  ↓
+Orchestrator → Simulation Service (/run)
+  ↓
+Simulation Service → Training Service (loads model)
+  ↓
+Orchestrator → Database (save results)
+  ↓
+User ← Dashboard (view promoted models)
+```
+
+### 🛠️ Troubleshooting
+
+**"No symbols found in feature service"**
+- **Cause:** Trying to load symbols before selecting a data fold
+- **Fix:** Click "Load Data Folds" first, then select a fold
+
+**"Must provide either seed_model_id or seed_features"**
+- **Cause:** Feature service integration disabled or unreachable
+- **Fix:** Check `FEATURE_URL` env var, ensure feature_builder service running
+
+**Evolution stuck in "RUNNING" status**
+- **Cause:** Training or simulation jobs failed silently
+- **Fix:** Check logs: `docker-compose logs training_service simulation`
+
+**High memory usage during evolution**
+- **Cause:** Loading full feature datasets for multi-ticker training
+- **Fix:** Reduce `max_generations` or limit `reference_symbols` to 1-2 tickers
+
+**Promoted models not appearing**
+- **Cause:** No models meeting Holy Grail criteria
+- **Fix:** Lower `sqn_min` / `profit_factor_min` thresholds or increase `max_generations`
+
+---
+
 ## Feature Engineering
 
 ### Technical Indicators

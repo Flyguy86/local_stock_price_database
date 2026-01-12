@@ -45,14 +45,22 @@
       <section>
         <h2>🚀 Start Evolution Run</h2>
         
-        <!-- Step 1: Select Symbols -->
+        <!-- Step 1: Load Data Folds -->
         <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
-          <h3 style="margin-bottom: 0.5rem;">Step 1: Select Symbols from Feature Service</h3>
-          <button type="button" onclick="loadAvailableSymbols()" class="secondary" style="width: 100%; margin-bottom: 0.5rem;">
-            🔄 Load Available Symbols
+          <h3 style="margin-bottom: 0.5rem;">Step 1: Load Data Folds</h3>
+          <button type="button" id="load-options-btn" onclick="loadAvailableOptions()" class="secondary" style="width: 100%; margin-bottom: 0.5rem;">
+            🔄 Load Data Folds
           </button>
+          <div id="options-selection">
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Click Load to fetch available data folds from feature service</p>
+          </div>
+        </div>
+        
+        <!-- Step 2: Symbols for Selected Fold -->
+        <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
+          <h3 style="margin-bottom: 0.5rem;">Step 2: Symbols for Selected Fold</h3>
           <div id="symbol-selection">
-            <p style="color: var(--text-muted); font-size: 0.85rem;">Click Load to fetch symbols from feature service</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Select a data fold above first</p>
           </div>
         </div>
         

@@ -577,24 +577,109 @@ async def get_feature_rows(limit: int = 20, offset: int = 0, symbol: Optional[st
             tmpdir.cleanup()
 
 
-@app.get("/symbols")
-async def symbols():
+@app.get("/options")
+async def get_options():
+    """List all unique options configurations from feature_bars."""
     conn = None
     tmpdir = None
     try:
-        if not cfg.source_db.exists():
-            logger.warning("source db not found", extra={"path": str(cfg.source_db)})
+        if not cfg.dest_db.exists():
+            logger.warning("dest db not found", extra={"path": str(cfg.dest_db)})
             return []
 
         tmpdir = tempfile.TemporaryDirectory()
-        tmp_src = Path(tmpdir.name) / cfg.source_db.name
-        shutil.copy2(cfg.source_db, tmp_src)
-        wal_src = cfg.source_db.with_suffix(cfg.source_db.suffix + ".wal")
+        tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
+        shutil.copy2(cfg.dest_db, tmp_dest)
+        wal_src = cfg.dest_db.with_suffix(cfg.dest_db.suffix + ".wal")
         if wal_src.exists():
-            wal_dst = tmp_src.with_suffix(tmp_src.suffix + ".wal")
+            wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
             shutil.copy2(wal_src, wal_dst)
-        conn = __import__("duckdb").connect(str(tmp_src), read_only=True)
-        return list_symbols_from_db(conn)
+        conn = duckdb.connect(str(tmp_dest), read_only=True)
+        
+        # Check if table exists
+        try:
+            conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
+        except duckdb.Error:
+            logger.warning("feature_bars table missing")
+            return []
+        
+        # Get distinct options
+        rows = conn.execute(
+            "SELECT DISTINCT options FROM feature_bars WHERE options IS NOT NULL ORDER BY options"
+        ).fetchall()
+        
+        options_list = [row[0] for row in rows if row[0]]
+        # Also check for NULL/empty options (legacy data)
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM feature_bars WHERE options IS NULL OR options = ''"
+        ).fetchone()[0]
+        
+        if null_count > 0:
+            options_list.insert(0, "Legacy / No Config")
+        
+        return options_list
+    except Exception as e:
+        logger.exception("failed to list options")
+        return []
+    finally:
+        if conn:
+            conn.close()
+        if tmpdir:
+            tmpdir.cleanup()
+
+
+@app.get("/symbols")
+async def symbols(options: Optional[str] = None):
+    """List symbols, optionally filtered by options config."""
+    conn = None
+    tmpdir = None
+    try:
+        # If no options filter, use source DB (all symbols)
+        if not options:
+            if not cfg.source_db.exists():
+                logger.warning("source db not found", extra={"path": str(cfg.source_db)})
+                return []
+            tmpdir = tempfile.TemporaryDirectory()
+            tmp_src = Path(tmpdir.name) / cfg.source_db.name
+            shutil.copy2(cfg.source_db, tmp_src)
+            wal_src = cfg.source_db.with_suffix(cfg.source_db.suffix + ".wal")
+            if wal_src.exists():
+                wal_dst = tmp_src.with_suffix(tmp_src.suffix + ".wal")
+                shutil.copy2(wal_src, wal_dst)
+            conn = duckdb.connect(str(tmp_src), read_only=True)
+            return list_symbols_from_db(conn)
+        
+        # Filter by options from dest DB
+        if not cfg.dest_db.exists():
+            logger.warning("dest db not found", extra={"path": str(cfg.dest_db)})
+            return []
+        
+        tmpdir = tempfile.TemporaryDirectory()
+        tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
+        shutil.copy2(cfg.dest_db, tmp_dest)
+        wal_src = cfg.dest_db.with_suffix(cfg.dest_db.suffix + ".wal")
+        if wal_src.exists():
+            wal_dst = tmp_dest.with_suffix(tmp_dest.suffix + ".wal")
+            shutil.copy2(wal_src, wal_dst)
+        conn = duckdb.connect(str(tmp_dest), read_only=True)
+        
+        try:
+            conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
+        except duckdb.Error:
+            logger.warning("feature_bars table missing")
+            return []
+        
+        # Handle legacy filter
+        if options == "Legacy / No Config":
+            query = "SELECT DISTINCT symbol FROM feature_bars WHERE options IS NULL OR options = '' ORDER BY symbol"
+            rows = conn.execute(query).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT symbol FROM feature_bars WHERE options = ? ORDER BY symbol",
+                [options]
+            ).fetchall()
+        
+        return [row[0] for row in rows]
     except Exception as e:
         logger.exception("failed to list symbols")
         return []

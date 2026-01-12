@@ -28,16 +28,71 @@ document.addEventListener('DOMContentLoaded', () => {
 // Symbol Selection from Feature Service
 // ============================================
 
+let availableOptions = [];
 let availableSymbols = [];
 let selectedReferences = new Set();
+let selectedDataOptions = null;
 
-async function loadAvailableSymbols() {
+async function loadAvailableOptions() {
   try {
     const btn = event.target;
     btn.disabled = true;
     btn.textContent = '⏳ Loading...';
     
-    const res = await fetch(`${API}/api/features/symbols`);
+    const res = await fetch(`${API}/api/features/options`);
+    const options = await res.json();
+    
+    if (Array.isArray(options) && options.length > 0) {
+      availableOptions = options;
+      
+      // Display options as radio buttons
+      document.getElementById('options-selection').innerHTML = `
+        <div style="background: rgba(16, 185, 129, 0.2); padding: 0.75rem; border-radius: 4px;">
+          <strong>📁 Select Data Fold:</strong>
+          <div style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem;">
+            ${options.map(opt => `
+              <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.4rem; border-radius: 4px; background: rgba(255,255,255,0.08); transition: background 0.2s;">
+                <input type="radio" name="data-options" value="${opt}" onchange="onDataOptionsChange('${opt}')">
+                <span style="font-size: 0.9rem; font-family: 'Courier New', monospace;">${opt}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    } else {
+      document.getElementById('options-selection').innerHTML = `
+        <div style="background: rgba(239, 68, 68, 0.2); padding: 0.5rem; border-radius: 4px;">
+          ❌ No feature data folds found. Run feature generation first.
+        </div>
+      `;
+    }
+    
+    btn.disabled = false;
+    btn.textContent = '🔄 Load Data Folds';
+  } catch (e) {
+    console.error('Failed to load options:', e);
+    document.getElementById('options-selection').innerHTML = `
+      <div style="background: rgba(239, 68, 68, 0.2); padding: 0.5rem; border-radius: 4px;">
+        ❌ Error: ${e.message}
+      </div>
+    `;
+    event.target.disabled = false;
+    event.target.textContent = '🔄 Load Data Folds';
+  }
+}
+
+async function onDataOptionsChange(selectedOption) {
+  selectedDataOptions = selectedOption;
+  
+  // Show loading state
+  document.getElementById('symbol-selection').innerHTML = `
+    <div style="color: var(--text-muted); padding: 0.5rem;">
+      ⏳ Loading symbols for fold: <code>${selectedOption}</code>...
+    </div>
+  `;
+  
+  try {
+    const res = await fetch(`${API}/api/features/symbols?options=${encodeURIComponent(selectedOption)}`);
     const symbols = await res.json();
     
     if (Array.isArray(symbols) && symbols.length > 0) {
@@ -48,22 +103,21 @@ async function loadAvailableSymbols() {
       targetSelect.innerHTML = '<option value="">Select target symbol...</option>' +
         symbols.map(s => `<option value="${s}">${s}</option>`).join('');
       
-      // Show symbol info
       document.getElementById('symbol-selection').innerHTML = `
         <div style="background: rgba(16, 185, 129, 0.2); padding: 0.5rem; border-radius: 4px;">
-          ✅ Loaded ${symbols.length} symbols: ${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? '...' : ''}
+          ✅ ${symbols.length} symbols available: ${symbols.slice(0, 10).join(', ')}${symbols.length > 10 ? '...' : ''}
         </div>
       `;
+      
+      // Update reference checkboxes
+      updateReferenceCheckboxes();
     } else {
       document.getElementById('symbol-selection').innerHTML = `
         <div style="background: rgba(239, 68, 68, 0.2); padding: 0.5rem; border-radius: 4px;">
-          ❌ No symbols found in feature service
+          ❌ No symbols found for this fold
         </div>
       `;
     }
-    
-    btn.disabled = false;
-    btn.textContent = '🔄 Load Available Symbols';
   } catch (e) {
     console.error('Failed to load symbols:', e);
     document.getElementById('symbol-selection').innerHTML = `
@@ -71,9 +125,13 @@ async function loadAvailableSymbols() {
         ❌ Error: ${e.message}
       </div>
     `;
-    event.target.disabled = false;
-    event.target.textContent = '🔄 Load Available Symbols';
   }
+}
+
+async function loadAvailableSymbols() {
+  // Legacy function - redirect to options workflow
+  alert('⚠️ Workflow Changed!\n\nPlease:\n1. Load Data Folds first\n2. Select a fold\n3. Symbols will auto-load for that fold');
+  document.getElementById('load-options-btn')?.click();
 }
 
 function setupSymbolSelector() {
@@ -543,6 +601,7 @@ function setupFormHandler() {
       seed_model_id: document.getElementById('seed-model-id').value || null,
       symbol: document.getElementById('symbol').value,
       reference_symbols: Array.from(selectedReferences),  // Include reference symbols
+      data_options: selectedDataOptions,  // Include selected fold/options
       algorithm: document.getElementById('algorithm').value,
       target_col: document.getElementById('target-col').value,
       max_generations: parseInt(document.getElementById('max-generations').value),

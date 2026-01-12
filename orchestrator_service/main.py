@@ -103,7 +103,8 @@ async def api_info():
             "GET /api/runs/{run_id}": "Get run details with lineage",
             "GET /api/promoted": "List promoted models",
             "GET /api/stats": "Get system statistics",
-            "GET /api/features/symbols": "List available symbols from feature service",
+            "GET /api/features/options": "List available data folds/options from feature service",
+            "GET /api/features/symbols": "List available symbols from feature service (optionally filtered by options)",
             "GET /api/features/columns": "Get feature columns for a symbol"
         }
     }
@@ -132,14 +133,30 @@ async def api_stats():
     }
 
 
-@app.get("/api/features/symbols")
-async def get_feature_symbols():
-    """Proxy to feature service to list available symbols."""
+@app.get("/api/features/options")
+async def get_feature_options():
+    """Proxy to feature service to list available data folds/options configurations."""
     import httpx
     feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{feature_url}/symbols")
+            response = await client.get(f"{feature_url}/options")
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        log.error(f"Failed to fetch options from feature service: {e}")
+        return {"error": str(e), "options": []}
+
+
+@app.get("/api/features/symbols")
+async def get_feature_symbols(options: Optional[str] = None):
+    """Proxy to feature service to list available symbols, optionally filtered by options."""
+    import httpx
+    feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            params = {"options": options} if options else {}
+            response = await client.get(f"{feature_url}/symbols", params=params)
             response.raise_for_status()
             return response.json()
     except Exception as e:
