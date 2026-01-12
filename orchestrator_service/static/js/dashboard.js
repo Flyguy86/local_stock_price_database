@@ -93,9 +93,12 @@ async function onDataOptionsChange(selectedOption) {
   
   try {
     const res = await fetch(`${API}/api/features/symbols?options=${encodeURIComponent(selectedOption)}`);
-    const symbols = await res.json();
+    const data = await res.json();
     
-    if (Array.isArray(symbols) && symbols.length > 0) {
+    // Handle both array and {symbols: [...]} response formats
+    const symbols = Array.isArray(data) ? data : (data.symbols || []);
+    
+    if (symbols.length > 0) {
       availableSymbols = symbols;
       
       // Populate target symbol dropdown
