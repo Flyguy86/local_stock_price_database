@@ -122,8 +122,12 @@ class EvolutionEngine:
                 state.current_features = await self._get_model_features(config.seed_model_id)
             elif config.seed_features:
                 state.current_features = config.seed_features
-                # Train initial model
-                state.current_model_id = await self._train_model(state, None)
+                # Train initial model with seed features
+                state.current_model_id = await self._train_model(
+                    state, 
+                    parent_model_id=None,
+                    features=state.current_features
+                )
             else:
                 raise ValueError("Must provide seed_model_id or seed_features")
             

@@ -212,33 +212,55 @@ async def get_feature_symbols(options: Optional[str] = None):
     return {"symbols": symbols}
 
 
+def _get_feature_columns_from_parquet(symbol: str) -> list:
+    """Read feature columns directly from parquet files for a symbol."""
+    try:
+        symbol_dir = FEATURES_PARQUET_DIR / symbol
+        if not symbol_dir.exists():
+            log.warning(f"Symbol directory not found: {symbol_dir}")
+            return []
+        
+        # Find first parquet file
+        date_dirs = [d for d in symbol_dir.iterdir() if d.is_dir()]
+        if not date_dirs:
+            log.warning(f"No date directories for {symbol}")
+            return []
+        
+        parquet_files = list(date_dirs[0].glob("*.parquet"))
+        if not parquet_files:
+            log.warning(f"No parquet files for {symbol}")
+            return []
+        
+        # Read with pyarrow
+        import pyarrow.parquet as pq
+        table = pq.read_table(str(parquet_files[0]))
+        all_cols = table.column_names
+        
+        # Filter out OHLCV and metadata columns
+        excluded = {'ts', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap', 
+                    'options', 'dt', 'data_split'}
+        features = [col for col in all_cols if col not in excluded]
+        
+        log.info(f"Found {len(features)} feature columns for {symbol}")
+        return features
+        
+    except Exception as e:
+        log.exception(f"Failed to read columns for {symbol}: {e}")
+        return []
+
+
 @app.get("/api/features/columns")
 async def get_feature_columns(symbol: str, limit: int = 1):
-    """Proxy to feature service to get sample data and extract column names."""
-    import httpx
-    feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{feature_url}/features_sample", params={"symbol": symbol, "limit": limit})
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract column names (exclude ts, symbol, open, high, low, close, volume, vwap)
-            if data and len(data) > 0:
-                all_cols = list(data[0].keys())
-                # Filter out OHLCV columns, keep features
-                excluded = {'ts', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap'}
-                features = [col for col in all_cols if col not in excluded]
-                return {
-                    "symbol": symbol,
-                    "all_columns": all_cols,
-                    "feature_columns": features,
-                    "sample_count": len(data)
-                }
-            return {"symbol": symbol, "all_columns": [], "feature_columns": [], "sample_count": 0}
-    except Exception as e:
-        log.error(f"Failed to fetch columns from feature service for {symbol}: {e}")
-        return {"error": str(e), "symbol": symbol, "feature_columns": []}
+    """Get feature columns directly from mounted parquet files."""
+    features = _get_feature_columns_from_parquet(symbol)
+    
+    if features:
+        return {
+            "symbol": symbol,
+            "feature_columns": features,
+            "sample_count": 1
+        }
+    return {"error": f"No parquet data for {symbol}", "symbol": symbol, "feature_columns": []}
 
 
 # ============================================
@@ -279,7 +301,7 @@ async def start_evolution(req: EvolveRequest, background_tasks: BackgroundTasks)
     Start a new evolution run.
     
     The evolution loop will:
-    1. Fetch seed features from feature service if not provided
+    1. Fetch seed features from parquet if not provided
     2. Prune features with importance <= 0
     3. Check for existing model with same fingerprint
     4. Train new model or reuse existing (with TS-aligned multi-ticker data)
@@ -289,40 +311,23 @@ async def start_evolution(req: EvolveRequest, background_tasks: BackgroundTasks)
     """
     seed_features = req.seed_features
     
-    # Auto-fetch seed features from feature service if not provided
+    # Auto-fetch seed features from mounted parquet if not provided
     if not req.seed_model_id and not seed_features:
-        log.info(f"Fetching seed features for {req.symbol} from feature service")
-        import httpx
-        feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    f"{feature_url}/features_sample",
-                    params={"symbol": req.symbol, "limit": 1}
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if data and len(data) > 0:
-                    excluded = {'ts', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'vwap'}
-                    seed_features = [col for col in data[0].keys() if col not in excluded]
-                    log.info(f"Auto-fetched {len(seed_features)} features for {req.symbol}")
-                else:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"No feature data found for symbol {req.symbol} in feature service"
-                    )
-        except httpx.HTTPError as e:
-            log.error(f"Failed to fetch features from feature service: {e}")
+        log.info(f"Fetching seed features for {req.symbol} from parquet")
+        seed_features = _get_feature_columns_from_parquet(req.symbol)
+        
+        if seed_features:
+            log.info(f"Auto-fetched {len(seed_features)} features for {req.symbol}")
+        else:
             raise HTTPException(
-                status_code=502,
-                detail=f"Feature service unavailable or no data for {req.symbol}: {str(e)}"
+                status_code=404,
+                detail=f"No feature data found for symbol {req.symbol} in parquet directory"
             )
     
     if not req.seed_model_id and not seed_features:
         raise HTTPException(
             status_code=400,
-            detail="Must provide either seed_model_id or seed_features, or have feature data in feature service"
+            detail="Must provide either seed_model_id or seed_features, or have feature data in parquet"
         )
     
     # Build data_options to include reference symbols for TS-aligned multi-ticker training

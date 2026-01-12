@@ -50,10 +50,10 @@ async function loadAvailableOptions() {
         <div style="background: rgba(16, 185, 129, 0.2); padding: 0.75rem; border-radius: 4px;">
           <strong>📁 Select Data Fold:</strong>
           <div style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem;">
-            ${options.map(opt => `
+            ${options.map((opt, idx) => `
               <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.4rem; border-radius: 4px; background: rgba(255,255,255,0.08); transition: background 0.2s;">
-                <input type="radio" name="data-options" value="${opt}" onchange="onDataOptionsChange('${opt}')">
-                <span style="font-size: 0.9rem; font-family: 'Courier New', monospace;">${opt}</span>
+                <input type="radio" name="data-options" data-option-idx="${idx}" onchange="onDataOptionsChangeByIndex(${idx})">
+                <span style="font-size: 0.9rem; font-family: 'Courier New', monospace;">${opt.length > 60 ? opt.substring(0, 60) + '...' : opt}</span>
               </label>
             `).join('')}
           </div>
@@ -81,18 +81,24 @@ async function loadAvailableOptions() {
   }
 }
 
+function onDataOptionsChangeByIndex(idx) {
+  const selectedOption = availableOptions[idx];
+  onDataOptionsChange(selectedOption);
+}
+
 async function onDataOptionsChange(selectedOption) {
   selectedDataOptions = selectedOption;
   
   // Show loading state
   document.getElementById('symbol-selection').innerHTML = `
     <div style="color: var(--text-muted); padding: 0.5rem;">
-      ⏳ Loading symbols for fold: <code>${selectedOption}</code>...
+      ⏳ Loading symbols...
     </div>
   `;
   
   try {
     const res = await fetch(`${API}/api/features/symbols?options=${encodeURIComponent(selectedOption)}`);
+    console.log('Symbols response:', res.status);
     const data = await res.json();
     
     // Handle both array and {symbols: [...]} response formats
