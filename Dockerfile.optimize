@@ -1,0 +1,5 @@
+FROM stock_base:latest
+
+EXPOSE 8002
+
+CMD ["python", "optimization_service/main.py"]

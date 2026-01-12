@@ -3,6 +3,7 @@ import requests
 import uuid
 import sys
 import logging
+import os
 from pathlib import Path
 import traceback
 
@@ -15,17 +16,45 @@ from simulation_service.core import run_simulation
 log = logging.getLogger("worker")
 logging.basicConfig(level=logging.INFO)
 
-API_URL = "http://localhost:8002/api" # Assume local for now, can be env var
+# Use localhost when running as internal thread, container name when distributed
+API_URL = os.getenv("C2_API_URL", "http://localhost:8002/api")
 WORKER_ID = f"worker-{str(uuid.uuid4())[:8]}"
 
 def run_worker():
     log.info(f"Worker {WORKER_ID} started. Connecting to {API_URL}")
     
+    # Initial startup delay to ensure server is ready
+    import time
+    time.sleep(2)
+    
+    log.info(f"Worker {WORKER_ID} entering main loop...")
+    
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    
     while True:
         try:
+            # 0. Heartbeat (even when idle)
+            try:
+                resp = requests.post(f"{API_URL}/worker/heartbeat", json={"worker_id": WORKER_ID}, timeout=5)
+                resp.raise_for_status()
+                consecutive_errors = 0  # Reset error counter on success
+                log.debug(f"Worker {WORKER_ID} heartbeat sent successfully")
+            except Exception as e:
+                consecutive_errors += 1
+                log.warning(f"Heartbeat failed (attempt {consecutive_errors}/{max_consecutive_errors}): {e}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    log.error(f"Worker {WORKER_ID} failed {max_consecutive_errors} consecutive heartbeats. Exiting.")
+                    break
+                
+                time.sleep(5)
+                continue
+            
             # 1. Claim Job
             try:
                 resp = requests.post(f"{API_URL}/worker/claim", json={"worker_id": WORKER_ID}, timeout=5)
+                resp.raise_for_status()
                 job = resp.json()
             except Exception as e:
                 log.error(f"Failed to connect to C2: {e}")
@@ -33,17 +62,22 @@ def run_worker():
                 continue
                 
             if not job:
-                # No jobs, sleep
+                log.debug(f"Worker {WORKER_ID} idle - no pending jobs")
                 time.sleep(2)
                 continue
             
             job_id = job["id"]
             params = job["params"]
-            log.info(f"Processing Job {job_id} | {params.get('ticker')} | {params.get('model_id')}")
+            log.info(f"Worker {WORKER_ID} claimed job {job_id}: {params.get('ticker')} | {params.get('model_id')[:12]}...")
+            
+            # Heartbeat with job ID
+            try:
+                requests.post(f"{API_URL}/worker/heartbeat", json={"worker_id": WORKER_ID, "job_id": job_id}, timeout=5)
+            except:
+                pass
             
             # 2. Run Simulation
             try:
-                # Map params to function args
                 sim_result = run_simulation(
                     model_id=params["model_id"],
                     ticker=params["ticker"],
@@ -52,15 +86,23 @@ def run_worker():
                     min_prediction_threshold=params.get("min_prediction_threshold", 0.0),
                     enable_z_score_check=params.get("enable_z_score_check", False),
                     volatility_normalization=params.get("volatility_normalization", False),
-                    save_to_history=False # Important: Don't flood manual history
+                    regime_col=params.get("regime_col"),
+                    allowed_regimes=params.get("allowed_regimes"),
+                    enable_slippage=params.get("enable_slippage", True),
+                    slippage_bars=params.get("slippage_bars", 4),
+                    transaction_fee=params.get("transaction_fee", 0.02),
+                    save_to_history=False
                 )
                 
-                # Extract simple stats for the grid result
                 summary = {
                     "strategy_return_pct": sim_result["stats"]["strategy_return_pct"],
                     "total_trades": sim_result["stats"]["total_trades"],
                     "hit_rate_pct": sim_result["stats"]["hit_rate_pct"],
-                    "final_value": sim_result["stats"]["final_strategy_value"]
+                    "final_value": sim_result["stats"]["final_strategy_value"],
+                    "total_fees": sim_result["stats"].get("total_fees", 0.0),
+                    "sqn": sim_result["stats"].get("sqn", 0.0),
+                    "expectancy": sim_result["stats"].get("expectancy", 0.0),
+                    "profit_factor": sim_result["stats"].get("profit_factor", 0.0)
                 }
                 
                 # 3. Submit Result
@@ -68,24 +110,36 @@ def run_worker():
                     "job_id": job_id,
                     "result": summary,
                     "status": "COMPLETED"
-                })
-                log.info(f"Job {job_id} Completed. Return: {summary['strategy_return_pct']:.2f}%")
+                }, timeout=10)
+                log.info(f"Worker {WORKER_ID} completed job {job_id}. Return: {summary['strategy_return_pct']:.2f}%, SQN: {summary['sqn']:.2f}")
                 
             except Exception as e:
-                log.error(f"Job {job_id} Failed: {e}")
+                log.error(f"Worker {WORKER_ID} job {job_id} failed: {e}", exc_info=True)
                 traceback.print_exc()
-                requests.post(f"{API_URL}/worker/complete", json={
-                    "job_id": job_id,
-                    "result": {"error": str(e)},
-                    "status": "FAILED"
-                })
+                
+                try:
+                    requests.post(f"{API_URL}/worker/complete", json={
+                        "job_id": job_id,
+                        "result": {"error": str(e)},
+                        "status": "FAILED"
+                    }, timeout=10)
+                except:
+                    log.error(f"Failed to report job failure to C2")
                 
         except KeyboardInterrupt:
-            log.info("Worker stopped.")
+            log.info(f"Worker {WORKER_ID} stopped by user.")
             break
         except Exception as e:
-            log.error(f"Unexpected worker error: {e}")
+            log.error(f"Unexpected worker error: {e}", exc_info=True)
+            consecutive_errors += 1
+            
+            if consecutive_errors >= max_consecutive_errors:
+                log.error(f"Worker {WORKER_ID} encountered {max_consecutive_errors} consecutive errors. Exiting.")
+                break
+                
             time.sleep(5)
+    
+    log.info(f"Worker {WORKER_ID} shutdown complete.")
 
 if __name__ == "__main__":
     run_worker()

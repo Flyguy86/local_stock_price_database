@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 from sklearn.mixture import GaussianMixture
 
+from feature_service.features.generators import add_technical_indicators, add_time_features
+
 logger = logging.getLogger("feature_service")
 
 

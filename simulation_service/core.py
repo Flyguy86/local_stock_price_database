@@ -9,20 +9,20 @@ import duckdb
 import uuid
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-
-log = logging.getLogger("simulation.core")
+import os
 
 # Settings / Config from environment or defaults
-# Robust path resolution for container vs local dev
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path("/app/data")
 if not DATA_DIR.exists():
     DATA_DIR = BASE_DIR / "data"
 
-MODELS_DIR = DATA_DIR / "models"
-BOTS_DIR = DATA_DIR / "models/bots"
-FEATURES_PATH = DATA_DIR / "features_parquet"
+MODELS_DIR = Path(os.environ.get("MODELS_DIR", str(DATA_DIR / "models")))
+BOTS_DIR = MODELS_DIR / "bots"
+FEATURES_PATH = Path(os.environ.get("FEATURES_PATH", str(DATA_DIR / "features_parquet")))
 METADATA_DB_PATH = DATA_DIR / "duckdb/models.db"
+
+log = logging.getLogger("simulation.core")
 
 def ensure_sim_history_table():
     """Ensures the simulation history table exists in DuckDB."""
@@ -208,90 +208,116 @@ def get_available_models():
     return result
 
 def get_available_tickers():
-    """Lists available tickers based on feature directories."""
+    """Lists available tickers based on feature directories with valid parquet files."""
+    log.info(f"Checking for tickers in: {FEATURES_PATH}")
+    
     if not FEATURES_PATH.exists():
+        log.warning(f"Features path does not exist: {FEATURES_PATH}")
         return []
     
     tickers = []
     for p in FEATURES_PATH.iterdir():
         if p.is_dir():
-            tickers.append(p.name)
+            # Check if directory has parquet files
+            parquet_files = list(p.rglob("*.parquet"))
+            if parquet_files:
+                tickers.append(p.name)
+                log.debug(f"Found ticker {p.name} with {len(parquet_files)} parquet files")
+            else:
+                log.warning(f"Ticker dir {p.name} exists but has NO parquet files - skipping")
+    
+    log.info(f"Available tickers with data: {sorted(tickers)}")
     return sorted(tickers)
 
 def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter: str = None) -> pd.DataFrame:
     """
-    Loads feature data for simulation, replicating logic from training_service/data.py
-    Supports multi-symbol (comma separated), context merging, and resampling.
+    Loads feature data for simulation.
     """
     symbols = [s.strip() for s in symbol_str.split(",")]
     primary_symbol = symbols[0]
     context_symbols = symbols[1:]
     
-    # --- Helper to load one symbol ---
+    log.info(f"Loading simulation data for: {symbol_str}")
+    log.info(f"  Primary: {primary_symbol}, Context: {context_symbols}")
+    log.info(f"  Features path: {FEATURES_PATH}")
+    
     def _load_single(sym):
         path = FEATURES_PATH / sym
+        
+        log.info(f"Attempting to load {sym} from {path}")
+        
         if not path.exists():
-            # In simulation, we might not want to crash if context is missing, but for strictness let's warn and return empty
-            log.warning(f"No features data found for {sym}")
+            log.error(f"Path does not exist: {path}")
+            if FEATURES_PATH.exists():
+                existing = [p.name for p in FEATURES_PATH.iterdir() if p.is_dir()]
+                log.info(f"Available directories: {existing}")
             return pd.DataFrame()
-            
-        print(f"Loading {sym} from {path}...")
         
-        # DuckDB Pattern Matching:
-        # If 'dt=' partitions exist, we should target them.
-        # But wait, **/*.parquet works recursively.
-        # Check if we are running in Container (path valid) vs Local (might need adjusting if not mapped)
+        # Find all parquet files recursively
+        files = sorted([str(p) for p in path.rglob("*.parquet")])
         
-        # NOTE: The query syntax 'path/**/*.parquet' works in DuckDB 
-        # BUT on some systems it needs 'path/*/*.parquet' if depth is strictly 2.
-        # Let's try the recursive glob which is most robust.
+        if not files:
+            log.error(f"No parquet files in {path}")
+            # List what IS in the directory
+            all_files = list(path.rglob("*"))
+            log.info(f"Contents of {path}: {[str(f) for f in all_files[:10]]}")
+            return pd.DataFrame()
         
-        # Ensure path string is absolute and valid for DuckDB
-        abs_path = str(path.resolve())
-        query = f"SELECT * FROM '{abs_path}/**/*.parquet'"
+        log.info(f"Found {len(files)} parquet files for {sym}")
+        log.debug(f"First 3 files: {files[:3]}")
         
-        if options_filter:
-            safe_filter = options_filter.replace("'", "''")
-            query += f" WHERE options = '{safe_filter}'"
-        
-        query += " ORDER BY ts ASC"
         try:
-            return duckdb.query(query).to_df()
+            # Read parquet files
+            df = duckdb.query(f"SELECT * FROM read_parquet({files}) ORDER BY ts").to_df()
+            log.info(f"Loaded {len(df)} rows for {sym}, columns: {list(df.columns)[:10]}")
+            
+            if df.empty:
+                log.error(f"Parquet files loaded but DataFrame is empty for {sym}")
+            
+            return df
+            
         except Exception as e:
-            log.error(f"Error loading {sym}: {e}")
-            return pd.DataFrame()
+            log.error(f"DuckDB loading error for {sym}: {e}", exc_info=True)
+            raise ValueError(f"Failed to load {sym}: {e}")
 
     # 1. Load Primary
     df = _load_single(primary_symbol)
     if df.empty:
-        raise ValueError(f"No data for primary symbol {primary_symbol}")
+        available = get_available_tickers()
+        
+        # Extra diagnostics
+        path = FEATURES_PATH / primary_symbol
+        if path.exists():
+            files = list(path.rglob("*.parquet"))
+            log.error(f"Path {path} exists with {len(files)} parquet files but loaded empty DataFrame")
+        
+        raise ValueError(f"No data for primary symbol {primary_symbol}. Available tickers: {available}")
 
     # 2. Load and Merge Context
     for ctx_sym in context_symbols:
         ctx_df = _load_single(ctx_sym)
         if ctx_df.empty:
+            log.warning(f"Context symbol {ctx_sym} has no data, skipping")
             continue
             
         cols_to_rename = {c: f"{c}_{ctx_sym}" for c in ctx_df.columns if c != "ts"}
         ctx_df = ctx_df.rename(columns=cols_to_rename)
         
         df = pd.merge(df, ctx_df, on="ts", how="inner")
+        log.info(f"Merged {ctx_sym}, now {len(df)} rows")
         
-    # 3. Resample
+    # 3. Resample if needed
     if timeframe and timeframe != "1m":
+        log.info(f"Resampling to {timeframe}")
         df = df.set_index("ts").sort_index()
         agg_dict = {}
         for col in df.columns:
-            # Custom aggregator: If ANY record in this bucket is 'test', the whole bucket is 'test'
             if "split" in col or "data_split" in col:
-                 # Conservative approach for simulation too?
-                 # Actually for simulation we treat all data as 'historical input'
-                 # But we might want to respect the split labels for the chart visualization
-                 def aggressive_test_label(series):
+                def aggressive_test_label(series):
                     vals = set(series.astype(str).unique())
                     if "test" in vals: return "test"
                     return "train"
-                 agg_dict[col] = aggressive_test_label
+                agg_dict[col] = aggressive_test_label
             elif "open" in col.lower(): agg_dict[col] = "first"
             elif "high" in col.lower(): agg_dict[col] = "max"
             elif "low" in col.lower(): agg_dict[col] = "min"
@@ -303,9 +329,9 @@ def load_simulation_data(symbol_str: str, timeframe: str = "1m", options_filter:
                 agg_dict[col] = "last"
                 
         df = df.resample(timeframe).agg(agg_dict)
-        # Drop gaps
-        df = df.dropna(subset=[c for c in df.columns if "close" in c][:1]) # Check primary close
+        df = df.dropna(subset=[c for c in df.columns if "close" in c][:1])
         df = df.reset_index()
+        log.info(f"After resampling: {len(df)} rows")
 
     return df
 
@@ -542,11 +568,26 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
                    volatility_normalization: bool = False,
                    regime_col: str = None,
                    allowed_regimes: list = None,
-                   save_to_history: bool = True):
+                   save_to_history: bool = True,
+                   enable_slippage: bool = True,
+                   slippage_bars: int = 4,
+                   transaction_fee: float = 0.02):
     """
-    Runs a backtest simulation.
+    Runs a backtest simulation with realistic trading costs.
+    
+    Args:
+        enable_slippage: If True, trades execute after slippage_bars delay
+        slippage_bars: Number of bars to wait before execution (default 4)
+        transaction_fee: Flat fee per trade in dollars (default $0.02)
     """
+    log.info("="*60)
+    log.info(f"Starting Simulation: {ticker} | Model: {model_id[:12]}...")
+    log.info("="*60)
+    
     # 1. Prepare Data
+    log.info(f"Initial Capital: ${initial_cash:,.2f}")
+    log.info(f"Prediction Threshold: {min_prediction_threshold:.4f} (signals require >{min_prediction_threshold*100:.2f}% confidence)")
+    
     df_sim, X, base_model, target_transform = _prepare_simulation_inputs(
         model_id, ticker,
         min_prediction_threshold=min_prediction_threshold,
@@ -554,168 +595,175 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
         volatility_normalization=volatility_normalization
     )
     
+    log.info(f"Loaded {len(df_sim)} bars for backtesting")
+    log.info(f"Date Range: {df_sim['ts'].min()} to {df_sim['ts'].max()}")
+    
     # 2. Apply Bot Logic (if enabled)
     if use_bot:
         bot_path = BOTS_DIR / f"{model_id}.joblib"
         if bot_path.exists():
-            log.info("Applying Trading Bot...")
+            log.info("Applying Trading Bot Filter (ML-based signal confirmation)...")
             bot = joblib.load(bot_path)
             
-            # Bot predicts Probability of "Hit" (Class 1)
-            # Input X is same as base model
             try:
                 bot_probs = bot.predict_proba(X)[:, 1]
                 
-                # Logic: Only trade if Bot is > 50% confident that Base Model is Correct
-                # Base Signal: 1 (Buy) or 0 (Sell)
-                # New Signal:
-                # If Base=Buy AND Bot=Correct -> Buy
-                # If Base=Sell AND Bot=Correct -> Sell
-                # If Bot=Incorrect -> Hold (Signal usually 0 means Sell... we need a distinct HOLD signal?)
-                # 
-                # Our simulation loop treats Signal 0 as Sell/Clear Position.
-                # It treats Signal 1 as Buy.
-                # If we want to HOLD, we need to pass a "None" signal?
-                # The current loop:
-                # if signal == 1: Buy
-                # elif signal == 0: Sell
-                # else: Hold (implied if logic doesn't match)
-                
-                # So we can introduce -1 or 2 as Hold?
-                # Actually, if signal is not 1 or 0, it does nothing.
-                
-                # Let's map:
-                # Buy Confirmed -> 1
-                # Sell Confirmed -> 0
-                # Uncertain -> -1 (Hold)
-                
                 new_signals = []
                 orig_signals = df_sim["signal"].values
+                filtered_count = 0
                 for i, prob in enumerate(bot_probs):
                     base_sig = orig_signals[i]
-                    if prob > 0.55: # Threshold > 50%
-                        # Bot agrees model is correct
+                    if prob > 0.55:
                         new_signals.append(base_sig)
                     else:
-                        # Bot thinks model is WRONG.
-                        # If Model said Buy (and is wrong), Price goes Down -> We should Sell? 
-                        # Or just Stay Out?
-                        # Usually "Trading Bot" means "Filter out bad trades". So Stay Out / Hold.
-                        new_signals.append(-1) 
+                        new_signals.append(-1)
+                        if base_sig == 1:
+                            filtered_count += 1
                         
                 df_sim["signal"] = new_signals
+                log.info(f"Trading Bot filtered out {filtered_count} low-confidence signals")
                 
             except Exception as e:
                 log.warning(f"Bot prediction failed, falling back to base model: {e}")
         else:
              log.warning("Bot enabled but no bot model found. Run 'Train Bot' first.")
+    else:
+        log.info("Trading Bot: DISABLED (using raw model predictions)")
 
-    # 3. Regime Filter Logic (New Gated Strategy)
-    # The user can specify a regime column (e.g., 'regime_gmm' or 'regime_vix') and a list of allowed values.
-    # If the current regime is NOT in the allowed list, we force the signal to 'Hold' (-1) or 'Sell' (0)?
-    # Prompt says: "HALT ALL TRADING" -> usually implies exiting positions and waiting (Safety).
-    # Or implies "Do not enter new trades".
-    # Interpretation: 
-    # - If we are in a bad regime, we should probably be in Cash (Sell/Flat). 
-    # - "HALT ALL TRADING" in a violent bear market usually means "Get Out".
-    # - Let's assume Signal 0 (Sell) is safer than Hold if we are currently Long.
-    # - However, if we just suppress Buys, we might hold into a crash.
-    # - Let's set signal to 0 (Sell/Exit) if regime is forbidden.
-    
+    # 3. Regime Filter Logic
     if regime_col and allowed_regimes is not None:
         if regime_col in df_sim.columns:
-            log.info(f"Applying Regime Filter: {regime_col} must be in {allowed_regimes}")
+            log.info(f"Applying Regime Filter: {regime_col} MUST BE in {allowed_regimes}")
             
             def apply_regime_gate(row):
                 current_regime = row[regime_col]
-                # Check if current regime is allowed
                 if current_regime in allowed_regimes:
-                    return row["signal"] # Valid, keep original signal
+                    return row["signal"]
                 else:
-                    return -1 # Halt/Hold/Do Nothing (or 0 to Sell?)
-                    # If "HALT ALL TRADING" means "Stay Flat", we should ensure we aren't holding.
-                    # But forcing a Sell might trigger a trade when we just want to sleep.
-                    # Let's use -1 (Hold) to prevent *entering* new trades.
-                    # BUT, if we are already long and the regime turns "Bear Volatile", we PROBABLY want to sell.
-                    # User said: "Halts all trading" -> protect from knife catch.
-                    # Commonly this means "Don't Buy".
-                    # Let's stick with -1 (Don't Change Position) for now, or 0 (Exit).
-                    # Actually, for "Protection", exiting is best.
-                    
-                    # Implementation detail: The simulation loop interprets:
-                    # Signal 1: Buy
-                    # Signal 0: Sell
-                    # Anything else: Hold
-                    
-                    # If I return -1, I hold. If I return 0, I sell.
-                    # In a "Bear Volatile" regime, holding a Long position is dangerous.
-                    # So I will return 0 (Sell Everything).
                     return 0
 
+            pre_filter_signals = df_sim["signal"].sum()
             df_sim["signal"] = df_sim.apply(apply_regime_gate, axis=1)
+            post_filter_signals = df_sim["signal"].sum()
+            blocked_signals = pre_filter_signals - post_filter_signals
+            
+            log.info(f"Regime Filter blocked {blocked_signals} signals in unfavorable market conditions")
         else:
             log.warning(f"Regime column {regime_col} not found in data. Ignoring filter.")
+    else:
+        log.info("Regime Filter: DISABLED (trading in all market conditions)")
 
-    # Walk forward simulation
+    # 4. Slippage Simulation (Delayed Execution)
+    if enable_slippage and slippage_bars > 0:
+        log.info(f"SLIPPAGE MODEL: {slippage_bars}-bar execution delay with midpoint pricing")
+        log.info(f"  -> Orders fill at mean(open, close) of bar T+{slippage_bars}")
+        log.info(f"  -> Simulates market impact, order routing delays, and partial fills")
+        
+        # Create delayed execution price column
+        # Price = mean of (open + close) at execution bar
+        df_sim["exec_price"] = ((df_sim["open"] + df_sim["close"]) / 2).shift(-slippage_bars)
+        
+        # Shift signals forward to align with execution
+        df_sim["exec_signal"] = df_sim["signal"].copy()
+        df_sim["signal"] = df_sim["signal"].shift(slippage_bars).fillna(0).astype(int)
+        
+        # Use exec_price for trading, fallback to close if NaN (end of data)
+        df_sim["trade_price"] = df_sim["exec_price"].fillna(df_sim["close"])
+    else:
+        log.info("SLIPPAGE MODEL: DISABLED (instant fills at close price - UNREALISTIC)")
+        # No slippage: use close price immediately
+        df_sim["trade_price"] = df_sim["close"]
+
+    # 5. Transaction Cost Model
+    log.info(f"TRANSACTION COSTS: ${transaction_fee:.2f} per trade (entry + exit = ${transaction_fee*2:.2f} round-trip)")
+    log.info(f"  -> Includes: SEC fees, exchange fees, clearing fees, and rounding")
+
+    # Walk forward simulation with costs
+    log.info("-"*60)
+    log.info("Beginning Walk-Forward Backtest...")
+    log.info("-"*60)
+    
     cash = initial_cash
     shares = 0
     portfolio_values = []
     trades = []
     last_buy_price = 0.0
+    total_fees = 0.0
+    
+    # Track wins and losses for expectancy calculation
+    winning_trades = []
+    losing_trades = []
     
     # Benchmark: Buy and Hold
-    # Start with all cash buying shares at first close
     initial_price = df_sim.iloc[0]["close"]
     benchmark_shares = initial_cash / initial_price
     
+    log.info(f"Benchmark Strategy: Buy & Hold {benchmark_shares:.2f} shares at ${initial_price:.2f}")
+    
     for idx, row in df_sim.iterrows():
-        price = row["close"]
+        price = row["trade_price"]  # Use slippage-adjusted price
         ts = row["ts"]
         signal = row["signal"]
         
         action = None
-        # Signal 1 = Buy
-        # Signal 0 = Sell
-        # Signal -1 = Hold (New)
         
         if signal == 1 and shares == 0:
-            # Whole shares only
-            possible_shares = int(cash // price)
+            # BUY: Whole shares only
+            # Account for transaction fee in available cash
+            possible_shares = int((cash - transaction_fee) // price)
             if possible_shares > 0:
                 shares = possible_shares
                 cost = shares * price
-                cash -= cost
+                cash -= (cost + transaction_fee)
+                total_fees += transaction_fee
                 last_buy_price = price
                 action = "BUY"
+                log.debug(f"{ts}: BUY {shares} shares @ ${price:.2f} (fee: ${transaction_fee:.2f}, cash remaining: ${cash:.2f})")
                 trades.append({
                     "ts": ts,
                     "type": "BUY",
                     "price": price,
                     "shares": shares,
                     "value": cost,
+                    "fee": transaction_fee,
                     "pnl": 0.0,
                     "pnl_pct": 0.0
                 })
         elif signal == 0 and shares > 0:
+            # SELL
             proceeds = shares * price
             
-            # Calculate PnL
+            # Calculate PnL (before fees)
             pnl = proceeds - (shares * last_buy_price)
             pnl_pct = (price - last_buy_price) / last_buy_price * 100
             
-            cash += proceeds
+            # Net PnL after both entry and exit fees
+            net_pnl = pnl - (2 * transaction_fee) # Entry + Exit fees
+            
+            # Categorize trade
+            if net_pnl > 0:
+                winning_trades.append(net_pnl)
+            else:
+                losing_trades.append(abs(net_pnl))
+            
+            # Deduct exit fee
+            cash += (proceeds - transaction_fee)
+            total_fees += transaction_fee
+            
+            log.debug(f"{ts}: SELL {shares} shares @ ${price:.2f} | Net P&L: ${net_pnl:+.2f} ({pnl_pct:+.2f}%) | Equity: ${cash:.2f}")
+            
             shares = 0
             action = "SELL"
             trades.append({
                 "ts": ts,
                 "type": "SELL",
                 "price": price,
-                "shares": shares, # 0
-                "value": proceeds, # value of the sale
-                "pnl": pnl,
-                "pnl_pct": pnl_pct
+                "shares": 0,
+                "value": proceeds,
+                "fee": transaction_fee,
+                "pnl": net_pnl,
+                "pnl_pct": (net_pnl / (shares * last_buy_price)) * 100 if shares > 0 else 0
             })
-        # If signal is -1 (Hold), do nothing.
             
         current_val = cash + (shares * price)
         portfolio_values.append(current_val)
@@ -723,24 +771,89 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
     df_sim["strategy_equity"] = portfolio_values
     df_sim["benchmark_equity"] = df_sim["close"] * benchmark_shares
     
+    # Calculate Quant Metrics
+    total_round_trips = len(winning_trades) + len(losing_trades)
+    
+    log.info("-"*60)
+    log.info("Backtest Complete - Calculating Performance Metrics...")
+    log.info("-"*60)
+    
+    # Trade Expectancy
+    if total_round_trips > 0:
+        win_rate = len(winning_trades) / total_round_trips
+        loss_rate = len(losing_trades) / total_round_trips
+        avg_win = np.mean(winning_trades) if winning_trades else 0.0
+        avg_loss = np.mean(losing_trades) if losing_trades else 0.0
+        expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+    else:
+        expectancy = 0.0
+        avg_win = 0.0
+        avg_loss = 0.0
+    
+    # Profit Factor
+    gross_profit = sum(winning_trades) if winning_trades else 0.0
+    gross_loss = sum(losing_trades) if losing_trades else 0.0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+    
+    # System Quality Number (SQN)
+    if total_round_trips > 1:
+        all_pnl = [t["pnl"] for t in trades if t["type"] == "SELL"]
+        if len(all_pnl) > 1:
+            avg_pnl = np.mean(all_pnl)
+            std_pnl = np.std(all_pnl, ddof=1)
+            sqn = (avg_pnl / std_pnl) * np.sqrt(len(all_pnl)) if std_pnl > 0 else 0.0
+        else:
+            sqn = 0.0
+    else:
+        sqn = 0.0
+    
     # Results
-    # Calc Hit Rate (exclude last row which has no next_close)
     valid_hits = df_sim["hit"].iloc[:-1]
     hit_rate_pct = (valid_hits.sum() / len(valid_hits) * 100) if len(valid_hits) > 0 else 0.0
+
+    final_equity = df_sim["strategy_equity"].iloc[-1]
+    strategy_return = (final_equity - initial_cash) / initial_cash * 100
+    benchmark_return = (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100
+    
+    log.info(f"Total Round-Trip Trades: {total_round_trips}")
+    log.info(f"Win Rate: {win_rate*100:.1f}% ({len(winning_trades)} wins, {len(losing_trades)} losses)")
+    log.info(f"Average Win: ${avg_win:.2f} | Average Loss: ${avg_loss:.2f}")
+    log.info(f"Expectancy (Avg P&L per trade): ${expectancy:.2f}")
+    log.info(f"Profit Factor (Gross Profit / Gross Loss): {profit_factor:.2f}")
+    log.info(f"System Quality Number (SQN): {sqn:.2f} {'(Excellent)' if sqn > 3 else '(Good)' if sqn > 2 else '(Fair)' if sqn > 1 else '(Poor)'}")
+    log.info(f"Total Fees Paid: ${total_fees:.2f} ({(total_fees/initial_cash)*100:.2f}% of capital)")
+    log.info(f"Hit Rate (Directional Accuracy): {hit_rate_pct:.1f}%")
+    log.info("-"*60)
+    log.info(f"FINAL RESULTS:")
+    log.info(f"  Strategy Return: {strategy_return:+.2f}% (${final_equity:,.2f})")
+    log.info(f"  Benchmark Return: {benchmark_return:+.2f}% (${df_sim['benchmark_equity'].iloc[-1]:,.2f})")
+    log.info(f"  Alpha (Outperformance): {strategy_return - benchmark_return:+.2f}%")
+    log.info("="*60)
 
     stats = {
         "start_date": df_sim["ts"].min().isoformat(),
         "end_date": df_sim["ts"].max().isoformat(),
-        "final_strategy_value": df_sim["strategy_equity"].iloc[-1],
+        "final_strategy_value": final_equity,
         "final_benchmark_value": df_sim["benchmark_equity"].iloc[-1],
-        "strategy_return_pct": (df_sim["strategy_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
-        "benchmark_return_pct": (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100,
+        "strategy_return_pct": strategy_return,
+        "benchmark_return_pct": benchmark_return,
         "total_trades": len(trades),
+        "total_fees": total_fees,
+        "avg_fee_per_trade": total_fees / len(trades) if len(trades) > 0 else 0,
         "hit_rate_pct": hit_rate_pct,
-        "bot_active": use_bot
+        "bot_active": use_bot,
+        "slippage_enabled": enable_slippage,
+        "slippage_bars": slippage_bars if enable_slippage else 0,
+        # NEW: Quant Metrics
+        "expectancy": expectancy,
+        "sqn": sqn,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "win_rate": (len(winning_trades) / total_round_trips * 100) if total_round_trips > 0 else 0.0,
+        "profit_factor": profit_factor
     }
 
-    # Chart Data (Downsample if needed?)
+    # Chart Data
     chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity", "rolling_hit_rate"]].fillna(0).copy()
     chart_data["ts"] = chart_data["ts"].dt.strftime('%Y-%m-%d %H:%M:%S')
     
@@ -750,7 +863,9 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
         "use_bot": use_bot,
         "min_prediction_threshold": min_prediction_threshold,
         "enable_z_score_check": enable_z_score_check,
-        "volatility_normalization": volatility_normalization
+        "volatility_normalization": volatility_normalization,
+        "slippage_bars": slippage_bars if enable_slippage else 0,
+        "transaction_fee": transaction_fee
     }
     
     if save_to_history:

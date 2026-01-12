@@ -1,14 +1,15 @@
-version: "3.9"
 services:
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     environment:
       ALPACA_KEY_ID: ${ALPACA_KEY_ID:-}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
       ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://data.alpaca.markets}
     volumes:
       - ./data:/app/data
-      - .:/app
+      - .:/app  # Mount source code as volume
     ports:
       - "8000:8000"
 
@@ -48,10 +49,25 @@ services:
     environment:
       LOG_LEVEL: INFO
       MODELS_DIR: /app/data/models
-      FEATURES_PARQUET_DIR: /app/data/features_parquet
+      FEATURES_PATH: /app/data/features_parquet
+      PYTHONPATH: /app
     volumes:
       - ./data:/app/data
       - .:/app
     command: ["uvicorn", "simulation_service.main:app", "--host", "0.0.0.0", "--port", "8300", "--reload"]
     ports:
       - "8300:8300"
+
+  optimization:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimize
+    container_name: optimization_c2
+    command: python optimization_service/main.py
+    ports:
+      - "8002:8002"
+    volumes:
+      - .:/app
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app

@@ -1,0 +1,381 @@
+<!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title> Training Service Dashboard</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        :root {
+          --bg: #0f172a;
+          --bg-card: #1e293b;
+          --text: #e2e8f0;
+          --text-muted: #94a3b8;
+          --border: #334155;
+          --primary: #8b5cf6;
+          --primary-hover: #7c3aed;
+          --danger: #ef4444;
+          --success: #10b981;
+        }
+        body { margin: 0; font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+        * { box-sizing: border-box; }
+        
+        .layout { max-width: 1200px; margin: 0 auto; padding: 2rem; display: grid; gap: 2rem; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+        h1 { margin: 0; font-size: 1.5rem; font-weight: 600; background: linear-gradient(to right, #a78bfa, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+        h2 { margin: 0; font-size: 1.1rem; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+        
+        .row { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+        .group { display: flex; flex-direction: column; gap: 0.25rem; }
+        
+        label { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+        input, select { background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: var(--text); padding: 0.5rem; border-radius: 4px; outline: none;  }
+        input:focus, select:focus { border-color: var(--primary); }
+        
+        button { background: var(--primary); color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: var(--primary-hover); transform: translateY(-1px); }
+        button.secondary { background: var(--border); }
+        button.secondary:hover { background: #475569; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--border); }
+        th { color: var(--text-muted); font-weight: 600; font-size: 0.85rem; }
+        tr:hover { background: rgba(255,255,255,0.02); }
+        
+        .badge { padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: var(--border); }
+        .badge.completed { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+        .badge.failed { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+        .badge.running { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        
+        pre { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; overflow: auto; }
+        
+        dialog {
+            background: var(--bg-card);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-width: 600px;
+            width: 90%;
+        }
+        dialog::backdrop {
+            background: rgba(0,0,0,0.5);
+            backdrop-filter: blur(2px);
+        }
+        
+        /* Tooltip Styles */
+        .help-tip {
+            position: relative;
+            display: inline-block;
+            margin-left: 4px;
+            cursor: help;
+        }
+        .help-tip .tip-content {
+            visibility: hidden;
+            width: 420px;
+            background-color: var(--bg-card);
+            color: var(--text);
+            text-align: left;
+            border-radius: 6px;
+            padding: 12px;
+            position: absolute;
+            z-index: 100;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -210px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            border: 1px solid var(--border);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            font-size: 0.8rem;
+            font-weight: normal;
+            line-height: 1.4;
+            pointer-events: none;
+        }
+        .help-tip:hover .tip-content {
+            visibility: visible;
+            opacity: 1;
+        }
+        .tip-content table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        .tip-content th { background: rgba(255,255,255,0.05); padding: 4px 8px; font-weight: 600; text-align: left; border-bottom: 1px solid var(--border); }
+        .tip-content td { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: top; }
+        .tip-content code { background: rgba(0,0,0,0.3); padding: 2px 4px; border-radius: 3px; font-family: monospace; }
+      </style>
+    </head>
+    <body>
+      <div class="layout">
+        <header>
+            <div style="display:flex; align-items:center; gap:1rem;">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" stroke-width="2"><path d="M12 2v20"/><path d="M2 12h20"/><path d="M2 2l20 20"/><path d="M22 2 2 22"/></svg>
+                <h1>Training Service</h1>
+            </div>
+            <div class="badge">Port: 8200</div>
+        </header>
+
+        <dialog id="report-modal">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:0.5rem">
+                <h2 style="margin:0; border:none; color: var(--primary);" id="report-title">Training Report</h2>
+                <button class="secondary" onclick="closeReport()">Close</button>
+            </div>
+            <div id="report-content" style="max-height: 70vh; overflow-y: auto;"></div>
+        </dialog>
+        
+        <section>
+            <h2>Training Configuration</h2>
+            <div class="row">
+                <div class="group">
+                    <label>Algorithm</label>
+                    <select id="algo"></select>
+                </div>
+                <div class="group">
+                     <label>Data Options</label>
+                     <select id="data_options" style="max-width: 300px;" onchange="updateSymbols()"><option value="">Loading...</option></select>
+                </div>
+                <!-- Moved Prediction Type Here -->
+                <div class="group">
+                     <label style="display:flex; align-items:center;">
+                        Prediction Type
+                        <div class="help-tip">
+                            ℹ️
+                            <div class="tip-content">
+                                <strong style="color:var(--primary); font-size:0.9rem; border-bottom:1px solid var(--border); display:block; padding-bottom:4px; margin-bottom:8px;">Prediction Type Formats</strong>
+                                
+                                <div style="margin-bottom:8px;">
+                                    <strong>1. Target Variable:</strong> Raw column (e.g. Close).<br>
+                                    <strong>2. Prediction Type:</strong> Math formula applied to it.
+                                </div>
+                                
+                                <table>
+                                    <tr>
+                                        <th width="25%">Type</th>
+                                        <th width="30%">Formula</th>
+                                        <th>Why use it?</th>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#a78bfa">Log Return</td>
+                                        <td><code>ln(Fut/Cur)</code></td>
+                                        <td><strong>Best for ML.</strong> Stationary & Stable.</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#34d399">Pct Change</td>
+                                        <td><code>(Fut-Cur)/Cur</code></td>
+                                        <td>Readable ("+1%"). Interpretable.</td>
+                                    </tr>
+                                    <tr>
+                                        <td style="color:#fca5a5">Raw Price</td>
+                                        <td><code>Future</code></td>
+                                        <td><strong>Risky!</strong> Non-Stationary.</td>
+                                    </tr>
+                                </table>
+                            </div>
+                        </div>
+                     </label>
+                     <select id="target_transform">
+                        <option value="log_return" selected>Log Return (Stationary) ✅</option>
+                        <option value="pct_change">Percent Change (Stationary)</option>
+                        <option value="none">Raw Price (Non-Stationary) ⚠️</option>
+                     </select>
+                </div>
+                <div class="group">
+                     <label>Symbol (Target)</label>
+                     <select id="symbol" style="min-width: 120px;"><option value="">Select Config First</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 1</label>
+                     <select id="ctx1" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 2</label>
+                     <select id="ctx2" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
+                </div>
+                <div class="group">
+                     <label>Context 3</label>
+                     <select id="ctx3" class="ctx-select" style="min-width: 100px;"><option value="">(None)</option></select>
+                </div>
+                <div class="group">
+                     <label>Parent Model (Features)</label>
+                     <select id="parent_model" style="max-width:200px" onchange="onParentModelChange()"><option value="">(None)</option></select>
+                </div>
+            </div>
+            
+            <!-- Hyperparameters Config -->
+            <div id="hyperparams-ui" style="display:block; margin-top: 1rem; border-top: 1px dashed var(--border); padding-top: 1rem;">
+                <h3 style="font-size:1rem; margin-bottom: 0.5rem">Hyperparameters (JSON)</h3>
+                <textarea id="hyperparameters" style="width: 100%; height: 60px; font-family: monospace; font-size: 0.85rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border); color: #e2e8f0; padding: 0.5rem; border-radius: 4px;" placeholder='e.g. {"n_estimators": 100, "max_depth": 5, "learning_rate": 0.05, "objective": "reg:squarederror"}'></textarea>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+                    Enter valid JSON to override default algorithm parameters. Leave empty for defaults.
+                </div>
+            </div>
+
+
+
+            
+             <!-- Feature Selection UI (Hidden by default) -->
+            <div id="feature-selection-ui" style="display:none; margin-top: 1.5rem; border-top: 1px solid var(--border); padding-top: 1rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">
+                     <h3 style="font-size:1rem; margin:0">Parent Feature Selection</h3>
+                     <div style="font-size:0.8rem; color:var(--text-muted); display:flex; gap:0.5rem; flex-wrap:wrap;">
+                         <button onclick="toggleFeatures(true)" class="secondary">Select All</button>
+                         <button onclick="toggleFeatures(false)" class="secondary">Select None</button>
+                         <button onclick="addByImp()" class="secondary" title="Add features with Coeff / Importance != 0">Add Imp != 0</button>
+                         <button onclick="addByPerm()" class="secondary" title="Add features with Permutation != 0">Add Perm != 0</button>
+                     </div>
+                </div>
+                
+                <div style="background: rgba(94, 234, 212, 0.05); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(94, 234, 212, 0.2); font-size:0.85rem; color: #99f6e4;">
+                    Batch trains 4 models linked by a Group ID:
+                    <ul style="margin:0.25rem 0 0 1.2rem; padding:0">
+                        <li>Open & Close (Timeframe 1)</li>
+                        <li>High & Low (Timeframe 2)</li>
+                    </ul>
+                </div>
+                
+                <div style="max-height: 400px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px;">
+                    <table style="width:100%; font-size:0.85rem; border-collapse: collapse;">
+                        <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 1;">
+                            <tr>
+                                <th style="width: 30px;"><input type="checkbox" checked onclick="toggleAllFeatures(this)"></th>
+                                <th style="text-align:left;">
+                                    Feature <br>
+                                    <input type="text" id="feat-filter" placeholder="Contains..." style="width: 100%; font-size: 0.75rem; padding: 2px; margin-top: 2px; background: rgba(0,0,0,0.3); border: 1px solid var(--border);" onkeyup="filterFeatures()">
+                                </th>
+                                <th style="text-align:right;">SHAP</th>
+                                <th style="text-align:right;">Permutation</th>
+                                <th style="text-align:right;">Coeff / Imp</th>
+                            </tr>
+                        </thead>
+                        <tbody id="parent-features-body"></tbody>
+                    </table>
+                </div>
+                <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted); text-align: right;">
+                    Selected: <span id="selected-count">0</span> / <span id="total-count">0</span>
+                </div>
+            </div>
+        </section>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+            <!-- Left: Single Model -->
+            <section style="height: 100%; display: flex; flex-direction: column;">
+                <h2 style="color: #a78bfa; border-bottom: 1px solid rgba(167, 139, 250, 0.3); padding-bottom: 0.5rem;">Method A: Train Single Model</h2>
+                <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
+                    <div class="group">
+                         <label style="display:flex; align-items:center;">
+                            Target Variable 
+                            <div class="help-tip">
+                                ℹ️
+                                <div class="tip-content">
+                                    <strong style="color:var(--primary)">Target Variable vs Prediction Type</strong>
+                                    <p style="margin: 0.5rem 0 0.25rem 0"><strong>1. Target Variable:</strong> The raw data column from the database (e.g. Close Price "$200.50").</p>
+                                    <p style="margin: 0 0 0.5rem 0"><strong>2. Prediction Type:</strong> The formula applied to that column to create the training label.</p>
+                                    <div style="font-size:0.75em; color:var(--text-muted); margin-top:0.5rem">See "Prediction Type" tooltip for the math breakdown.</div>
+                                </div>
+                            </div>
+                         </label>
+                         <select id="target">
+                            <option value="close">Close</option>
+                            <option value="open">Open</option>
+                            <option value="high">High</option>
+                            <option value="low">Low</option>
+                            <option value="volume">Volume</option>
+                            <option value="vwap">VWAP</option>
+                         </select>
+                    </div>
+                    <!-- Prediction Type moved to Top Training Config -->
+                    <div class="group">
+                         <label>Timeframe</label>
+                         <select id="timeframe">
+                            <option value="1m">1 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="30m">30 min</option>
+                            <option value="1h">1 hour</option>
+                            <option value="4h">4 hours</option>
+                            <option value="8h">8 hours</option>
+                         </select>
+                    </div>
+                    <div style="margin-top:auto">
+                        <button onclick="train()" style="width:100%">Start Single Job</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right: Group Model -->
+            <section style="height: 100%; display: flex; flex-direction: column;">
+                <h2 style="color: #5eead4; border-bottom: 1px solid rgba(94, 234, 212, 0.3); padding-bottom: 0.5rem;">Method B: Train Group</h2>
+                <div style="display:flex; flex-direction:column; gap:1rem; flex-grow: 1;">
+                    <div style="background: rgba(94, 234, 212, 0.05); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(94, 234, 212, 0.2); font-size:0.85rem; color: #99f6e4;">
+                        Batch trains 4 models linked by a Group ID:
+                        <ul style="margin:0.25rem 0 0 1.2rem; padding:0">
+                            <li>Open & Close (Timeframe 1)</li>
+                            <li>High & Low (Timeframe 2)</li>
+                        </ul>
+                    </div>
+                    <div class="group">
+                        <label style="color:#60a5fa">Open/Close Timeframe</label>
+                        <select id="tf_oc">
+                            <option value="1m" selected>1 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="30m">30 min</option>
+                            <option value="1h">1 hour</option>
+                            <option value="4h">4 hours</option>
+                        </select>
+                    </div>
+                    <div class="group">
+                        <label style="color:#f472b6">High/Low Timeframe</label>
+                        <select id="tf_hl">
+                            <option value="1d" selected>1 day</option>
+                            <option value="4h">4 hours</option>
+                            <option value="1h">1 hour</option>
+                            <option value="30m">30 min</option>
+                            <option value="10m">10 min</option>
+                            <option value="1m">1 min</option>
+                        </select>
+                    </div>
+                    <div style="margin-top:auto">
+                        <button class="secondary" onclick="trainBatch()" style="width:100%; border-color:#5eead4; color: #5eead4;">Train High/Low/Open/Close</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+        
+        <section>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h2>Model Registry</h2>
+                <div style="display:flex; gap:0.5rem">
+                     <button class="secondary" onclick="deleteAllModels()" style="color:#fca5a5; border-color: #ef4444; font-size: 0.8rem; padding: 0.25rem 0.5rem;">🗑 Delete All</button>
+                     <button class="secondary" onclick="loadModels()">Refresh</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Algo</th>
+                        <th>Symbol</th>
+                        <th>TF</th>
+                        <th>Status</th>
+                        <th>Metrics</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="models-body"></tbody>
+            </table>
+        </section>
+
+        <!-- DEBUG LOGS -->
+        <section>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h2>System Logs (Debug)</h2>
+                <button class="secondary" onclick="updateLogs()">Refresh Logs</button>
+            </div>
+            <div id="log-container" style="background:#0f172a; color:#10b981; font-family:'Courier New', monospace; height:200px; overflow-y:scroll; padding:0.75rem; font-size:0.75rem; border:1px solid #334155; border-radius:4px; white-space:pre-wrap;">
+                Loading logs...
+            </div>
+        </section>
+      </div>
+      <script src="/static/js/dashboard.js"></script>
+    </body>
+    </html>
