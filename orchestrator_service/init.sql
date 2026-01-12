@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS evolution_runs (
     max_generations INTEGER NOT NULL DEFAULT 4,
     current_generation INTEGER NOT NULL DEFAULT 0,
     status VARCHAR(16) NOT NULL DEFAULT 'PENDING',  -- PENDING/RUNNING/COMPLETED/STOPPED/FAILED
+    step_status VARCHAR(128),                       -- Current step description (e.g., "Training model", "Waiting for simulations")
     config JSONB NOT NULL,                          -- Full EvolutionConfig
     best_sqn DOUBLE PRECISION,
     best_model_id VARCHAR(64),
@@ -55,6 +56,12 @@ CREATE TABLE IF NOT EXISTS evolution_runs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add step_status column if not exists (for migrations)
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS step_status VARCHAR(128);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_runs_status ON evolution_runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_symbol ON evolution_runs(symbol);

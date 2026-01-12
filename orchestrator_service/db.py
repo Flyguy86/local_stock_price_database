@@ -123,6 +123,7 @@ class Database:
         self,
         run_id: str,
         status: Optional[str] = None,
+        step_status: Optional[str] = None,
         current_generation: Optional[int] = None,
         best_sqn: Optional[float] = None,
         best_model_id: Optional[str] = None,
@@ -136,6 +137,10 @@ class Database:
         if status:
             updates.append(f"status = ${param_idx}")
             params.append(status)
+            param_idx += 1
+        if step_status is not None:
+            updates.append(f"step_status = ${param_idx}")
+            params.append(step_status)
             param_idx += 1
         if current_generation is not None:
             updates.append(f"current_generation = ${param_idx}")

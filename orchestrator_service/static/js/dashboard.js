@@ -239,21 +239,25 @@ async function loadRuns() {
     const tbody = document.getElementById('runs-table');
     
     if (!data.runs || data.runs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="color: var(--text-muted);">No evolution runs yet. Start one above!</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="color: var(--text-muted);">No evolution runs yet. Start one above!</td></tr>';
       return;
     }
     
-    tbody.innerHTML = data.runs.map(run => `
-      <tr class="clickable" onclick="showDetails('${run.id}')">
-        <td><code>${run.id.substring(0, 8)}...</code></td>
-        <td>${run.symbol}</td>
-        <td><span class="badge ${run.status.toLowerCase()}">${run.status}</span></td>
-        <td>${run.current_generation} / ${run.max_generations}</td>
-        <td>${run.best_sqn ? run.best_sqn.toFixed(2) : '-'}</td>
-        <td>${new Date(run.created_at).toLocaleString()}</td>
-        <td><button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button></td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = data.runs.map(run => {
+      const stepStatus = run.step_status || '-';
+      return `
+        <tr class="clickable" onclick="showDetails('${run.id}')">
+          <td><code>${run.id.substring(0, 8)}...</code></td>
+          <td>${run.symbol}</td>
+          <td><span class="badge ${run.status.toLowerCase()}">${run.status}</span></td>
+          <td style="font-size: 0.85rem; color: var(--text-muted);">${stepStatus}</td>
+          <td>${run.current_generation} / ${run.max_generations}</td>
+          <td>${run.best_sqn ? run.best_sqn.toFixed(2) : '-'}</td>
+          <td>${new Date(run.created_at).toLocaleString()}</td>
+          <td><button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button></td>
+        </tr>
+      `;
+    }).join('');
     
     // Update active runs section
     const activeRuns = data.runs.filter(r => r.status === 'RUNNING' || r.status === 'PENDING');
@@ -270,6 +274,7 @@ async function loadRuns() {
 }
 
 function renderActiveRunCard(run) {
+  const stepStatus = run.step_status || '';
   return `
     <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; margin-bottom: 0.5rem;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -287,6 +292,7 @@ function renderActiveRunCard(run) {
         <div class="progress-bar" style="margin-top: 0.25rem;">
           <div class="progress-fill" style="width: ${(run.current_generation / run.max_generations) * 100}%"></div>
         </div>
+        ${stepStatus ? `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--primary); font-style: italic;">📍 ${stepStatus}</div>` : ''}
       </div>
     </div>
   `;

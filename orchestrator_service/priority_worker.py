@@ -98,6 +98,15 @@ class PriorityWorker:
         job_id = job["id"]
         params = job["params"]
         
+        # Parse params if it's a JSON string
+        if isinstance(params, str):
+            import json
+            try:
+                params = json.loads(params)
+            except json.JSONDecodeError:
+                log.error(f"Failed to parse params as JSON: {params[:100]}")
+                params = {}
+        
         log.info(f"Processing job {job_id}")
         log.info(f"  Model: {job.get('model_id')}")
         log.info(f"  Params: threshold={params.get('threshold')}, regime={params.get('regime_config')}")

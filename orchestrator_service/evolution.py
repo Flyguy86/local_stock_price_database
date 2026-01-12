@@ -114,14 +114,16 @@ class EvolutionEngine:
         )
         
         try:
-            await db.update_evolution_run(run_id, status="RUNNING")
+            await db.update_evolution_run(run_id, status="RUNNING", step_status="Initializing")
             
             # Initialize: get seed model's features or use provided
             if config.seed_model_id:
+                await db.update_evolution_run(run_id, step_status="Loading seed model features")
                 state.current_model_id = config.seed_model_id
                 state.current_features = await self._get_model_features(config.seed_model_id)
             elif config.seed_features:
                 state.current_features = config.seed_features
+                await db.update_evolution_run(run_id, step_status=f"Training initial model with {len(state.current_features)} features")
                 # Train initial model with seed features
                 state.current_model_id = await self._train_model(
                     state, 
@@ -133,11 +135,13 @@ class EvolutionEngine:
             
             # Evolution loop
             while state.current_generation < config.max_generations:
+                gen_label = f"Gen {state.current_generation}/{config.max_generations}"
                 log.info(f"=== Generation {state.current_generation} ===")
                 log.info(f"Current model: {state.current_model_id}")
                 log.info(f"Current features count: {len(state.current_features)}")
                 
                 # 1. Get feature importance
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Getting feature importance")
                 try:
                     importance = await self._get_feature_importance(state.current_model_id)
                     log.info(f"Step 1: Got importance for {len(importance)} features")
@@ -173,6 +177,7 @@ class EvolutionEngine:
                 
                 log.info(f"Step 2: Pruned {len(pruned)} zero-importance features: {pruned}")
                 log.info(f"Step 2: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Pruned {len(pruned)}, keeping {len(remaining)} features")
                 
                 # 3. Compute fingerprint
                 try:
@@ -190,6 +195,7 @@ class EvolutionEngine:
                     break
                 
                 # 4. Check for existing model
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Checking fingerprint cache")
                 try:
                     existing_model_id = await db.get_model_by_fingerprint(fingerprint)
                     if existing_model_id:
@@ -202,8 +208,10 @@ class EvolutionEngine:
                 
                 if existing_model_id:
                     child_model_id = existing_model_id
+                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Reusing cached model")
                 else:
                     # Step 5: Train new model
+                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Training model ({len(remaining)} features)")
                     try:
                         log.info(f"Step 5: Training new model with {len(remaining)} features...")
                         child_model_id = await self._train_model(
@@ -249,6 +257,7 @@ class EvolutionEngine:
                     log.warning(f"Step 6: Failed to record lineage (non-fatal): {e}")
                 
                 # Step 7: Queue simulations
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Queueing simulations")
                 try:
                     log.info(f"Step 7: Queueing simulations for model {child_model_id}")
                     await self._queue_simulations(state, child_model_id)
@@ -259,6 +268,7 @@ class EvolutionEngine:
                     break
                 
                 # Step 8: Wait for simulations and evaluate
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Waiting for simulation results...")
                 try:
                     log.info("Step 8: Waiting for simulation results...")
                     best_result = await self._wait_and_evaluate(state, child_model_id)
@@ -269,6 +279,7 @@ class EvolutionEngine:
                 
                 if best_result:
                     state.parent_sqn = best_result.get("sqn", 0)
+                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Evaluating results (SQN={state.parent_sqn:.2f})")
                     
                     # Check Holy Grail criteria
                     criteria = HolyGrailCriteria(
