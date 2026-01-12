@@ -262,6 +262,55 @@ When adding new indicators or columns to `feature_service/pipeline.py`, keep the
     *   **Fix**: Always initialize the dependent columns (e.g., `qqq_return`, `regime_sma_dist`) with default values (0.0) in the `else` block of your merge logic.
     *   **Reason**: If these columns are missing from the DataFrame, DuckDB insertion will fail with `Binder Error: Referenced update column ... not found`.
 
+## Orchestrator Service - Recursive Strategy Factory
+
+The Orchestrator Service automates the **Train → Prune → Simulate → Evolve** loop to discover optimal trading models without manual intervention.
+
+### Quick Start
+```bash
+# Start orchestrator + dependencies
+docker-compose up -d postgres orchestrator priority_worker
+
+# Access dashboard
+open http://localhost:8400
+```
+
+### Key Features
+- **Automated Evolution**: Train model → Prune features (importance ≤ 0) → Simulate strategies → Repeat
+- **Model Fingerprinting**: SHA-256 deduplication prevents retraining identical configurations
+- **Priority Queue**: Higher parent SQN → higher child simulation priority
+- **Holy Grail Criteria**: Configurable thresholds (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
+- **Lineage Tracking**: Full ancestry DAG for every promoted model
+- **Distributed Workers**: Scale simulation execution across multiple nodes
+
+### Architecture
+- **Port**: 8400
+- **Database**: PostgreSQL (shared state, priority queue, lineage)
+- **Workers**: Pull from priority queue, run simulations, report results
+- **Integration**: HTTP calls to Training (8200), Simulation (8300), Feature (8100) services
+
+### API Endpoints
+- `POST /evolve` - Start new evolution run
+- `GET /runs` - List evolution runs
+- `GET /promoted` - List models meeting Holy Grail criteria
+- `POST /jobs/claim` - Worker job claiming (internal)
+
+### Evolution Loop
+1. **Train** model on engineered features
+2. **Prune** features with importance ≤ 0
+3. **Check** fingerprint - reuse existing model if configuration seen before
+4. **Queue** simulations with priority = parent_sqn
+5. **Evaluate** results against Holy Grail criteria
+6. **Promote** if criteria met, else **Recurse** with pruned features
+
+### Stopping Conditions
+- ✅ Model promoted (meets Holy Grail criteria)
+- ✅ Max generations reached
+- ✅ No features left to prune
+- ✅ All features would be pruned
+
+See [orchestrator_service/README.md](orchestrator_service/README.md) for detailed documentation.
+
 ## Optimization Service (Grid Search)
 
 The optimization service allows running automated grid searches across models, tickers, and parameters to find the best performing configurations. It uses a "Commander-Worker" architecture.
