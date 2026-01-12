@@ -637,22 +637,25 @@ async def get_options():
 
 
 def _get_options_from_parquet():
-    """Fallback: scan parquet files for options column."""
+    """Fallback: scan parquet files for options column - OPTIMIZED to sample only."""
     try:
         # Check if parquet directory exists
         if not cfg.dest_parquet.exists():
             logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet)})
             return []
         
-        # Get first symbol directory
+        # Get symbol directories
         symbol_dirs = [d for d in cfg.dest_parquet.iterdir() if d.is_dir()]
         if not symbol_dirs:
             logger.warning("No symbol directories in parquet")
             return []
         
-        # Try to read a sample parquet file from first symbol
-        first_symbol = symbol_dirs[0]
-        sample_files = list(first_symbol.rglob("*.parquet"))
+        # Collect one sample file per symbol (much faster than scanning all files)
+        sample_files = []
+        for symbol_dir in symbol_dirs[:10]:  # Limit to first 10 symbols for speed
+            files = list(symbol_dir.rglob("*.parquet"))
+            if files:
+                sample_files.append(str(files[0]))  # Take first file from each symbol
         
         if not sample_files:
             logger.warning("No parquet files found")
@@ -668,20 +671,20 @@ def _get_options_from_parquet():
             logger.info("Parquet files have no 'options' column - legacy data")
             return ["Legacy / No Config"]
         
-        # Query all parquet files for distinct options using DuckDB
+        # Query only sample files (one per symbol) for distinct options
         conn = duckdb.connect(":memory:")
+        file_list = "', '".join(sample_files)
         
-        # First, get ALL distinct values (including NULL/empty)
         query_all = f"""
         SELECT DISTINCT options, COUNT(*) as cnt
-        FROM read_parquet('{cfg.dest_parquet}/**/*.parquet', union_by_name=true) 
+        FROM read_parquet(['{file_list}'], union_by_name=true) 
         GROUP BY options
         ORDER BY options
         """
-        logger.info(f"Querying parquet for options: {query_all}")
+        logger.info(f"Querying {len(sample_files)} sample parquet files for options")
         
         rows = conn.execute(query_all).fetchall()
-        logger.info(f"Found {len(rows)} distinct option values: {rows}")
+        logger.info(f"Found {len(rows)} distinct option values from samples")
         
         conn.close()
         
