@@ -640,12 +640,12 @@ def _get_options_from_parquet():
     """Fallback: scan parquet files for options column."""
     try:
         # Check if parquet directory exists
-        if not cfg.dest_parquet_dir.exists():
-            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet_dir)})
+        if not cfg.dest_parquet.exists():
+            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet)})
             return []
         
         # Get first symbol directory
-        symbol_dirs = [d for d in cfg.dest_parquet_dir.iterdir() if d.is_dir()]
+        symbol_dirs = [d for d in cfg.dest_parquet.iterdir() if d.is_dir()]
         if not symbol_dirs:
             logger.warning("No symbol directories in parquet")
             return []
@@ -668,18 +668,50 @@ def _get_options_from_parquet():
             logger.info("Parquet files have no 'options' column - legacy data")
             return ["Legacy / No Config"]
         
-        # Query all parquet files for distinct options
+        # Query all parquet files for distinct options using DuckDB
         conn = duckdb.connect(":memory:")
-        query = f"SELECT DISTINCT options FROM read_parquet('{cfg.dest_parquet_dir}/**/*.parquet') WHERE options IS NOT NULL AND options != ''"
-        rows = conn.execute(query).fetchall()
+        
+        # First, get ALL distinct values (including NULL/empty)
+        query_all = f"""
+        SELECT DISTINCT options, COUNT(*) as cnt
+        FROM read_parquet('{cfg.dest_parquet}/**/*.parquet', union_by_name=true) 
+        GROUP BY options
+        ORDER BY options
+        """
+        logger.info(f"Querying parquet for options: {query_all}")
+        
+        rows = conn.execute(query_all).fetchall()
+        logger.info(f"Found {len(rows)} distinct option values: {rows}")
+        
         conn.close()
         
-        options_list = [row[0] for row in rows if row[0]]
+        # Build options list
+        options_list = []
+        has_null_or_empty = False
+        
+        for row in rows:
+            opt_value = row[0]
+            count = row[1]
+            
+            # Check for NULL or empty
+            if opt_value is None or opt_value == '' or opt_value == '{}':
+                has_null_or_empty = True
+                logger.info(f"Found NULL/empty options: count={count}")
+            else:
+                options_list.append(opt_value)
+                logger.info(f"Found option: '{opt_value}' (count={count})")
+        
+        # Add legacy marker if needed
+        if has_null_or_empty:
+            options_list.insert(0, "Legacy / No Config")
         
         if len(options_list) == 0:
+            logger.warning("No valid options found, returning Legacy marker")
             return ["Legacy / No Config"]
         
+        logger.info(f"Returning {len(options_list)} options: {options_list}")
         return options_list
+        
     except Exception as e:
         logger.exception("Failed to read options from parquet")
         # Assume legacy data if we can't determine
@@ -745,12 +777,12 @@ async def symbols(options: Optional[str] = None):
 def _get_symbols_from_parquet():
     """Get symbols from parquet directory structure."""
     try:
-        if not cfg.dest_parquet_dir.exists():
-            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet_dir)})
+        if not cfg.dest_parquet.exists():
+            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet)})
             return []
         
         # List symbol directories
-        symbol_dirs = sorted([d.name for d in cfg.dest_parquet_dir.iterdir() if d.is_dir()])
+        symbol_dirs = sorted([d.name for d in cfg.dest_parquet.iterdir() if d.is_dir()])
         logger.info(f"Found {len(symbol_dirs)} symbols in parquet: {symbol_dirs}")
         return symbol_dirs
     except Exception as e:
