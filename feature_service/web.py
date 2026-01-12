@@ -583,10 +583,14 @@ async def get_options():
     conn = None
     tmpdir = None
     try:
+        logger.info(f"GET /options called. dest_db={cfg.dest_db}, dest_parquet={cfg.dest_parquet}")
+        
         if not cfg.dest_db.exists():
-            logger.warning("dest db not found", extra={"path": str(cfg.dest_db)})
+            logger.warning("dest db not found, trying parquet", extra={"path": str(cfg.dest_db)})
             # Check parquet as fallback
-            return _get_options_from_parquet()
+            result = _get_options_from_parquet()
+            logger.info(f"Parquet fallback returned: {result}")
+            return result
 
         tmpdir = tempfile.TemporaryDirectory()
         tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
@@ -637,72 +641,61 @@ async def get_options():
 
 
 def _get_options_from_parquet():
-    """Fallback: scan parquet files for options column - OPTIMIZED to sample only."""
+    """Fallback: read options from a single parquet file - ULTRA FAST."""
     try:
+        logger.info(f"_get_options_from_parquet called, checking {cfg.dest_parquet}")
+        
         # Check if parquet directory exists
         if not cfg.dest_parquet.exists():
             logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet)})
             return []
         
-        # Get symbol directories
+        # Get first symbol directory
         symbol_dirs = [d for d in cfg.dest_parquet.iterdir() if d.is_dir()]
         if not symbol_dirs:
             logger.warning("No symbol directories in parquet")
             return []
         
-        # Collect one sample file per symbol (much faster than scanning all files)
-        sample_files = []
-        for symbol_dir in symbol_dirs[:10]:  # Limit to first 10 symbols for speed
-            files = list(symbol_dir.rglob("*.parquet"))
-            if files:
-                sample_files.append(str(files[0]))  # Take first file from each symbol
+        logger.info(f"Found {len(symbol_dirs)} symbol directories")
         
-        if not sample_files:
-            logger.warning("No parquet files found")
-            return []
+        # Find first parquet file in first symbol directory
+        first_symbol = symbol_dirs[0]
+        date_dirs = [d for d in first_symbol.iterdir() if d.is_dir()]
+        if not date_dirs:
+            logger.warning("No date directories in first symbol")
+            return ["Legacy / No Config"]
         
-        # Read one file to check schema
+        parquet_files = list(date_dirs[0].glob("*.parquet"))
+        if not parquet_files:
+            logger.warning("No parquet files in first date directory")
+            return ["Legacy / No Config"]
+        
+        sample_file = str(parquet_files[0])
+        logger.info(f"Reading sample file: {sample_file}")
+        
+        # Read just ONE file with pyarrow (fast)
         import pyarrow.parquet as pq
-        table = pq.read_table(sample_files[0])
+        table = pq.read_table(sample_file)
         columns = table.column_names
         
         if 'options' not in columns:
-            # Legacy data without options column
             logger.info("Parquet files have no 'options' column - legacy data")
             return ["Legacy / No Config"]
         
-        # Query only sample files (one per symbol) for distinct options
-        conn = duckdb.connect(":memory:")
-        file_list = "', '".join(sample_files)
-        
-        query_all = f"""
-        SELECT DISTINCT options, COUNT(*) as cnt
-        FROM read_parquet(['{file_list}'], union_by_name=true) 
-        GROUP BY options
-        ORDER BY options
-        """
-        logger.info(f"Querying {len(sample_files)} sample parquet files for options")
-        
-        rows = conn.execute(query_all).fetchall()
-        logger.info(f"Found {len(rows)} distinct option values from samples")
-        
-        conn.close()
+        # Get unique options from this single file
+        options_column = table.column('options').to_pylist()
+        unique_options = list(set(options_column))
+        logger.info(f"Found options in sample: {unique_options}")
         
         # Build options list
         options_list = []
         has_null_or_empty = False
         
-        for row in rows:
-            opt_value = row[0]
-            count = row[1]
-            
-            # Check for NULL or empty
+        for opt_value in unique_options:
             if opt_value is None or opt_value == '' or opt_value == '{}':
                 has_null_or_empty = True
-                logger.info(f"Found NULL/empty options: count={count}")
             else:
                 options_list.append(opt_value)
-                logger.info(f"Found option: '{opt_value}' (count={count})")
         
         # Add legacy marker if needed
         if has_null_or_empty:
@@ -717,7 +710,6 @@ def _get_options_from_parquet():
         
     except Exception as e:
         logger.exception("Failed to read options from parquet")
-        # Assume legacy data if we can't determine
         return ["Legacy / No Config"]
 
 

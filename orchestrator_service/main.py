@@ -133,35 +133,83 @@ async def api_stats():
     }
 
 
+# ============================================
+# Direct Data Access (reads mounted /app/data)
+# ============================================
+FEATURES_PARQUET_DIR = Path("/app/data/features_parquet")
+
+
+def _get_options_from_parquet() -> list:
+    """Read options directly from mounted parquet files."""
+    try:
+        if not FEATURES_PARQUET_DIR.exists():
+            log.warning(f"Features parquet dir not found: {FEATURES_PARQUET_DIR}")
+            return []
+        
+        # Get first symbol directory
+        symbol_dirs = [d for d in FEATURES_PARQUET_DIR.iterdir() if d.is_dir()]
+        if not symbol_dirs:
+            log.warning("No symbol directories in parquet")
+            return []
+        
+        # Find first parquet file
+        first_symbol = symbol_dirs[0]
+        date_dirs = [d for d in first_symbol.iterdir() if d.is_dir()]
+        if not date_dirs:
+            return ["Legacy / No Config"]
+        
+        parquet_files = list(date_dirs[0].glob("*.parquet"))
+        if not parquet_files:
+            return ["Legacy / No Config"]
+        
+        # Read with pyarrow
+        import pyarrow.parquet as pq
+        table = pq.read_table(str(parquet_files[0]))
+        
+        if 'options' not in table.column_names:
+            return ["Legacy / No Config"]
+        
+        # Get unique options
+        options_column = table.column('options').to_pylist()
+        unique_options = list(set(opt for opt in options_column if opt and opt != '{}'))
+        
+        if not unique_options:
+            return ["Legacy / No Config"]
+        
+        log.info(f"Found options from parquet: {unique_options}")
+        return unique_options
+        
+    except Exception as e:
+        log.exception(f"Failed to read options from parquet: {e}")
+        return ["Legacy / No Config"]
+
+
+def _get_symbols_from_parquet() -> list:
+    """List symbols directly from mounted parquet directory."""
+    try:
+        if not FEATURES_PARQUET_DIR.exists():
+            return []
+        
+        symbols = sorted([d.name for d in FEATURES_PARQUET_DIR.iterdir() if d.is_dir()])
+        log.info(f"Found symbols from parquet: {symbols}")
+        return symbols
+        
+    except Exception as e:
+        log.exception(f"Failed to list symbols from parquet: {e}")
+        return []
+
+
 @app.get("/api/features/options")
 async def get_feature_options():
-    """Proxy to feature service to list available data folds/options configurations."""
-    import httpx
-    feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{feature_url}/options")
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        log.error(f"Failed to fetch options from feature service: {e}")
-        return []  # Return empty array to match expected format
+    """List available data folds/options from mounted parquet files."""
+    return _get_options_from_parquet()
 
 
 @app.get("/api/features/symbols")
 async def get_feature_symbols(options: Optional[str] = None):
-    """Proxy to feature service to list available symbols, optionally filtered by options."""
-    import httpx
-    feature_url = os.getenv("FEATURE_URL", "http://feature_service:8100")
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            params = {"options": options} if options else {}
-            response = await client.get(f"{feature_url}/symbols", params=params)
-            response.raise_for_status()
-            return response.json()
-    except Exception as e:
-        log.error(f"Failed to fetch symbols from feature service: {e}")
-        return {"error": str(e), "symbols": []}
+    """List available symbols from mounted parquet directory."""
+    symbols = _get_symbols_from_parquet()
+    return {"symbols": symbols}
 
 
 @app.get("/api/features/columns")
