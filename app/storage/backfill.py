@@ -2,6 +2,8 @@ from __future__ import annotations
 import logging
 import pandas as pd
 import duckdb
+import tempfile
+import shutil
 from datetime import time
 from pathlib import Path
 
@@ -43,6 +45,7 @@ class BackfillManager:
         Returns:
             DataFrame with columns: symbol, expected_ts, prev_ts, next_ts
         """
+        # Open a new read-only connection (safe since we're only reading)
         conn = duckdb.connect(str(self.db_path), read_only=True)
         
         try:
