@@ -1,0 +1,5 @@
+FROM stock_base:latest
+
+EXPOSE 8400
+
+CMD ["uvicorn", "orchestrator_service.main:app", "--host", "0.0.0.0", "--port", "8400"]

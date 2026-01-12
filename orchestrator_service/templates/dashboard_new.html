@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="icon" href="data:,">
+  <title>Orchestrator - Recursive Strategy Factory</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+  <div class="layout">
+    <header>
+      <div style="display:flex; align-items:center; gap:1rem;">
+        <h1>🏭 Recursive Strategy Factory</h1>
+        <span style="color: var(--text-muted); font-size: 0.9rem;">Train → Prune → Simulate → Evolve</span>
+      </div>
+      <div class="badge">Port: 8400</div>
+    </header>
+
+    <!-- Stats Overview -->
+    <section>
+      <h2>📊 System Status</h2>
+      <div class="row" style="justify-content: space-around;">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-runs">-</div>
+          <div class="stat-label">Evolution Runs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-pending">-</div>
+          <div class="stat-label">Pending Jobs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-promoted">-</div>
+          <div class="stat-label">🏆 Promoted Models</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-workers">-</div>
+          <div class="stat-label">Active Workers</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid-2">
+      <!-- Start Evolution -->
+      <section>
+        <h2>🚀 Start Evolution Run</h2>
+        
+        <!-- Step 1: Select Symbols -->
+        <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
+          <h3 style="margin-bottom: 0.5rem;">Step 1: Select Symbols from Feature Service</h3>
+          <button type="button" onclick="loadAvailableSymbols()" class="secondary" style="width: 100%; margin-bottom: 0.5rem;">
+            🔄 Load Available Symbols
+          </button>
+          <div id="symbol-selection">
+            <p style="color: var(--text-muted); font-size: 0.85rem;">Click Load to fetch symbols from feature service</p>
+          </div>
+        </div>
+        
+        <form id="evolve-form">
+          <div class="row">
+            <div class="group">
+              <label>Seed Model ID (optional)</label>
+              <input type="text" id="seed-model-id" placeholder="abc-123-def...">
+            </div>
+            <div class="group">
+              <label>Target Symbol *</label>
+              <select id="symbol" required>
+                <option value="">Select target symbol...</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="group full">
+              <label>Reference Symbols (optional - for multi-ticker TS-aligned training)</label>
+              <div id="reference-symbols-container" style="display: flex; flex-wrap: wrap; gap: 0.25rem; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; min-height: 40px;">
+                <span style="color: var(--text-muted); font-size: 0.85rem;">Select target symbol first, then choose references below</span>
+              </div>
+              <div id="reference-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
+              </div>
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="group">
+              <label>Algorithm</label>
+              <select id="algorithm">
+                <option value="RandomForest">Random Forest</option>
+                <option value="XGBoost">XGBoost</option>
+                <option value="LightGBM">LightGBM</option>
+                <option value="ElasticNet">ElasticNet</option>
+              </select>
+            </div>
+            <div class="group">
+              <label>Target Column</label>
+              <select id="target-col">
+                <option value="close">close</option>
+                <option value="open">open</option>
+                <option value="high">high</option>
+                <option value="low">low</option>
+              </select>
+            </div>
+            <div class="group">
+              <label>Max Generations</label>
+              <input type="number" id="max-generations" value="4" min="1" max="10">
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="group">
+              <label>Target Transform</label>
+              <select id="target-transform">
+                <option value="log_return">log_return</option>
+                <option value="pct_change">pct_change</option>
+                <option value="none">none</option>
+              </select>
+            </div>
+            <div class="group">
+              <label>Timeframe</label>
+              <select id="timeframe">
+                <option value="1m">1 minute</option>
+                <option value="5m">5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="1h">1 hour</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="row">
+            <div class="group full">
+              <label>Thresholds (comma-separated)</label>
+              <input type="text" id="thresholds" value="0.0001, 0.0003, 0.0005, 0.0007">
+            </div>
+          </div>
+          
+          <details style="margin-top: 0.5rem;">
+            <summary>Holy Grail Criteria (Advanced)</summary>
+            <div class="row" style="margin-top: 0.5rem;">
+              <div class="group">
+                <label>SQN Min</label>
+                <input type="number" id="sqn-min" value="3.0" step="0.1">
+              </div>
+              <div class="group">
+                <label>SQN Max</label>
+                <input type="number" id="sqn-max" value="5.0" step="0.1">
+              </div>
+              <div class="group">
+                <label>PF Min</label>
+                <input type="number" id="pf-min" value="2.0" step="0.1">
+              </div>
+              <div class="group">
+                <label>PF Max</label>
+                <input type="number" id="pf-max" value="4.0" step="0.1">
+              </div>
+            </div>
+            <div class="row">
+              <div class="group">
+                <label>Min Trades</label>
+                <input type="number" id="trades-min" value="200">
+              </div>
+              <div class="group">
+                <label>Max Trades</label>
+                <input type="number" id="trades-max" value="10000">
+              </div>
+            </div>
+          </details>
+          
+          <button type="submit" style="margin-top: 1rem; width: 100%;">
+            🧬 Start Evolution
+          </button>
+        </form>
+        <div id="evolve-result" style="display: none;"></div>
+      </section>
+
+      <!-- Active Runs -->
+      <section>
+        <h2>🔄 Active Runs</h2>
+        <div id="active-runs">
+          <p style="color: var(--text-muted);">Loading...</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- Promoted Models (Holy Grail) -->
+    <section class="holy-grail">
+      <h2>🏆 Promoted Models (Holy Grail)</h2>
+      <p style="color: var(--text-muted); font-size: 0.85rem;">
+        Models that achieved: SQN 3-5 | Profit Factor 2-4 | 200-10k trades | Consistent weekly volume
+      </p>
+      <div id="promoted-models">
+        <p style="color: var(--text-muted);">Loading...</p>
+      </div>
+    </section>
+
+    <!-- All Runs History -->
+    <section>
+      <h2>📜 Evolution History</h2>
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
+        <button class="secondary" onclick="loadRuns()">🔄 Refresh</button>
+        <select id="filter-status" onchange="loadRuns()">
+          <option value="">All Statuses</option>
+          <option value="RUNNING">Running</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="PROMOTED">Promoted</option>
+          <option value="FAILED">Failed</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Run ID</th>
+            <th>Symbol</th>
+            <th>Status</th>
+            <th>Generation</th>
+            <th>Best SQN</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="runs-table">
+          <tr><td colspan="7" style="color: var(--text-muted);">Loading...</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Run Details Modal -->
+    <section id="run-details" style="display: none;">
+      <h2>📈 Run Details: <span id="detail-run-id"></span></h2>
+      <div class="row">
+        <div class="stat-card">
+          <div class="stat-value" id="detail-generation">-</div>
+          <div class="stat-label">Current Generation</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="detail-sqn">-</div>
+          <div class="stat-label">Best SQN</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="detail-jobs">-</div>
+          <div class="stat-label">Completed Jobs</div>
+        </div>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">📊 Per-Generation Results (Epochs)</h3>
+      <div id="generation-breakdown">
+        <p style="color: var(--text-muted);">Loading...</p>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">🧬 Lineage (Evolution Path)</h3>
+      <div id="lineage-tree">
+        <p style="color: var(--text-muted);">Loading...</p>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">🏅 Top Results</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>SQN</th>
+            <th>Profit Factor</th>
+            <th>Trades</th>
+            <th>Threshold</th>
+            <th>Regime</th>
+          </tr>
+        </thead>
+        <tbody id="results-table">
+        </tbody>
+      </table>
+      
+      <button class="secondary" onclick="hideDetails()" style="margin-top: 1rem;">Close</button>
+    </section>
+
+    <!-- Promoted Model Detail Modal -->
+    <section id="promoted-detail" style="display: none;">
+      <h2>🏆 Model Details: <span id="promoted-model-id"></span></h2>
+      
+      <div class="row">
+        <div class="stat-card">
+          <div class="stat-value" id="promoted-sqn">-</div>
+          <div class="stat-label">SQN</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="promoted-pf">-</div>
+          <div class="stat-label">Profit Factor</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="promoted-trades">-</div>
+          <div class="stat-label">Trades</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="promoted-gen">-</div>
+          <div class="stat-label">Generation</div>
+        </div>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">📋 Model Configuration</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+        <div>
+          <label>Symbol</label>
+          <pre id="promoted-symbol" style="margin-top: 0.25rem; padding: 0.5rem;">-</pre>
+        </div>
+        <div>
+          <label>Threshold</label>
+          <pre id="promoted-threshold" style="margin-top: 0.25rem; padding: 0.5rem;">-</pre>
+        </div>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">⚙️ Hyperparameters</h3>
+      <pre id="promoted-hyperparams" style="max-height: 200px;">-</pre>
+      
+      <h3 style="margin-top: 1rem;">📊 Features Used (<span id="promoted-feature-count">0</span>)</h3>
+      <pre id="promoted-features" style="max-height: 200px;">-</pre>
+      
+      <h3 style="margin-top: 1rem;">🧬 Lineage (How This Model Evolved)</h3>
+      <div id="promoted-lineage">
+        <p style="color: var(--text-muted);">Loading...</p>
+      </div>
+      
+      <h3 style="margin-top: 1rem;">📈 Regime Configuration</h3>
+      <pre id="promoted-regime" style="max-height: 150px;">-</pre>
+      
+      <h3 style="margin-top: 1rem;">📄 Full Simulation Result</h3>
+      <pre id="promoted-full-result" style="max-height: 300px;">-</pre>
+      
+      <button class="secondary" onclick="hidePromotedDetail()" style="margin-top: 1rem;">Close</button>
+    </section>
+  </div>
+
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

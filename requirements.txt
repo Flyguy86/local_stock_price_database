@@ -18,6 +18,7 @@ pyarrow>=12.0.0
 
 # Database
 duckdb>=0.9.0
+asyncpg>=0.29.0  # PostgreSQL async driver for orchestrator
 
 # Machine Learning (latest for Python 3.10)
 scikit-learn==1.7.2

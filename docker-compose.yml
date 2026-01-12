@@ -1,4 +1,58 @@
 services:
+  # ============================================
+  # PostgreSQL - Shared state for orchestrator
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: orchestrator_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD: orchestrator_secret
+      POSTGRES_DB: strategy_factory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./orchestrator_service/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator -d strategy_factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Orchestrator - Recursive Strategy Factory
+  # ============================================
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: orchestrator
+    ports:
+      - "8400:8400"
+    volumes:
+      - ./data:/app/data
+      - ./orchestrator_service:/app/orchestrator_service
+    environment:
+      TRAINING_URL: http://training_service:8200
+      SIMULATION_URL: http://simulation_service:8300
+      FEATURE_URL: http://feature_builder:8100
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+      DEFAULT_MAX_GENERATIONS: "4"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      training_service:
+        condition: service_started
+      simulation_service:
+        condition: service_started
+      feature_builder:
+        condition: service_started
+
+  # ============================================
+  # API - Ingestion Service
+  # ============================================
   api:
     build:
       context: .
@@ -71,3 +125,30 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: /app
+
+  # ============================================
+  # Priority Worker - Pulls from PostgreSQL queue
+  # ============================================
+  priority_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimize
+    container_name: priority_worker_1
+    command: python -m orchestrator_service.priority_worker
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    environment:
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+      SIMULATION_URL: http://simulation_service:8300
+      WORKER_ID: priority_worker_1
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      simulation_service:
+        condition: service_started
+
+volumes:
+  postgres_data:

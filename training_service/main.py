@@ -289,3 +289,220 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     )
     
     return {"id": training_id, "status": "started"}
+
+
+# ============================================
+# NEW ENDPOINTS FOR ORCHESTRATOR INTEGRATION
+# ============================================
+
+@app.get("/api/model/{model_id}/importance")
+def get_model_importance(model_id: str):
+    """
+    Get feature importance scores for a trained model.
+    Used by orchestrator to determine which features to prune.
+    
+    Returns:
+        {
+            "model_id": "abc-123",
+            "importance": {"feature_name": importance_value, ...},
+            "importance_type": "tree_importance" | "permutation_mean" | "coefficient"
+        }
+    """
+    import json
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metrics, feature_cols FROM models WHERE id = ?", 
+            [model_id]
+        ).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        metrics_json, feature_cols_json = row
+        
+        # Parse metrics
+        if metrics_json:
+            try:
+                metrics = json.loads(metrics_json) if isinstance(metrics_json, str) else metrics_json
+            except:
+                metrics = {}
+        else:
+            metrics = {}
+        
+        # Extract importance from metrics
+        importance = {}
+        importance_type = None
+        
+        # Try feature_importance (legacy/simple format)
+        if "feature_importance" in metrics:
+            importance = metrics["feature_importance"]
+            importance_type = "feature_importance"
+        
+        # Try feature_details for more detailed importance
+        if "feature_details" in metrics:
+            feature_details = metrics["feature_details"]
+            for feat_name, details in feature_details.items():
+                # Prefer permutation_mean, then tree_importance, then coefficient
+                if "permutation_mean" in details:
+                    importance[feat_name] = details["permutation_mean"]
+                    importance_type = importance_type or "permutation_mean"
+                elif "tree_importance" in details:
+                    importance[feat_name] = details["tree_importance"]
+                    importance_type = importance_type or "tree_importance"
+                elif "coefficient" in details:
+                    importance[feat_name] = abs(details["coefficient"])
+                    importance_type = importance_type or "coefficient"
+        
+        return {
+            "model_id": model_id,
+            "importance": importance,
+            "importance_type": importance_type,
+            "feature_count": len(importance)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting importance for {model_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/api/model/{model_id}/config")
+def get_model_config(model_id: str):
+    """
+    Get the full configuration used to train a model.
+    Used by orchestrator for fingerprint computation.
+    
+    Returns:
+        {
+            "model_id": "abc-123",
+            "features": ["sma_20", "rsi_14", ...],
+            "hyperparameters": {...},
+            "target_transform": "log_return",
+            "symbol": "RDDT",
+            "target_col": "close",
+            "algorithm": "RandomForest"
+        }
+    """
+    import json
+    conn = db.get_connection()
+    try:
+        row = conn.execute(
+            """SELECT symbol, algorithm, target_col, feature_cols, 
+                      hyperparameters, target_transform, data_options, timeframe
+               FROM models WHERE id = ?""",
+            [model_id]
+        ).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        symbol, algorithm, target_col, feature_cols_json, hyperparams_json, transform, data_opts, tf = row
+        
+        # Parse JSON fields
+        features = []
+        if feature_cols_json:
+            try:
+                features = json.loads(feature_cols_json) if isinstance(feature_cols_json, str) else feature_cols_json
+            except:
+                features = []
+        
+        hyperparams = {}
+        if hyperparams_json:
+            try:
+                hyperparams = json.loads(hyperparams_json) if isinstance(hyperparams_json, str) else hyperparams_json
+            except:
+                hyperparams = {}
+        
+        return {
+            "model_id": model_id,
+            "features": features,
+            "hyperparameters": hyperparams,
+            "target_transform": transform or "none",
+            "symbol": symbol,
+            "target_col": target_col,
+            "algorithm": algorithm,
+            "data_options": data_opts,
+            "timeframe": tf
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting config for {model_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+class TrainWithParentRequest(BaseModel):
+    """Request for training with explicit parent lineage."""
+    symbol: str
+    algorithm: str
+    target_col: str = "close"
+    hyperparameters: Optional[Dict[str, Any]] = None
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    p_value_threshold: float = 0.05
+    parent_model_id: str  # Required for lineage
+    feature_whitelist: list[str]  # Required - the pruned features
+    target_transform: str = "log_return"
+
+
+@app.post("/api/train_with_parent")
+async def train_with_parent(req: TrainWithParentRequest, background_tasks: BackgroundTasks):
+    """
+    Train a new model with explicit parent lineage.
+    Used by orchestrator for evolution chain.
+    
+    This is similar to /train but:
+    - parent_model_id is required
+    - feature_whitelist is required (the pruned feature set)
+    """
+    if req.algorithm not in ALGORITHMS:
+        raise HTTPException(status_code=400, detail=f"Algorithm must be one of {list(ALGORITHMS.keys())}")
+    
+    if not req.feature_whitelist:
+        raise HTTPException(status_code=400, detail="feature_whitelist is required for lineage training")
+    
+    params = req.hyperparameters or {}
+    params["p_value_threshold"] = req.p_value_threshold
+    
+    training_id = start_training(
+        req.symbol,
+        req.algorithm,
+        req.target_col,
+        params,
+        req.data_options,
+        req.timeframe,
+        req.parent_model_id,
+        None,  # group_id
+        target_transform=req.target_transform
+    )
+    
+    background_tasks.add_task(
+        train_model_task,
+        training_id,
+        req.symbol,
+        req.algorithm,
+        req.target_col,
+        params,
+        req.data_options,
+        req.timeframe,
+        req.parent_model_id,
+        req.feature_whitelist,
+        None,  # group_id
+        req.target_transform
+    )
+    
+    log.info(f"Started training {training_id} with parent {req.parent_model_id}, {len(req.feature_whitelist)} features")
+    
+    return {
+        "id": training_id,
+        "status": "started",
+        "parent_model_id": req.parent_model_id,
+        "feature_count": len(req.feature_whitelist)
+    }

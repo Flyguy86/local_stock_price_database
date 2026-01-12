@@ -891,6 +891,29 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
     else:
         sqn = 0.0
     
+    # Weekly Trade Consistency (for Holy Grail criteria)
+    trades_per_week = []
+    if total_round_trips > 0:
+        sell_trades = [t for t in trades if t["type"] == "SELL"]
+        if sell_trades:
+            # Group trades by ISO week
+            from collections import defaultdict
+            weekly_counts = defaultdict(int)
+            for t in sell_trades:
+                ts = t["ts"]
+                if hasattr(ts, 'isocalendar'):
+                    year, week, _ = ts.isocalendar()
+                    weekly_counts[(year, week)] += 1
+                elif isinstance(ts, str):
+                    from datetime import datetime as dt
+                    try:
+                        parsed_ts = dt.fromisoformat(ts.replace('Z', '+00:00'))
+                        year, week, _ = parsed_ts.isocalendar()
+                        weekly_counts[(year, week)] += 1
+                    except:
+                        pass
+            trades_per_week = list(weekly_counts.values())
+    
     # Results
     valid_hits = df_sim["hit"].iloc[:-1]
     hit_rate_pct = (valid_hits.sum() / len(valid_hits) * 100) if len(valid_hits) > 0 else 0.0
@@ -922,19 +945,23 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
         "strategy_return_pct": strategy_return,
         "benchmark_return_pct": benchmark_return,
         "total_trades": len(trades),
+        "trade_count": total_round_trips,  # Alias for orchestrator compatibility
         "total_fees": total_fees,
         "avg_fee_per_trade": total_fees / len(trades) if len(trades) > 0 else 0,
         "hit_rate_pct": hit_rate_pct,
         "bot_active": use_bot,
         "slippage_enabled": enable_slippage,
         "slippage_bars": slippage_bars if enable_slippage else 0,
-        # NEW: Quant Metrics
+        # Quant Metrics
         "expectancy": expectancy,
         "sqn": sqn,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
         "win_rate": (len(winning_trades) / total_round_trips * 100) if total_round_trips > 0 else 0.0,
-        "profit_factor": profit_factor
+        "profit_factor": profit_factor,
+        # Weekly Consistency (for Holy Grail criteria)
+        "trades_per_week": trades_per_week,
+        "weeks_traded": len(trades_per_week)
     }
 
     # Chart Data
