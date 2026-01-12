@@ -585,7 +585,8 @@ async def get_options():
     try:
         if not cfg.dest_db.exists():
             logger.warning("dest db not found", extra={"path": str(cfg.dest_db)})
-            return []
+            # Check parquet as fallback
+            return _get_options_from_parquet()
 
         tmpdir = tempfile.TemporaryDirectory()
         tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
@@ -600,16 +601,17 @@ async def get_options():
         try:
             conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
         except duckdb.Error:
-            logger.warning("feature_bars table missing")
-            return []
+            logger.warning("feature_bars table missing, checking parquet")
+            return _get_options_from_parquet()
         
         # Get distinct options
         rows = conn.execute(
-            "SELECT DISTINCT options FROM feature_bars WHERE options IS NOT NULL ORDER BY options"
+            "SELECT DISTINCT options FROM feature_bars WHERE options IS NOT NULL AND options != '' ORDER BY options"
         ).fetchall()
         
         options_list = [row[0] for row in rows if row[0]]
-        # Also check for NULL/empty options (legacy data)
+        
+        # Check for NULL/empty options (legacy data)
         null_count = conn.execute(
             "SELECT COUNT(*) FROM feature_bars WHERE options IS NULL OR options = ''"
         ).fetchone()[0]
@@ -617,15 +619,71 @@ async def get_options():
         if null_count > 0:
             options_list.insert(0, "Legacy / No Config")
         
+        # If no options found in DB, check parquet
+        if len(options_list) == 0:
+            logger.info("No options in DuckDB, checking parquet files")
+            return _get_options_from_parquet()
+        
         return options_list
     except Exception as e:
         logger.exception("failed to list options")
-        return []
+        # Try parquet as last resort
+        return _get_options_from_parquet()
     finally:
         if conn:
             conn.close()
         if tmpdir:
             tmpdir.cleanup()
+
+
+def _get_options_from_parquet():
+    """Fallback: scan parquet files for options column."""
+    try:
+        # Check if parquet directory exists
+        if not cfg.dest_parquet_dir.exists():
+            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet_dir)})
+            return []
+        
+        # Get first symbol directory
+        symbol_dirs = [d for d in cfg.dest_parquet_dir.iterdir() if d.is_dir()]
+        if not symbol_dirs:
+            logger.warning("No symbol directories in parquet")
+            return []
+        
+        # Try to read a sample parquet file from first symbol
+        first_symbol = symbol_dirs[0]
+        sample_files = list(first_symbol.rglob("*.parquet"))
+        
+        if not sample_files:
+            logger.warning("No parquet files found")
+            return []
+        
+        # Read one file to check schema
+        import pyarrow.parquet as pq
+        table = pq.read_table(sample_files[0])
+        columns = table.column_names
+        
+        if 'options' not in columns:
+            # Legacy data without options column
+            logger.info("Parquet files have no 'options' column - legacy data")
+            return ["Legacy / No Config"]
+        
+        # Query all parquet files for distinct options
+        conn = duckdb.connect(":memory:")
+        query = f"SELECT DISTINCT options FROM read_parquet('{cfg.dest_parquet_dir}/**/*.parquet') WHERE options IS NOT NULL AND options != ''"
+        rows = conn.execute(query).fetchall()
+        conn.close()
+        
+        options_list = [row[0] for row in rows if row[0]]
+        
+        if len(options_list) == 0:
+            return ["Legacy / No Config"]
+        
+        return options_list
+    except Exception as e:
+        logger.exception("Failed to read options from parquet")
+        # Assume legacy data if we can't determine
+        return ["Legacy / No Config"]
 
 
 @app.get("/symbols")
