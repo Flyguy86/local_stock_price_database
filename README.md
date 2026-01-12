@@ -25,11 +25,13 @@ Stock price database
 - Partition Parquet by symbol/date; indexes on symbol, timestamp, feature groups.
 - Store preprocessing/feature pipeline code references alongside schema for reproducibility.
 - **Locking & Concurrency**: Feature Service reads a temporary snapshot copy of the DuckDB file to avoid contentions with the ingestion writer process.
+- **Missing Data Backfill**: Automated detection and filling of missing 1-minute bars during market hours. Gaps are filled with the mean value of adjacent bars (OHLCV fields). Backfill operations are iterative and can be run repeatedly to handle multiple gaps. Only processes gaps during US market trading hours (9:30 AM - 4:00 PM ET, Mon-Fri).
 
 ## Web/API Layer
-- REST endpoints: queue ingest jobs, check agent status/heartbeats, list symbols, fetch bars/features, trigger feature rebuilds.
+- REST endpoints: queue ingest jobs, check agent status/heartbeats, list symbols, fetch bars/features, trigger feature rebuilds, trigger backfill operations.
 - Dashboard (Streamlit or React+FastAPI): filters, charts, feature previews; show per-agent logs/status/start/stop controls; progress bars.
 - **Feature Builder Viewer**: Inspect generated features with ticker filtering.
+- **Backfill API**: `POST /backfill/{symbol}?max_iterations=N` to detect and fill missing 1-minute bars during market hours.
 
 ## Logging & Monitoring
 - JSON logs standardized across agents.

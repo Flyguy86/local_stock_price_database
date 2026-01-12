@@ -9,6 +9,9 @@ from pathlib import Path
 
 log = logging.getLogger("app.backfill")
 
+# Constants
+MAX_BACKFILL_ITERATIONS = 1000
+
 
 class BackfillManager:
     """Handles detection and filling of missing 1-minute bar data"""
@@ -158,6 +161,8 @@ class BackfillManager:
             }])
             
             # Insert into database
+            # Note: ON CONFLICT DO NOTHING is intentional - if a bar already exists at this timestamp,
+            # it means the gap was already filled (possibly by new data ingestion), so we skip it
             conn.register("tmp_backfill", new_bar)
             conn.execute("""
                 INSERT INTO bars
@@ -167,6 +172,9 @@ class BackfillManager:
             conn.unregister("tmp_backfill")
             
             # Also update parquet file
+            # Note: For single-bar backfill, this read-modify-write approach is acceptable.
+            # For batch backfilling multiple bars, consider using backfill_symbol() which
+            # processes iteratively and commits in sequence.
             new_bar['date'] = expected_ts.date()
             dest = self.parquet_root / symbol / f"dt={new_bar['date'].iloc[0]}"
             dest.mkdir(parents=True, exist_ok=True)

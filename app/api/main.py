@@ -277,11 +277,13 @@ async def backfill_missing_data(symbol: str, max_iterations: int = 100):
     Backfill missing 1-minute bars for a symbol during market hours.
     Fills gaps with the mean of adjacent bars.
     """
+    from app.storage.backfill import MAX_BACKFILL_ITERATIONS
+    
     if symbol in running_tasks and not running_tasks[symbol].done():
         raise HTTPException(status_code=409, detail=f"Task for {symbol} is already running")
     
-    if max_iterations <= 0 or max_iterations > 1000:
-        raise HTTPException(status_code=400, detail="max_iterations must be 1..1000")
+    if max_iterations <= 0 or max_iterations > MAX_BACKFILL_ITERATIONS:
+        raise HTTPException(status_code=400, detail=f"max_iterations must be 1..{MAX_BACKFILL_ITERATIONS}")
 
     logger.info("backfill request queued", extra={"symbol": symbol, "max_iterations": max_iterations})
     agent_status[symbol] = Status(symbol=symbol, state="queued", description="Queued backfill", last_update=None)
