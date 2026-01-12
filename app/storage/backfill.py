@@ -40,6 +40,7 @@ class BackfillManager:
     def find_missing_bars(self, symbol: str, limit: int = 1) -> pd.DataFrame:
         """
         Find missing 1-minute bars for a symbol during market hours.
+        Scans entire history from first to last timestamp in database.
         
         Args:
             symbol: Stock ticker symbol
@@ -67,6 +68,16 @@ class BackfillManager:
             
             # Convert to timezone-aware timestamps
             df['ts'] = pd.to_datetime(df['ts'], utc=True)
+            
+            # Log the entire date range being scanned
+            first_ts = df['ts'].min()
+            last_ts = df['ts'].max()
+            log.info("scanning for missing bars", extra={
+                "symbol": symbol,
+                "first_timestamp": first_ts.isoformat(),
+                "last_timestamp": last_ts.isoformat(),
+                "total_bars": len(df)
+            })
             
             # Find gaps greater than 1 minute
             gaps = []
@@ -157,8 +168,22 @@ class BackfillManager:
                 'volume': mean_values['volume'],
                 'vwap': mean_values['vwap'],
                 'trade_count': int(mean_values['trade_count']),
-                'source': 'backfill'
+                'source': 'backfill',
+                'is_backfilled': True
             }])
+            
+            # Log live update of which bar is being backfilled
+            log.info("backfilling 1-min bar", extra={
+                "symbol": symbol,
+                "timestamp": expected_ts.isoformat(),
+                "date": expected_ts.date().isoformat(),
+                "time": expected_ts.time().isoformat(),
+                "open": float(mean_values['open']),
+                "high": float(mean_values['high']),
+                "low": float(mean_values['low']),
+                "close": float(mean_values['close']),
+                "volume": float(mean_values['volume'])
+            })
             
             # Insert into database
             # Note: ON CONFLICT DO NOTHING is intentional - if a bar already exists at this timestamp,
@@ -192,11 +217,12 @@ class BackfillManager:
             
             merged.to_parquet(file_path, index=False)
             
-            log.info("backfilled missing bar", extra={
+            log.info("backfill complete for bar", extra={
                 "symbol": symbol,
                 "ts": expected_ts.isoformat(),
                 "open": float(mean_values['open']),
-                "close": float(mean_values['close'])
+                "close": float(mean_values['close']),
+                "is_backfilled": True
             })
             
             return 1
@@ -207,6 +233,7 @@ class BackfillManager:
     def backfill_symbol(self, symbol: str, max_iterations: int = 100) -> dict:
         """
         Iteratively backfill missing bars for a symbol.
+        Processes entire history from first to last timestamp in database.
         
         Args:
             symbol: Stock ticker symbol
@@ -215,6 +242,11 @@ class BackfillManager:
         Returns:
             Dict with statistics: filled count, remaining gaps, etc.
         """
+        log.info("starting backfill process", extra={
+            "symbol": symbol,
+            "max_iterations": max_iterations
+        })
+        
         filled_count = 0
         
         for i in range(max_iterations):
@@ -230,6 +262,14 @@ class BackfillManager:
             
             # Fill the first gap
             gap = gaps_df.iloc[0]
+            log.info("processing gap", extra={
+                "symbol": symbol,
+                "iteration": i + 1,
+                "max_iterations": max_iterations,
+                "filled_so_far": filled_count,
+                "gap_timestamp": gap['expected_ts'].isoformat()
+            })
+            
             result = self.fill_missing_bar(
                 symbol,
                 gap['expected_ts'],
@@ -246,6 +286,12 @@ class BackfillManager:
                     "filled_count": filled_count
                 })
                 break
+        
+        log.info("backfill session complete", extra={
+            "symbol": symbol,
+            "total_filled": filled_count,
+            "iterations_used": min(i + 1, max_iterations)
+        })
         
         return {
             "symbol": symbol,

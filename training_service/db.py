@@ -69,16 +69,16 @@ class MetadataDB:
             except:
                 pass
 
-    def get_connection(self):
-        return duckdb.connect(self.path)
+    def get_connection(self, read_only=False):
+        return duckdb.connect(self.path, read_only=read_only)
 
     def list_models(self):
-        with self.get_connection() as conn:
+        with self.get_connection(read_only=True) as conn:
             cols = ["id", "name", "algorithm", "symbol", "status", "metrics", "created_at", "error_message", "data_options", "timeframe", "target_col", "parent_model_id", "group_id", "target_transform"]
             return conn.execute(f"SELECT {', '.join(cols)} FROM models ORDER BY created_at DESC").fetch_df().to_dict(orient="records")
 
     def get_model(self, model_id: str):
-        with self.get_connection() as conn:
+        with self.get_connection(read_only=True) as conn:
             return conn.execute("SELECT * FROM models WHERE id = ?", [model_id]).fetchone()
 
     def create_model_record(self, data: dict):

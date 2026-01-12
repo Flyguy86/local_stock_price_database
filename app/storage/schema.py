@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS bars (
     vwap DOUBLE,
     trade_count BIGINT,
     source TEXT,
+    is_backfilled BOOLEAN DEFAULT FALSE,
     PRIMARY KEY(symbol, ts)
 );
 """

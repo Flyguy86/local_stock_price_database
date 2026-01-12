@@ -134,80 +134,138 @@ class EvolutionEngine:
             # Evolution loop
             while state.current_generation < config.max_generations:
                 log.info(f"=== Generation {state.current_generation} ===")
+                log.info(f"Current model: {state.current_model_id}")
+                log.info(f"Current features count: {len(state.current_features)}")
                 
                 # 1. Get feature importance
-                importance = await self._get_feature_importance(state.current_model_id)
+                try:
+                    importance = await self._get_feature_importance(state.current_model_id)
+                    log.info(f"Step 1: Got importance for {len(importance)} features")
+                except Exception as e:
+                    log.error(f"Step 1 FAILED: Could not get feature importance: {e}")
+                    state.stopped_reason = f"feature_importance_error: {e}"
+                    break
+                
                 if not importance:
+                    log.warning("Step 1: No importance data returned")
                     state.stopped_reason = "Could not get feature importance"
                     break
                 
-                # 2. Prune features with importance <= 0
-                pruned, remaining = self._prune_features(importance)
+                # 2. Prune features with importance == 0
+                try:
+                    pruned, remaining = self._prune_features(importance)
+                    log.info(f"Step 2: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
+                except Exception as e:
+                    log.error(f"Step 2 FAILED: Pruning error: {e}")
+                    state.stopped_reason = f"pruning_error: {e}"
+                    break
                 
                 if not pruned:
-                    log.info("No features to prune, evolution complete")
+                    log.info("Step 2: No features to prune (all have non-zero importance), evolution complete")
                     state.stopped_reason = "no_features_to_prune"
                     break
                 
                 if not remaining:
-                    log.warning("All features would be pruned, stopping")
+                    log.warning("Step 2: All features would be pruned, stopping")
+                    log.warning(f"  Pruned features: {pruned[:10]}{'...' if len(pruned) > 10 else ''}")
                     state.stopped_reason = "all_features_pruned"
                     break
                 
-                log.info(f"Pruned {len(pruned)} features: {pruned}")
-                log.info(f"Remaining {len(remaining)} features")
+                log.info(f"Step 2: Pruned {len(pruned)} zero-importance features: {pruned}")
+                log.info(f"Step 2: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
                 
                 # 3. Compute fingerprint
-                fingerprint = compute_fingerprint(
-                    features=remaining,
-                    hyperparams=config.hyperparameters,
-                    target_transform=config.target_transform,
-                    symbol=config.symbol,
-                    target_col=config.target_col
-                )
-                
-                # 4. Check for existing model
-                existing_model_id = await db.get_model_by_fingerprint(fingerprint)
-                
-                if existing_model_id:
-                    log.info(f"Fingerprint match! Reusing model {existing_model_id}")
-                    child_model_id = existing_model_id
-                else:
-                    # Train new model
-                    child_model_id = await self._train_model(
-                        state,
-                        parent_model_id=state.current_model_id,
-                        features=remaining
-                    )
-                    
-                    # Record fingerprint
-                    await db.insert_fingerprint(
-                        fingerprint=fingerprint,
-                        model_id=child_model_id,
+                try:
+                    fingerprint = compute_fingerprint(
                         features=remaining,
                         hyperparams=config.hyperparameters,
                         target_transform=config.target_transform,
-                        symbol=config.symbol
+                        symbol=config.symbol,
+                        target_col=config.target_col
                     )
+                    log.info(f"Step 3: Computed fingerprint: {fingerprint[:16]}...")
+                except Exception as e:
+                    log.error(f"Step 3 FAILED: Fingerprint error: {e}")
+                    state.stopped_reason = f"fingerprint_error: {e}"
+                    break
                 
-                # 5. Record evolution lineage
-                await db.insert_evolution_log(
-                    log_id=str(uuid.uuid4()),
-                    run_id=run_id,
-                    parent_model_id=state.current_model_id,
-                    child_model_id=child_model_id,
-                    generation=state.current_generation,
-                    parent_sqn=state.parent_sqn,
-                    pruned_features=pruned,
-                    remaining_features=remaining,
-                    pruning_reason="importance_zero"
-                )
+                # 4. Check for existing model
+                try:
+                    existing_model_id = await db.get_model_by_fingerprint(fingerprint)
+                    if existing_model_id:
+                        log.info(f"Step 4: Fingerprint match! Reusing model {existing_model_id}")
+                    else:
+                        log.info("Step 4: No existing model, will train new")
+                except Exception as e:
+                    log.error(f"Step 4 FAILED: Fingerprint lookup error: {e}")
+                    existing_model_id = None  # Continue with training
                 
-                # 6. Queue simulations
-                await self._queue_simulations(state, child_model_id)
+                if existing_model_id:
+                    child_model_id = existing_model_id
+                else:
+                    # Step 5: Train new model
+                    try:
+                        log.info(f"Step 5: Training new model with {len(remaining)} features...")
+                        child_model_id = await self._train_model(
+                            state,
+                            parent_model_id=state.current_model_id,
+                            features=remaining
+                        )
+                        log.info(f"Step 5: Training complete, model ID: {child_model_id}")
+                    except Exception as e:
+                        log.error(f"Step 5 FAILED: Training error: {e}")
+                        state.stopped_reason = f"training_error: {e}"
+                        break
+                    
+                    # Record fingerprint
+                    try:
+                        await db.insert_fingerprint(
+                            fingerprint=fingerprint,
+                            model_id=child_model_id,
+                            features=remaining,
+                            hyperparams=config.hyperparameters,
+                            target_transform=config.target_transform,
+                            symbol=config.symbol
+                        )
+                        log.info("Step 5: Fingerprint recorded")
+                    except Exception as e:
+                        log.warning(f"Step 5: Failed to record fingerprint (non-fatal): {e}")
                 
-                # 7. Wait for simulations and evaluate
-                best_result = await self._wait_and_evaluate(state, child_model_id)
+                # Step 6: Record evolution lineage
+                try:
+                    await db.insert_evolution_log(
+                        log_id=str(uuid.uuid4()),
+                        run_id=run_id,
+                        parent_model_id=state.current_model_id,
+                        child_model_id=child_model_id,
+                        generation=state.current_generation,
+                        parent_sqn=state.parent_sqn,
+                        pruned_features=pruned,
+                        remaining_features=remaining,
+                        pruning_reason="importance_zero"
+                    )
+                    log.info(f"Step 6: Evolution lineage recorded")
+                except Exception as e:
+                    log.warning(f"Step 6: Failed to record lineage (non-fatal): {e}")
+                
+                # Step 7: Queue simulations
+                try:
+                    log.info(f"Step 7: Queueing simulations for model {child_model_id}")
+                    await self._queue_simulations(state, child_model_id)
+                    log.info("Step 7: Simulations queued")
+                except Exception as e:
+                    log.error(f"Step 7 FAILED: Queue simulations error: {e}")
+                    state.stopped_reason = f"simulation_queue_error: {e}"
+                    break
+                
+                # Step 8: Wait for simulations and evaluate
+                try:
+                    log.info("Step 8: Waiting for simulation results...")
+                    best_result = await self._wait_and_evaluate(state, child_model_id)
+                    log.info(f"Step 8: Got result - SQN: {best_result.get('sqn', 'N/A') if best_result else 'None'}")
+                except Exception as e:
+                    log.error(f"Step 8 FAILED: Simulation evaluation error: {e}")
+                    best_result = None
                 
                 if best_result:
                     state.parent_sqn = best_result.get("sqn", 0)
@@ -252,7 +310,9 @@ class EvolutionEngine:
             log.info(f"Evolution run {run_id} finished: {final_status}")
             
         except Exception as e:
+            import traceback
             log.error(f"Evolution run {run_id} failed: {e}")
+            log.error(f"Traceback: {traceback.format_exc()}")
             await db.update_evolution_run(run_id, status="FAILED")
             raise
         
@@ -292,7 +352,8 @@ class EvolutionEngine:
         importance: Dict[str, float]
     ) -> tuple[List[str], List[str]]:
         """
-        Prune features with importance <= 0.
+        Prune features with importance == 0 (exactly zero).
+        Small negative values are kept as they still contribute.
         
         Returns:
             Tuple of (pruned_features, remaining_features)
@@ -300,11 +361,19 @@ class EvolutionEngine:
         pruned = []
         remaining = []
         
+        # Log the importance values we received
+        log.info(f"Feature importance received: {len(importance)} features")
+        for feature, score in sorted(importance.items(), key=lambda x: abs(x[1]), reverse=True)[:10]:
+            log.debug(f"  {feature}: {score}")
+        
         for feature, score in importance.items():
-            if score <= 0:
+            # Only prune features with exactly zero importance
+            if score == 0:
                 pruned.append(feature)
             else:
                 remaining.append(feature)
+        
+        log.info(f"Pruning result: {len(pruned)} zero-importance pruned, {len(remaining)} remaining")
         
         return pruned, remaining
     
@@ -330,10 +399,13 @@ class EvolutionEngine:
         }
         
         log.info(f"Training model with {len(features or [])} features...")
+        log.debug(f"Training payload: {payload}")
         resp = await self.http_client.post(
             f"{self.training_url}/train",
             json=payload
         )
+        if resp.status_code != 200:
+            log.error(f"Training service returned {resp.status_code}: {resp.text}")
         resp.raise_for_status()
         data = resp.json()
         model_id = data["id"]

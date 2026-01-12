@@ -13,13 +13,14 @@ class DuckDBClient:
         for ddl in table_blueprints():
             self.conn.execute(ddl)
 
-    def insert_bars(self, df: pd.DataFrame, symbol: str, source: str | None = None) -> int:
+    def insert_bars(self, df: pd.DataFrame, symbol: str, source: str | None = None, is_backfilled: bool = False) -> int:
         if df.empty:
             return 0
         df = df.copy()
         df["symbol"] = symbol
         df["source"] = source
-        cols = ["symbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count", "source"]
+        df["is_backfilled"] = is_backfilled
+        cols = ["symbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count", "source", "is_backfilled"]
         df = df[cols].drop_duplicates(subset=["symbol", "ts"])
         self.conn.register("tmp_df", df)
         self.conn.execute(

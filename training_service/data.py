@@ -86,6 +86,19 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
     primary_symbol = symbols[0]
     context_symbols = symbols[1:]
     
+    # Strip reference_symbols from options_filter since it's not in parquet data
+    parquet_options_filter = options_filter
+    if options_filter:
+        try:
+            import json
+            opts = json.loads(options_filter)
+            if 'reference_symbols' in opts:
+                del opts['reference_symbols']
+                parquet_options_filter = json.dumps(opts, sort_keys=True)
+                log.info(f"Stripped reference_symbols, using filter: {parquet_options_filter}")
+        except (json.JSONDecodeError, TypeError):
+            pass  # Not JSON, use as-is
+    
     # --- Helper to load one symbol ---
     def _load_single(sym):
         path = settings.features_parquet_dir / sym
@@ -95,19 +108,19 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # We use strict union_by_name to handle files with/without 'options' column gracefully
         query = f"SELECT * FROM read_parquet('{path}/**/*.parquet', union_by_name=true)"
         
-        # Handle options filter
-        if options_filter:
+        # Handle options filter (using parquet_options_filter without reference_symbols)
+        if parquet_options_filter:
             # Handle Legacy key
-            if 'Legacy / No Config' in options_filter:
+            if 'Legacy / No Config' in parquet_options_filter:
                  log.info(f"Applying legacy filter for {sym}")
                  # Match NULL (missing column) or Empty string
                  query += " WHERE options IS NULL OR options = ''"
             # Robust handling for empty options
-            elif options_filter.strip() in ["{}", ""]:
-                 log.info(f"Applying flexible empty option filter for '{options_filter}'")
+            elif parquet_options_filter.strip() in ["{}", ""]:
+                 log.info(f"Applying flexible empty option filter for '{parquet_options_filter}'")
                  query += " WHERE options = '{}' OR options = '' OR options IS NULL"
             else:
-                 safe_filter = options_filter.replace("'", "''")
+                 safe_filter = parquet_options_filter.replace("'", "''")
                  query += f" WHERE options = '{safe_filter}'"
         
         # We don't strictly need to order here if we merge on TS later, but good for primary
