@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from ..config import settings
 from ..logging import configure_json_logger
 from ..storage.duckdb_client import DuckDBClient
+from ..storage.backfill import BackfillManager
 from ..ingestion.poller import IngestPoller
 from ..ingestion.alpaca_client import get_alpaca_client
 
@@ -53,6 +54,7 @@ logging.getLogger("uvicorn.access").addHandler(InMemoryHandler())
 logging.getLogger("uvicorn.error").addHandler(InMemoryHandler())
 db = DuckDBClient(settings.duckdb_path, settings.parquet_dir)
 poller = IngestPoller(db)
+backfill_manager = BackfillManager(settings.duckdb_path, settings.parquet_dir)
 app = FastAPI(title="local_stock_price_database")
 
 class IngestResponse(BaseModel):
@@ -268,6 +270,66 @@ async def ingest_earnings_endpoint(symbol: str):
     t = asyncio.create_task(task())
     running_tasks[symbol] = t
     return {"status": "queued", "symbol": symbol}
+
+@app.post("/backfill/{symbol}")
+async def backfill_missing_data(symbol: str, max_iterations: int = 100):
+    """
+    Backfill missing 1-minute bars for a symbol during market hours.
+    Fills gaps with the mean of adjacent bars.
+    """
+    from app.storage.backfill import MAX_BACKFILL_ITERATIONS
+    
+    if symbol in running_tasks and not running_tasks[symbol].done():
+        raise HTTPException(status_code=409, detail=f"Task for {symbol} is already running")
+    
+    if max_iterations <= 0 or max_iterations > MAX_BACKFILL_ITERATIONS:
+        raise HTTPException(status_code=400, detail=f"max_iterations must be 1..{MAX_BACKFILL_ITERATIONS}")
+
+    logger.info("backfill request queued", extra={"symbol": symbol, "max_iterations": max_iterations})
+    agent_status[symbol] = Status(symbol=symbol, state="queued", description="Queued backfill", last_update=None)
+    
+    async def task():
+        agent_status[symbol] = Status(symbol=symbol, state="running", description="Scanning for missing bars", last_update=None)
+        try:
+            # Run backfill in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                backfill_manager.backfill_symbol,
+                symbol,
+                max_iterations
+            )
+            
+            agent_status[symbol] = Status(
+                symbol=symbol,
+                state="succeeded",
+                description=f"Backfilled {result['filled']} bars",
+                last_update=_now_iso()
+            )
+            logger.info("backfill task succeeded", extra={
+                "symbol": symbol,
+                "filled": result["filled"],
+                "iterations": result["iterations"]
+            })
+        except asyncio.CancelledError:
+            logger.warning("backfill task cancelled", extra={"symbol": symbol})
+            agent_status[symbol] = Status(symbol=symbol, state="stopped", description="User cancelled", last_update=None)
+        except Exception as exc:
+            logger.exception("backfill failed", extra={"symbol": symbol})
+            agent_status[symbol] = Status(
+                symbol=symbol,
+                state="failed",
+                description="Backfill failed",
+                last_update=None,
+                error_message=str(exc)
+            )
+        finally:
+            if symbol in running_tasks:
+                del running_tasks[symbol]
+    
+    t = asyncio.create_task(task())
+    running_tasks[symbol] = t
+    return {"status": "queued", "symbol": symbol, "max_iterations": max_iterations}
 
 @app.get("/status", response_model=list[Status])
 async def status():

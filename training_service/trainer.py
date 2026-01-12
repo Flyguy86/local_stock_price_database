@@ -87,8 +87,25 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             except:
                 p_val_thresh = 0.05
         
+        # Parse reference_symbols from data_options JSON if present
+        reference_symbols = []
+        if data_options:
+            try:
+                opts_dict = json.loads(data_options)
+                reference_symbols = opts_dict.get("reference_symbols", [])
+                if reference_symbols:
+                    log.info(f"Parsed reference_symbols from data_options: {reference_symbols}")
+            except Exception as e:
+                log.warning(f"Failed to parse data_options JSON: {e}")
+        
+        # Build multi-ticker symbol string (primary + references)
+        full_symbol = symbol
+        if reference_symbols:
+            full_symbol = f"{symbol}," + ",".join(reference_symbols)
+            log.info(f"Training with multi-ticker TS-aligned data: {full_symbol}")
+        
         # 1. Load Data
-        df = load_training_data(symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe, target_transform=target_transform)
+        df = load_training_data(full_symbol, target_col=target_col, options_filter=data_options, timeframe=timeframe, target_transform=target_transform)
         
         # Set TS as index for explicit alignment
         if "ts" in df.columns:
