@@ -692,25 +692,14 @@ async def symbols(options: Optional[str] = None):
     conn = None
     tmpdir = None
     try:
-        # If no options filter, use source DB (all symbols)
-        if not options:
-            if not cfg.source_db.exists():
-                logger.warning("source db not found", extra={"path": str(cfg.source_db)})
-                return []
-            tmpdir = tempfile.TemporaryDirectory()
-            tmp_src = Path(tmpdir.name) / cfg.source_db.name
-            shutil.copy2(cfg.source_db, tmp_src)
-            wal_src = cfg.source_db.with_suffix(cfg.source_db.suffix + ".wal")
-            if wal_src.exists():
-                wal_dst = tmp_src.with_suffix(tmp_src.suffix + ".wal")
-                shutil.copy2(wal_src, wal_dst)
-            conn = duckdb.connect(str(tmp_src), read_only=True)
-            return list_symbols_from_db(conn)
+        # If no options filter or "Legacy / No Config", use parquet directory listing
+        if not options or options == "Legacy / No Config":
+            return _get_symbols_from_parquet()
         
         # Filter by options from dest DB
         if not cfg.dest_db.exists():
             logger.warning("dest db not found", extra={"path": str(cfg.dest_db)})
-            return []
+            return _get_symbols_from_parquet()
         
         tmpdir = tempfile.TemporaryDirectory()
         tmp_dest = Path(tmpdir.name) / cfg.dest_db.name
@@ -724,28 +713,49 @@ async def symbols(options: Optional[str] = None):
         try:
             conn.execute("SELECT 1 FROM feature_bars LIMIT 1")
         except duckdb.Error:
-            logger.warning("feature_bars table missing")
-            return []
+            logger.warning("feature_bars table missing, using parquet")
+            return _get_symbols_from_parquet()
         
-        # Handle legacy filter
-        if options == "Legacy / No Config":
-            query = "SELECT DISTINCT symbol FROM feature_bars WHERE options IS NULL OR options = '' ORDER BY symbol"
-            rows = conn.execute(query).fetchall()
-        else:
+        # Try to filter by options
+        try:
             rows = conn.execute(
                 "SELECT DISTINCT symbol FROM feature_bars WHERE options = ? ORDER BY symbol",
                 [options]
             ).fetchall()
-        
-        return [row[0] for row in rows]
+            
+            if rows:
+                return [row[0] for row in rows]
+            else:
+                logger.info(f"No symbols found for options '{options}', checking parquet")
+                return _get_symbols_from_parquet()
+        except Exception as e:
+            logger.warning(f"Error filtering by options: {e}, using parquet")
+            return _get_symbols_from_parquet()
+            
     except Exception as e:
         logger.exception("failed to list symbols")
-        return []
+        return _get_symbols_from_parquet()
     finally:
         if conn:
             conn.close()
         if tmpdir:
             tmpdir.cleanup()
+
+
+def _get_symbols_from_parquet():
+    """Get symbols from parquet directory structure."""
+    try:
+        if not cfg.dest_parquet_dir.exists():
+            logger.warning("Parquet directory not found", extra={"path": str(cfg.dest_parquet_dir)})
+            return []
+        
+        # List symbol directories
+        symbol_dirs = sorted([d.name for d in cfg.dest_parquet_dir.iterdir() if d.is_dir()])
+        logger.info(f"Found {len(symbol_dirs)} symbols in parquet: {symbol_dirs}")
+        return symbol_dirs
+    except Exception as e:
+        logger.exception("Failed to list symbols from parquet")
+        return []
 
 
 @app.get("/features_sample")
