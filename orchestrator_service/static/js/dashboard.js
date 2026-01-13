@@ -387,14 +387,21 @@ async function loadRuns() {
     
     tbody.innerHTML = data.runs.map(run => {
       const stepStatus = run.step_status || '-';
-      // Add Resume button for STOPPED/FAILED runs
+      // Add action buttons based on status
       let actionButton = `<button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>`;
-      if (run.status === 'STOPPED' || run.status === 'FAILED') {
+      
+      if (run.status === 'RUNNING' || run.status === 'PENDING') {
+        actionButton = `
+          <button class="danger" onclick="event.stopPropagation(); stopRun('${run.id}')" title="Stop this evolution run">⏹️ Stop</button>
+          <button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>
+        `;
+      } else if (run.status === 'STOPPED' || run.status === 'FAILED') {
         actionButton = `
           <button class="primary" onclick="event.stopPropagation(); resumeRun('${run.id}')" title="Resume from generation ${run.current_generation}">▶️ Resume</button>
           <button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>
         `;
       }
+      
       return `
         <tr class="clickable" onclick="showDetails('${run.id}')">
           <td><code>${run.id.substring(0, 8)}...</code></td>
@@ -434,7 +441,7 @@ function renderActiveRunCard(run) {
         </div>
         <div style="display: flex; align-items: center; gap: 0.5rem;">
           <code style="font-size: 0.8rem;">${run.id.substring(0, 8)}</code>
-          <button class="secondary" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="event.stopPropagation(); cancelRun('${run.id}')">✕ Cancel</button>
+          <button class="danger" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="event.stopPropagation(); stopRun('${run.id}')">⏹️ Stop</button>
         </div>
       </div>
       <div style="margin-top: 0.5rem;">
@@ -473,7 +480,7 @@ async function resumeRun(runId) {
     const res = await fetch(`${API}/runs/${runId}/resume`, { method: 'POST' });
     if (res.ok) {
       const data = await res.json();
-      showStatus(`Run resumed from generation ${data.resuming_from_generation}`, 'success');
+      showStatus(data.message || 'Run resumed', 'success');
       loadRuns();
       // Auto-refresh to show progress
       setTimeout(loadRuns, 3000);
@@ -483,6 +490,23 @@ async function resumeRun(runId) {
     }
   } catch (e) {
     showStatus('Error resuming run: ' + e.message, 'error');
+  }
+}
+
+async function stopRun(runId) {
+  if (!confirm(`Stop run ${runId.substring(0, 8)}...?\n\nThis will mark the run as STOPPED and halt further processing.`)) return;
+  try {
+    const res = await fetch(`${API}/runs/${runId}/stop`, { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      showStatus('Run stopped', 'success');
+      loadRuns();
+    } else {
+      const data = await res.json();
+      showStatus(data.detail || 'Failed to stop', 'error');
+    }
+  } catch (e) {
+    showStatus('Error stopping run: ' + e.message, 'error');
   }
 }
 

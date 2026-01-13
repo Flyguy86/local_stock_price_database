@@ -435,6 +435,21 @@ async def cancel_run(run_id: str):
     return {"status": "cancelled", "run_id": run_id}
 
 
+@app.post("/runs/{run_id}/stop")
+async def stop_run(run_id: str):
+    """Stop a RUNNING/PENDING evolution run."""
+    run = await db.get_evolution_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    if run["status"] not in ("RUNNING", "PENDING"):
+        raise HTTPException(status_code=400, detail=f"Run is not running (status: {run['status']})")
+    
+    await db.update_evolution_run(run_id, status="STOPPED", step_status="Stopped by user")
+    log.info(f"Stopped evolution run {run_id}")
+    return {"status": "stopped", "run_id": run_id}
+
+
 @app.post("/runs/{run_id}/resume")
 async def resume_run(run_id: str, background_tasks: BackgroundTasks):
     """Resume a STOPPED evolution run (e.g., after container restart)."""
