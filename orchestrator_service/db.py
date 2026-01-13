@@ -392,6 +392,17 @@ class Database:
                 )
             return [dict(r) for r in rows]
 
+    async def get_job_full_result(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single job with full result data (for detail views only)."""
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM priority_jobs WHERE id = $1
+                """,
+                job_id
+            )
+            return dict(row) if row else None
+
     async def list_jobs(self, limit: int = 100) -> List[Dict[str, Any]]:
         """List all jobs with optional limit."""
         async with self.acquire() as conn:
