@@ -284,7 +284,7 @@ class EvolveRequest(BaseModel):
     data_options: Optional[str] = None
     timeframe: str = "1m"
     thresholds: List[float] = [0.0001, 0.0003, 0.0005, 0.0007]
-    z_score_thresholds: List[float] = [2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs
+    z_score_thresholds: List[float] = [0, 2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs (0 = no filter)
     regime_configs: List[dict] = [
         {"regime_gmm": [0]},
         {"regime_gmm": [1]},

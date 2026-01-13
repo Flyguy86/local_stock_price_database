@@ -40,7 +40,7 @@ class EvolutionConfig(BaseModel):
     
     # Simulation grid - full grid search across all combinations
     thresholds: List[float] = [0.0001, 0.0003, 0.0005, 0.0007]
-    z_score_thresholds: List[float] = [2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs for signal filtering
+    z_score_thresholds: List[float] = [0, 2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs (0 = no filter)
     regime_configs: List[Dict[str, Any]] = [
         {"regime_vix": [0]},                    # VIX 0: Bear Volatile (Crash)
         {"regime_vix": [1]},                    # VIX 1: Bear Quiet (Drift Down)
