@@ -272,7 +272,10 @@ class EvolutionEngine:
                         hyperparams=config.hyperparameters,
                         target_transform=config.target_transform,
                         symbol=config.symbol,
-                        target_col=config.target_col
+                        target_col=config.target_col,
+                        alpha_grid=config.alpha_grid,
+                        l1_ratio_grid=config.l1_ratio_grid,
+                        regime_configs=config.regime_configs
                     )
                     log.info(f"Step D: Computed fingerprint: {fingerprint[:16]}...")
                 except Exception as e:
@@ -313,13 +316,19 @@ class EvolutionEngine:
                         state.stopped_reason = f"training_error: {e}"
                         break
                     
-                    # Record fingerprint
+                    # Record fingerprint with full config for reproducibility
                     try:
+                        full_config = {
+                            **config.hyperparameters,
+                            "alpha_grid": config.alpha_grid,
+                            "l1_ratio_grid": config.l1_ratio_grid,
+                            "regime_configs": config.regime_configs
+                        }
                         await db.insert_fingerprint(
                             fingerprint=fingerprint,
                             model_id=child_model_id,
                             features=remaining,
-                            hyperparams=config.hyperparameters,
+                            hyperparams=full_config,
                             target_transform=config.target_transform,
                             symbol=config.symbol
                         )

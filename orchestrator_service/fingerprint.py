@@ -12,7 +12,10 @@ def compute_fingerprint(
     hyperparams: Dict[str, Any],
     target_transform: str,
     symbol: str,
-    target_col: str = "close"
+    target_col: str = "close",
+    alpha_grid: List[float] = None,
+    l1_ratio_grid: List[float] = None,
+    regime_configs: List[Dict[str, Any]] = None
 ) -> str:
     """
     Compute SHA-256 fingerprint from model configuration.
@@ -27,6 +30,9 @@ def compute_fingerprint(
         target_transform: Target transformation (none, log_return, pct_change)
         symbol: Trading symbol
         target_col: Target column name
+        alpha_grid: Grid search values for alpha (L2 penalty)
+        l1_ratio_grid: Grid search values for l1_ratio (L1/L2 mix)
+        regime_configs: Grid search regime filter configurations
     
     Returns:
         64-character hex SHA-256 hash
@@ -37,7 +43,10 @@ def compute_fingerprint(
         "hyperparams": _normalize_params(hyperparams),
         "target_transform": target_transform,
         "symbol": symbol.upper(),
-        "target_col": target_col
+        "target_col": target_col,
+        "alpha_grid": sorted(alpha_grid) if alpha_grid else None,
+        "l1_ratio_grid": sorted(l1_ratio_grid) if l1_ratio_grid else None,
+        "regime_configs": _normalize_regime_configs(regime_configs) if regime_configs else None
     }
     
     # Create deterministic JSON string
@@ -69,6 +78,28 @@ def _normalize_params(params: Dict[str, Any]) -> Dict[str, Any]:
         else:
             normalized[key] = value
     return normalized
+
+
+def _normalize_regime_configs(configs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Normalize regime configs for consistent hashing.
+    - Sort by keys
+    - Sort regime value lists
+    - Sort config list by JSON representation
+    """
+    normalized = []
+    for cfg in configs:
+        norm_cfg = {}
+        for key in sorted(cfg.keys()):
+            value = cfg[key]
+            if isinstance(value, list):
+                norm_cfg[key] = sorted(value)
+            else:
+                norm_cfg[key] = value
+        normalized.append(norm_cfg)
+    
+    # Sort configs by their JSON representation for deterministic ordering
+    return sorted(normalized, key=lambda x: json.dumps(x, sort_keys=True))
 
 
 def fingerprint_matches(fp1: str, fp2: str) -> bool:

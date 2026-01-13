@@ -696,6 +696,9 @@ class FingerprintCheckRequest(BaseModel):
     target_transform: str
     symbol: str
     target_col: str = "close"
+    alpha_grid: Optional[List[float]] = None
+    l1_ratio_grid: Optional[List[float]] = None
+    regime_configs: Optional[List[Dict[str, Any]]] = None
 
 
 @app.post("/fingerprint/check")
@@ -708,7 +711,10 @@ async def check_fingerprint(req: FingerprintCheckRequest):
         hyperparams=req.hyperparameters,
         target_transform=req.target_transform,
         symbol=req.symbol,
-        target_col=req.target_col
+        target_col=req.target_col,
+        alpha_grid=req.alpha_grid,
+        l1_ratio_grid=req.l1_ratio_grid,
+        regime_configs=req.regime_configs
     )
     
     existing_model_id = await db.get_model_by_fingerprint(fp)
