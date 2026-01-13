@@ -6,7 +6,7 @@ import os
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse
