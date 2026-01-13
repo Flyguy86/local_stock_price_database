@@ -282,7 +282,7 @@ open http://localhost:8400
 ### Key Features
 - **Multi-Dimensional Grid Search**: Comprehensive search across features, hyperparameters, and strategy rules
 - **Guaranteed Evaluation**: Every trained model gets simulated before the loop can exit
-- **Model Fingerprinting**: SHA-256 deduplication prevents retraining identical configurations
+- **Smart Model Fingerprinting**: SHA-256 deduplication includes ALL training params (features, hyperparams, alpha_grid, l1_ratio_grid, regime_configs) to prevent retraining identical configurations
 - **Priority Queue**: Higher parent SQN → higher child simulation priority (good parents first)
 - **Holy Grail Criteria**: Configurable auto-promotion thresholds (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
 - **Lineage Tracking**: Full ancestry DAG from seed to promoted model
@@ -308,6 +308,9 @@ Each generation follows this sequence:
 - If can't prune (min_features reached or all equal importance) → **STOP** (simulations already ran!)
 
 **Step D**: Compute fingerprint of remaining features → check cache → reuse if exists
+- Fingerprint includes: features + hyperparameters + alpha_grid + l1_ratio_grid + regime_configs
+- Example: Gen 3 with same features/grids as Gen 1 → reuses cached model (skips training 294 models!)
+- Different grid search params → different fingerprint → trains new model
 
 **Step E**: Train child model with pruned feature set (or skip if cached)
 

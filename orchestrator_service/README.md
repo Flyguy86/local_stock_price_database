@@ -64,8 +64,21 @@ Each evolution generation trains ~294 models internally and simulates each acros
 
 ### 1. Model Fingerprinting (Deduplication)
 - **Purpose**: Prevent retraining identical model configurations
-- **Method**: SHA-256 hash of `(features, hyperparams, target_transform, symbol)`
+- **Method**: SHA-256 hash of complete training configuration:
+  ```python
+  fingerprint = hash(
+      features,           # Feature list
+      hyperparams,        # Base algorithm config
+      target_transform,   # log_return, pct_change, etc.
+      symbol,             # AAPL, SPY, etc.
+      alpha_grid,         # L2 regularization grid search values
+      l1_ratio_grid,      # L1/L2 mixing ratio grid search values
+      regime_configs      # Market regime filter configurations
+  )
+  ```
 - **Benefit**: Skip expensive training when pruning leads back to a known configuration
+- **Smart Detection**: Different grid search parameters produce different fingerprints, ensuring accurate deduplication
+- **Example**: Gen 3 with features `[A, B, C, D]` matches Gen 1 → reuses existing model instead of retraining 294 models
 
 ### 2. Priority Queue
 - **Ordering**: Jobs from higher-performing parents (higher SQN) run first
@@ -405,16 +418,29 @@ If Generation 3 tried to prune back to 4 features, the orchestrator would detect
 ### Tables
 
 #### `model_fingerprints`
-Deduplication lookup table.
+Deduplication lookup table. Stores complete training configuration for accurate cache hits.
 
 ```sql
-fingerprint VARCHAR(64) PRIMARY KEY,  -- SHA-256 hash
+fingerprint VARCHAR(64) PRIMARY KEY,  -- SHA-256 hash of full config
 model_id VARCHAR(64) NOT NULL,         -- Training service model UUID
 features_json JSONB NOT NULL,          -- Sorted feature list
-hyperparameters_json JSONB NOT NULL,
+hyperparameters_json JSONB NOT NULL,   -- Includes alpha_grid, l1_ratio_grid, regime_configs
 target_transform VARCHAR(32),
 symbol VARCHAR(16) NOT NULL
 ```
+
+**Fingerprint Components:**
+- Features: `["sma_20", "rsi_14", "macd_line"]`
+- Base hyperparams: `{"algorithm": "ElasticNet"}`
+- Grid search params:
+  - `alpha_grid`: `[0.001, 0.01, 0.1, 1.0, 10.0, 50.0, 100.0]`
+  - `l1_ratio_grid`: `[0.1, 0.3, 0.5, 0.7, 0.9, 0.95]`
+  - `regime_configs`: `[{"regime_vix": [0, 1, 2, 3]}, ...]`
+
+**Cache Hit Behavior:**
+- Same features + same grids → Reuse model (skip training) ✅
+- Same features + different grids → Train new model ✅
+- Normalization ensures order doesn't matter: `[10, 1, 0.1] == [0.1, 1, 10]`
 
 #### `evolution_runs`
 Top-level tracking for evolution jobs.
