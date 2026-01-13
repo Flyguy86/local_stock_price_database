@@ -442,41 +442,59 @@ async def resume_run(run_id: str, background_tasks: BackgroundTasks):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     
-    if run["status"] not in ("STOPPED", "FAILED"):
+    if run["status"] not in ("STOPPED", "FAILED", "CANCELLED"):
         raise HTTPException(
             status_code=400, 
-            detail=f"Can only resume STOPPED/FAILED runs, current status: {run['status']}"
+            detail=f"Can only resume STOPPED/FAILED/CANCELLED runs, current status: {run['status']}"
         )
     
+    # Check if there are pending/running simulations for this run
+    pending_count = await db.get_pending_job_count(run_id)
+    
+    if pending_count > 0:
+        # Just mark as RUNNING again - simulations are still in queue
+        await db.update_evolution_run(
+            run_id, 
+            status="RUNNING", 
+            step_status=f"Resumed: {pending_count} simulations pending"
+        )
+        log.info(f"Resumed run {run_id}: {pending_count} simulations still in queue")
+        return {
+            "status": "resumed",
+            "run_id": run_id,
+            "message": f"Resumed with {pending_count} pending simulations"
+        }
+    
+    # No pending jobs - need to restart the evolution loop
     # Reconstruct EvolutionConfig from stored run config
     import json
     config_dict = json.loads(run["config"]) if isinstance(run["config"], str) else run["config"]
     
-    # Update to resume from current state
-    config_dict["seed_model_id"] = run["best_model_id"] or run["seed_model_id"]
-    config_dict["max_generations"] = run["max_generations"] - run["current_generation"]
+    # Check if we need to continue or just evaluate existing results
+    completed_count = await db.get_completed_job_count(run_id, run["current_generation"])
     
-    config = EvolutionConfig(**config_dict)
+    if completed_count > 0:
+        # We have completed simulations - need to evaluate them and continue loop
+        await db.update_evolution_run(
+            run_id,
+            status="RUNNING",
+            step_status=f"Resumed: Evaluating {completed_count} completed simulations"
+        )
+        log.info(f"Resumed run {run_id}: Evaluating {completed_count} completed simulations")
+        
+        # TODO: Continue evolution loop from current state
+        # For now, just mark as running so manual intervention can assess
+        return {
+            "status": "resumed",
+            "run_id": run_id,
+            "message": f"Marked as RUNNING - {completed_count} simulations completed, awaiting evaluation"
+        }
     
-    # Mark as RUNNING and restart in background
-    await db.update_evolution_run(run_id, status="RUNNING", step_status="Resuming from interruption")
-    log.info(f"Resuming evolution run {run_id} from generation {run['current_generation']}")
-    
-    # Run evolution in background
-    async def run_evolution():
-        try:
-            result = await engine.run_evolution(config)
-            log.info(f"Resumed evolution {run_id} completed: {result}")
-        except Exception as e:
-            log.error(f"Resumed evolution {run_id} failed: {e}")
-            await db.update_evolution_run(run_id, status="FAILED")
-    
-    background_tasks.add_task(run_evolution)
-    
+    # No pending or completed jobs - something went wrong
     return {
-        "status": "resumed",
+        "status": "error",
         "run_id": run_id,
-        "resuming_from_generation": run["current_generation"]
+        "message": "No pending or completed simulations found - run may need manual restart"
     }
 
 
