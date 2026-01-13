@@ -1,6 +1,43 @@
 ## Code goals
 lets make sure to keep javascript / hmtl  separate file from python.
 
+## The "Recursive Evolution" Pipeline
+
+The core logic is a **nested loop** that searches across three dimensions:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        EVOLUTION LOOP (Outer)                               │
+│  For each generation (0 → max_generations):                                 │
+│    1. Get feature importance from trained model                             │
+│    2. Prune bottom 25% of features by importance                           │
+│    3. Train new model with remaining features                               │
+│                                                                             │
+│    ┌─────────────────────────────────────────────────────────────────────┐  │
+│    │              SIMULATION GRID SEARCH (Inner)                        │  │
+│    │  For each combination of:                                          │  │
+│    │    • Thresholds: [0.0001, 0.0003, 0.0005, 0.0007]                  │  │
+│    │    • Z-Score Cutoffs: [2.0, 2.5, 3.0, 3.5]                         │  │
+│    │    • Regime Configs: [GMM_0, GMM_1, VIX_any, No_filter]            │  │
+│    │                                                                     │  │
+│    │  → Run simulation → Evaluate SQN, PF, Trades                       │  │
+│    │  → Total: 4 × 4 × 4 = 64 simulations per model                     │  │
+│    └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│    4. Select best simulation result by SQN                                  │
+│    5. Check Holy Grail criteria (SQN 3-5, PF 2-4, Trades 200-10k)          │
+│    6. If met → PROMOTE; else continue pruning                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Example Evolution Run (4 generations, 46 initial features):**
+- Gen 0: 46 features → Train → 64 sims → Best SQN: 1.82
+- Gen 1: 35 features → Train → 64 sims → Best SQN: 2.14  
+- Gen 2: 26 features → Train → 64 sims → Best SQN: 2.87
+- Gen 3: 20 features → Train → 64 sims → Best SQN: 3.21 ✅ PROMOTED!
+
+**Total simulations per evolution:** 4 generations × 64 sims = 256 backtests
+
 # Orchestrator Agent Plan: Recursive Strategy Factory
 
 ## Mission

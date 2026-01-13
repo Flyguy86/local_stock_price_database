@@ -329,6 +329,27 @@ class Database:
             )
             return row["cnt"] if row else 0
     
+    async def get_completed_job_count(self, run_id: str, generation: Optional[int] = None) -> int:
+        """Get count of completed jobs for a run, optionally filtered by generation."""
+        async with self.acquire() as conn:
+            if generation is not None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT COUNT(*) as cnt FROM priority_jobs 
+                    WHERE run_id = $1 AND generation = $2 AND status = 'COMPLETED'
+                    """,
+                    run_id, generation
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT COUNT(*) as cnt FROM priority_jobs 
+                    WHERE run_id = $1 AND status = 'COMPLETED'
+                    """,
+                    run_id
+                )
+            return row["cnt"] if row else 0
+    
     async def get_completed_jobs(
         self, 
         run_id: str,

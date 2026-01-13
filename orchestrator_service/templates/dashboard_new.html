@@ -65,107 +65,208 @@
         </div>
         
         <form id="evolve-form">
-          <div class="row">
-            <div class="group">
-              <label>Seed Model ID (optional)</label>
-              <input type="text" id="seed-model-id" placeholder="abc-123-def...">
-            </div>
-            <div class="group">
-              <label>Target Symbol *</label>
-              <select id="symbol" required>
-                <option value="">Select target symbol...</option>
-              </select>
-            </div>
-          </div>
-          
-          <div class="row">
-            <div class="group full">
-              <label>Reference Symbols (optional - for multi-ticker TS-aligned training)</label>
-              <div id="reference-symbols-container" style="display: flex; flex-wrap: wrap; gap: 0.25rem; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; min-height: 40px;">
-                <span style="color: var(--text-muted); font-size: 0.85rem;">Select target symbol first, then choose references below</span>
-              </div>
-              <div id="reference-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
-              </div>
-            </div>
-          </div>
-          
-          <div class="row">
-            <div class="group">
-              <label>Algorithm</label>
-              <select id="algorithm">
-                <option value="elasticnet_regression">ElasticNet Regression</option>
-                <option value="xgboost_regressor">XGBoost Regressor</option>
-                <option value="lightgbm_regressor">LightGBM Regressor</option>
-                <option value="random_forest_regressor">Random Forest Regressor</option>
-                <option value="linear_regression">Linear Regression</option>
-              </select>
-            </div>
-            <div class="group">
-              <label>Target Column</label>
-              <select id="target-col">
-                <option value="close">close</option>
-                <option value="open">open</option>
-                <option value="high">high</option>
-                <option value="low">low</option>
-              </select>
-            </div>
-            <div class="group">
-              <label>Max Generations</label>
-              <input type="number" id="max-generations" value="4" min="1" max="10">
-            </div>
-          </div>
-          
-          <div class="row">
-            <div class="group">
-              <label>Target Transform</label>
-              <select id="target-transform">
-                <option value="log_return">log_return</option>
-                <option value="pct_change">pct_change</option>
-                <option value="none">none</option>
-              </select>
-            </div>
-            <div class="group">
-              <label>Timeframe</label>
-              <select id="timeframe">
-                <option value="1m">1 minute</option>
-                <option value="5m">5 minutes</option>
-                <option value="15m">15 minutes</option>
-                <option value="1h">1 hour</option>
-              </select>
-            </div>
-          </div>
-          
-          <div class="row">
-            <div class="group full">
-              <label>Thresholds (comma-separated)</label>
-              <input type="text" id="thresholds" value="0.0001, 0.0003, 0.0005, 0.0007">
-            </div>
-          </div>
-          
-          <details style="margin-top: 0.5rem;">
-            <summary>Holy Grail Criteria (Advanced)</summary>
-            <div class="row" style="margin-top: 0.5rem;">
-              <div class="group">
-                <label>SQN Min</label>
-                <input type="number" id="sqn-min" value="3.0" step="0.1">
-              </div>
-              <div class="group">
-                <label>SQN Max</label>
-                <input type="number" id="sqn-max" value="5.0" step="0.1">
-              </div>
-              <div class="group">
-                <label>PF Min</label>
-                <input type="number" id="pf-min" value="2.0" step="0.1">
-              </div>
-              <div class="group">
-                <label>PF Max</label>
-                <input type="number" id="pf-max" value="4.0" step="0.1">
-              </div>
-            </div>
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <!-- TRAINING CONFIGURATION -->
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+            <h4 style="margin: 0 0 0.75rem 0; color: #60a5fa; display: flex; align-items: center; gap: 0.5rem;">
+              🧠 Training Configuration
+              <span style="font-size: 0.75rem; font-weight: normal; color: var(--text-muted);">— Model learning parameters</span>
+            </h4>
+            
             <div class="row">
               <div class="group">
-                <label>Min Trades</label>
-                <input type="number" id="trades-min" value="200">
+                <label>Seed Model ID (optional)</label>
+                <input type="text" id="seed-model-id" placeholder="abc-123-def...">
+              </div>
+              <div class="group">
+                <label>Target Symbol *</label>
+                <select id="symbol" required>
+                  <option value="">Select target symbol...</option>
+                </select>
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="group full">
+                <label>Reference Symbols (optional - for multi-ticker TS-aligned training)</label>
+                <div id="reference-symbols-container" style="display: flex; flex-wrap: wrap; gap: 0.25rem; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; min-height: 40px;">
+                  <span style="color: var(--text-muted); font-size: 0.85rem;">Select target symbol first, then choose references below</span>
+                </div>
+                <div id="reference-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; max-height: 150px; overflow-y: auto; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
+                </div>
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="group">
+                <label>Algorithm</label>
+                <select id="algorithm" onchange="toggleRegularizationGrid()">
+                  <option value="elasticnet_regression">ElasticNet Regression</option>
+                  <option value="xgboost_regressor">XGBoost Regressor</option>
+                  <option value="lightgbm_regressor">LightGBM Regressor</option>
+                  <option value="random_forest_regressor">Random Forest Regressor</option>
+                  <option value="linear_regression">Linear Regression</option>
+                </select>
+              </div>
+              <div class="group">
+                <label>Target Column</label>
+                <select id="target-col">
+                  <option value="close">close</option>
+                  <option value="open">open</option>
+                  <option value="high">high</option>
+                  <option value="low">low</option>
+                </select>
+              </div>
+              <div class="group">
+                <label>Target Transform</label>
+                <select id="target-transform">
+                  <option value="log_return">log_return</option>
+                  <option value="pct_change">pct_change</option>
+                  <option value="none">none</option>
+                </select>
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="group">
+                <label>Timeframe</label>
+                <select id="timeframe">
+                  <option value="1m">1 minute</option>
+                  <option value="5m">5 minutes</option>
+                  <option value="15m">15 minutes</option>
+                  <option value="1h">1 hour</option>
+                </select>
+              </div>
+              <div class="group">
+                <label>Max Generations</label>
+                <input type="number" id="max-generations" value="4" min="1" max="10">
+              </div>
+              <div class="group">
+                <label>Prune % per Gen</label>
+                <input type="number" id="prune-fraction" value="25" min="10" max="50" step="5" title="Percentage of features to prune each generation">
+              </div>
+              <div class="group">
+                <label>Min Features</label>
+                <input type="number" id="min-features" value="5" min="3" max="20" title="Minimum features to keep (stops evolution when reached)">
+              </div>
+            </div>
+            
+            <!-- Regularization Grid (shown for ElasticNet/Ridge/Lasso) -->
+            <div id="regularization-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px;">
+              <div class="group">
+                <label>Alpha Grid (L2 penalty, comma-separated)</label>
+                <input type="text" id="alpha-grid" value="0.001, 0.01, 0.1, 1, 10, 50, 100" title="Regularization strength: higher = more penalty on large coefficients">
+              </div>
+              <div class="group">
+                <label>L1 Ratio Grid (Lasso/Ridge mix)</label>
+                <input type="text" id="l1-ratio-grid" value="0.1, 0.3, 0.5, 0.7, 0.9, 0.95" title="0 = pure Ridge (L2), 1 = pure Lasso (L1), 0.5 = balanced">
+              </div>
+            </div>
+          </div>
+          
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <!-- SIMULATION CONFIGURATION -->
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+            <h4 style="margin: 0 0 0.75rem 0; color: #34d399; display: flex; align-items: center; gap: 0.5rem;">
+              📊 Simulation Grid Search
+              <span style="font-size: 0.75rem; font-weight: normal; color: var(--text-muted);">— Backtest parameter sweep</span>
+            </h4>
+            
+            <div class="row">
+              <div class="group">
+                <label>Thresholds (comma-separated)</label>
+                <input type="text" id="thresholds" value="0.0001, 0.0003, 0.0005, 0.0007" title="Signal strength cutoffs for trade entry">
+              </div>
+              <div class="group">
+                <label>Z-Score Cutoffs (comma-separated)</label>
+                <input type="text" id="z-scores" value="2.0, 2.5, 3.0, 3.5" title="Volatility-adjusted signal thresholds">
+              </div>
+            </div>
+            
+            <div class="row">
+              <div class="group full">
+                <label>🎯 Simulation Tickers (defaults to training symbol if none selected)</label>
+                <div id="sim-tickers-container" style="display: flex; flex-wrap: wrap; gap: 0.25rem; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; min-height: 40px;">
+                  <span style="color: var(--text-muted); font-size: 0.85rem;" id="sim-tickers-placeholder">Using training symbol (select additional tickers below)</span>
+                </div>
+                <div id="sim-tickers-checkboxes" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; max-height: 100px; overflow-y: auto; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
+                </div>
+              </div>
+            </div>
+            
+            <!-- REGIME FILTER CONFIGURATION -->
+            <div class="row" style="margin-top: 0.75rem;">
+              <div class="group">
+                <label>🌊 VIX Regimes (4 quadrants)</label>
+                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-vix-0" onchange="updateRegimeConfigs()" checked> 0: Bear Vol
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-vix-1" onchange="updateRegimeConfigs()" checked> 1: Bear Quiet
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-vix-2" onchange="updateRegimeConfigs()" checked> 2: Bull Vol
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-vix-3" onchange="updateRegimeConfigs()" checked> 3: Bull Quiet
+                  </label>
+                </div>
+              </div>
+              <div class="group">
+                <label>🔬 GMM Regimes (volatility clusters)</label>
+                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; background: rgba(0,0,0,0.1); padding: 0.5rem; border-radius: 4px;">
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-gmm-0" onchange="updateRegimeConfigs()" checked> 0: Low Vol
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem;">
+                    <input type="checkbox" id="regime-gmm-1" onchange="updateRegimeConfigs()" checked> 1: High Vol
+                  </label>
+                  <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer; font-size: 0.85rem; margin-left: 1rem; border-left: 1px solid rgba(255,255,255,0.2); padding-left: 1rem;">
+                    <input type="checkbox" id="regime-none" onchange="updateRegimeConfigs()" checked> ∅ No Filter
+                  </label>
+                </div>
+              </div>
+            </div>
+            
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin: 0.5rem 0; padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 4px;">
+              📈 Grid Search: <strong style="color: #34d399;"><span id="grid-size">64</span> simulations</strong> per model 
+              (<span id="grid-dims">1 ticker × 4 thresholds × 4 z-scores × 7 regimes</span>)
+            </p>
+          </div>
+          
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <!-- HOLY GRAIL CRITERIA (ADVANCED) -->
+          <!-- ═══════════════════════════════════════════════════════════════ -->
+          <details style="margin-top: 0.5rem;">
+            <summary style="cursor: pointer; padding: 0.5rem; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 6px;">
+              🏆 Holy Grail Criteria (Advanced)
+            </summary>
+            <div style="background: rgba(251, 191, 36, 0.05); border: 1px solid rgba(251, 191, 36, 0.2); border-top: none; border-radius: 0 0 6px 6px; padding: 1rem;">
+              <div class="row" style="margin-top: 0.5rem;">
+                <div class="group">
+                  <label>SQN Min</label>
+                  <input type="number" id="sqn-min" value="3.0" step="0.1">
+                </div>
+                <div class="group">
+                  <label>SQN Max</label>
+                  <input type="number" id="sqn-max" value="5.0" step="0.1">
+                </div>
+                <div class="group">
+                  <label>PF Min</label>
+                  <input type="number" id="pf-min" value="2.0" step="0.1">
+                </div>
+                <div class="group">
+                  <label>PF Max</label>
+                  <input type="number" id="pf-max" value="4.0" step="0.1">
+                </div>
+              </div>
+              <div class="row">
+                <div class="group">
+                  <label>Min Trades</label>
+                  <input type="number" id="trades-min" value="200">
               </div>
               <div class="group">
                 <label>Max Trades</label>

@@ -84,6 +84,9 @@ class TrainRequest(BaseModel):
     feature_whitelist: Optional[list[str]] = None
     group_id: Optional[str] = None
     target_transform: str = "none" # none, log_return, pct_change
+    # Grid search parameters for regularization
+    alpha_grid: Optional[list[float]] = None  # L2 penalty values (Ridge/ElasticNet alpha)
+    l1_ratio_grid: Optional[list[float]] = None  # L1/L2 mix for ElasticNet (0=Ridge, 1=Lasso)
 
 # Validating batch request schema
 class TrainBatchRequest(BaseModel):
@@ -285,7 +288,9 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.parent_model_id, 
         req.feature_whitelist,
         req.group_id,  # Pass group_id
-        req.target_transform
+        req.target_transform,
+        req.alpha_grid,  # Grid search: L2 penalty values
+        req.l1_ratio_grid  # Grid search: L1/L2 mix values
     )
     
     return {"id": training_id, "status": "started"}

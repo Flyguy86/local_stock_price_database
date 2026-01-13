@@ -20,7 +20,8 @@ class EvolutionConfig(BaseModel):
     """Configuration for an evolution run."""
     seed_model_id: Optional[str] = None         # Start from existing model
     seed_features: Optional[List[str]] = None   # Or start fresh with feature list
-    symbol: str
+    symbol: str                                  # Primary symbol for training
+    simulation_tickers: Optional[List[str]] = None  # Tickers to run simulations on (defaults to [symbol])
     algorithm: str = "RandomForest"
     target_col: str = "close"
     hyperparameters: Dict[str, Any] = {}
@@ -29,12 +30,25 @@ class EvolutionConfig(BaseModel):
     data_options: Optional[str] = None
     timeframe: str = "1m"
     
-    # Simulation grid
+    # Grid search for regularization (ElasticNet, Ridge, Lasso)
+    alpha_grid: Optional[List[float]] = None    # L2 penalty: [0.001, 0.01, 0.1, 1.0, 10.0, 50.0, 100.0]
+    l1_ratio_grid: Optional[List[float]] = None # L1/L2 mix: [0.1, 0.3, 0.5, 0.7, 0.9, 0.95]
+    
+    # Pruning strategy: prune bottom X% of features each generation
+    prune_fraction: float = 0.25                # Prune bottom 25% each gen
+    min_features: int = 5                       # Never go below this many features
+    
+    # Simulation grid - full grid search across all combinations
     thresholds: List[float] = [0.0001, 0.0003, 0.0005, 0.0007]
+    z_score_thresholds: List[float] = [2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs for signal filtering
     regime_configs: List[Dict[str, Any]] = [
-        {"regime_gmm": [0]},
-        {"regime_gmm": [1]},
-        {"regime_vix": [0, 1]}
+        {"regime_vix": [0]},                    # VIX 0: Bear Volatile (Crash)
+        {"regime_vix": [1]},                    # VIX 1: Bear Quiet (Drift Down)
+        {"regime_vix": [2]},                    # VIX 2: Bull Volatile (Melt Up)
+        {"regime_vix": [3]},                    # VIX 3: Bull Quiet (Best)
+        {"regime_gmm": [0]},                    # GMM 0: Low volatility cluster
+        {"regime_gmm": [1]},                    # GMM 1: High volatility cluster
+        {}                                       # No regime filter (all conditions)
     ]
     
     # Holy Grail criteria
@@ -44,6 +58,12 @@ class EvolutionConfig(BaseModel):
     profit_factor_max: float = 4.0
     trade_count_min: int = 200
     trade_count_max: int = 10000
+    
+    def get_simulation_tickers(self) -> List[str]:
+        """Get tickers to simulate on. Defaults to [symbol] if not specified."""
+        if self.simulation_tickers and len(self.simulation_tickers) > 0:
+            return self.simulation_tickers
+        return [self.symbol]
 
 
 @dataclass
@@ -155,9 +175,13 @@ class EvolutionEngine:
                     state.stopped_reason = "Could not get feature importance"
                     break
                 
-                # 2. Prune features with importance == 0
+                # 2. Prune bottom X% of features by importance
                 try:
-                    pruned, remaining = self._prune_features(importance)
+                    pruned, remaining = self._prune_features(
+                        importance, 
+                        prune_fraction=config.prune_fraction,
+                        min_features=config.min_features
+                    )
                     log.info(f"Step 2: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
                 except Exception as e:
                     log.error(f"Step 2 FAILED: Pruning error: {e}")
@@ -165,17 +189,16 @@ class EvolutionEngine:
                     break
                 
                 if not pruned:
-                    log.info("Step 2: No features to prune (all have non-zero importance), evolution complete")
+                    log.info("Step 2: No features to prune (at min_features limit or all equal importance)")
                     state.stopped_reason = "no_features_to_prune"
                     break
                 
-                if not remaining:
-                    log.warning("Step 2: All features would be pruned, stopping")
-                    log.warning(f"  Pruned features: {pruned[:10]}{'...' if len(pruned) > 10 else ''}")
-                    state.stopped_reason = "all_features_pruned"
+                if not remaining or len(remaining) < config.min_features:
+                    log.warning(f"Step 2: Would go below min_features ({config.min_features}), stopping")
+                    state.stopped_reason = "min_features_reached"
                     break
                 
-                log.info(f"Step 2: Pruned {len(pruned)} zero-importance features: {pruned}")
+                log.info(f"Step 2: Pruned {len(pruned)} low-importance features")
                 log.info(f"Step 2: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
                 await db.update_evolution_run(run_id, step_status=f"{gen_label}: Pruned {len(pruned)}, keeping {len(remaining)} features")
                 
@@ -360,11 +383,17 @@ class EvolutionEngine:
     
     def _prune_features(
         self, 
-        importance: Dict[str, float]
+        importance: Dict[str, float],
+        prune_fraction: float = 0.25,
+        min_features: int = 5
     ) -> tuple[List[str], List[str]]:
         """
-        Prune features with importance == 0 (exactly zero).
-        Small negative values are kept as they still contribute.
+        Prune the bottom X% of features by absolute importance.
+        
+        Strategy:
+        1. First, remove any features with exactly 0 importance
+        2. Then, prune the bottom prune_fraction of remaining features
+        3. Always keep at least min_features
         
         Returns:
             Tuple of (pruned_features, remaining_features)
@@ -375,16 +404,34 @@ class EvolutionEngine:
         # Log the importance values we received
         log.info(f"Feature importance received: {len(importance)} features")
         for feature, score in sorted(importance.items(), key=lambda x: abs(x[1]), reverse=True)[:10]:
-            log.debug(f"  {feature}: {score}")
+            log.info(f"  Top importance: {feature}: {score:.6f}")
         
-        for feature, score in importance.items():
-            # Only prune features with exactly zero importance
-            if score == 0:
-                pruned.append(feature)
-            else:
-                remaining.append(feature)
+        # Step 1: Separate zero-importance features
+        zero_importance = [f for f, s in importance.items() if s == 0]
+        non_zero = {f: s for f, s in importance.items() if s != 0}
         
-        log.info(f"Pruning result: {len(pruned)} zero-importance pruned, {len(remaining)} remaining")
+        log.info(f"Zero-importance features: {len(zero_importance)}")
+        log.info(f"Non-zero importance features: {len(non_zero)}")
+        
+        # Step 2: Sort non-zero features by absolute importance
+        sorted_features = sorted(non_zero.items(), key=lambda x: abs(x[1]), reverse=True)
+        
+        # Step 3: Calculate how many to keep
+        total_non_zero = len(sorted_features)
+        num_to_keep = max(min_features, int(total_non_zero * (1 - prune_fraction)))
+        
+        # Step 4: Split into remaining and pruned
+        remaining = [f for f, _ in sorted_features[:num_to_keep]]
+        importance_pruned = [f for f, _ in sorted_features[num_to_keep:]]
+        
+        # Combine zero-importance and low-importance pruned
+        pruned = zero_importance + importance_pruned
+        
+        log.info(f"Pruning strategy: keep top {num_to_keep}/{total_non_zero} non-zero features")
+        log.info(f"Pruning result: {len(pruned)} pruned ({len(zero_importance)} zero + {len(importance_pruned)} low), {len(remaining)} remaining")
+        
+        if importance_pruned:
+            log.info(f"Lowest importance features pruned: {importance_pruned[:5]}{'...' if len(importance_pruned) > 5 else ''}")
         
         return pruned, remaining
     
@@ -392,10 +439,13 @@ class EvolutionEngine:
         self,
         state: EvolutionState,
         parent_model_id: Optional[str],
-        features: Optional[List[str]] = None
+        features: Optional[List[str]] = None,
+        timeout: float = 600.0,  # 10 minute timeout
+        poll_interval: float = 5.0
     ) -> str:
         """Train a new model via training service."""
         config = state.config
+        run_id = state.run_id
         
         payload = {
             "symbol": config.symbol,
@@ -406,71 +456,130 @@ class EvolutionEngine:
             "data_options": config.data_options,
             "timeframe": config.timeframe,
             "parent_model_id": parent_model_id,
-            "feature_whitelist": features
+            "feature_whitelist": features,
+            "alpha_grid": config.alpha_grid,       # Grid search: L2 penalty values
+            "l1_ratio_grid": config.l1_ratio_grid  # Grid search: L1/L2 mix values
         }
         
         log.info(f"Training model with {len(features or [])} features...")
         log.debug(f"Training payload: {payload}")
-        resp = await self.http_client.post(
-            f"{self.training_url}/train",
-            json=payload
-        )
+        
+        try:
+            resp = await self.http_client.post(
+                f"{self.training_url}/train",
+                json=payload
+            )
+        except Exception as e:
+            await db.update_evolution_run(run_id, step_status=f"Training request failed: {e}")
+            raise RuntimeError(f"Failed to connect to training service: {e}")
+        
         if resp.status_code != 200:
-            log.error(f"Training service returned {resp.status_code}: {resp.text}")
-        resp.raise_for_status()
+            error_msg = f"Training service returned {resp.status_code}: {resp.text}"
+            log.error(error_msg)
+            await db.update_evolution_run(run_id, step_status=f"Training failed: HTTP {resp.status_code}")
+            raise RuntimeError(error_msg)
+        
         data = resp.json()
         model_id = data["id"]
+        log.info(f"Training job started: {model_id}")
         
-        # Poll for completion
-        while True:
-            await asyncio.sleep(5)
-            resp = await self.http_client.get(f"{self.training_url}/models")
-            models = resp.json()
-            model = next((m for m in models if m["id"] == model_id), None)
+        # Poll for completion with timeout
+        elapsed = 0.0
+        last_status = None
+        
+        while elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
             
-            if model:
+            try:
+                resp = await self.http_client.get(f"{self.training_url}/models")
+                if resp.status_code != 200:
+                    log.warning(f"Training service models endpoint returned {resp.status_code}")
+                    await db.update_evolution_run(run_id, step_status=f"Training poll failed: HTTP {resp.status_code}")
+                    continue
+                    
+                models = resp.json()
+                model = next((m for m in models if m["id"] == model_id), None)
+                
+                if not model:
+                    log.warning(f"Model {model_id} not found in training service (may have restarted)")
+                    await db.update_evolution_run(run_id, step_status=f"Training: Model not found (retry {int(elapsed)}s)")
+                    continue
+                
                 status = model.get("status")
+                
+                if status != last_status:
+                    log.info(f"Model {model_id} status: {status}")
+                    await db.update_evolution_run(run_id, step_status=f"Training: {status} ({int(elapsed)}s)")
+                    last_status = status
+                
                 if status == "completed":
-                    log.info(f"Model {model_id} training completed")
+                    log.info(f"Model {model_id} training completed after {int(elapsed)}s")
                     return model_id
                 elif status == "failed":
-                    raise RuntimeError(f"Model training failed: {model.get('error_message')}")
+                    error_msg = model.get('error_message', 'Unknown error')
+                    await db.update_evolution_run(run_id, step_status=f"Training failed: {error_msg[:50]}")
+                    raise RuntimeError(f"Model training failed: {error_msg}")
+                    
+            except httpx.RequestError as e:
+                log.warning(f"Training service unreachable: {e}")
+                await db.update_evolution_run(run_id, step_status=f"Training: Service unreachable ({int(elapsed)}s)")
         
-        return model_id
+        # Timeout reached
+        await db.update_evolution_run(run_id, step_status=f"Training timeout after {int(timeout)}s")
+        raise RuntimeError(f"Training timeout after {timeout}s for model {model_id}")
     
     async def _queue_simulations(
         self,
         state: EvolutionState,
         model_id: str
     ) -> int:
-        """Queue simulation jobs with priority."""
+        """
+        Queue simulation jobs with priority - full grid search.
+        
+        Grid dimensions:
+        - Thresholds: Signal strength cutoffs (e.g., 0.0001 to 0.001)
+        - Z-score thresholds: Volatility-adjusted signal filtering (e.g., 2.0 to 3.5)
+        - Regime configs: Market condition filters (GMM clusters, VIX regimes)
+        - Simulation tickers: Run on multiple tickers to test generalization
+        
+        Total jobs = len(tickers) * len(thresholds) * len(z_scores) * len(regimes)
+        Example: 2 tickers * 4 thresholds * 4 z-scores * 4 regimes = 128 simulations per model
+        """
         config = state.config
         jobs = []
         batch_id = str(uuid.uuid4())
         
-        for threshold in config.thresholds:
-            for regime_config in config.regime_configs:
-                job = {
-                    "id": str(uuid.uuid4()),
-                    "batch_id": batch_id,
-                    "run_id": state.run_id,
-                    "model_id": model_id,
-                    "generation": state.current_generation,
-                    "parent_sqn": state.parent_sqn,
-                    "params": {
-                        "model_id": model_id,
-                        "ticker": config.symbol,
-                        "threshold": threshold,
-                        "regime_config": regime_config,
-                        "z_score_threshold": 3.0,
-                        "use_trading_bot": False,
-                        "use_volume_normalization": True
-                    }
-                }
-                jobs.append(job)
+        # Get simulation tickers (defaults to training symbol if not specified)
+        sim_tickers = config.get_simulation_tickers()
+        
+        # Full 4D grid search: tickers × thresholds × z-scores × regimes
+        for ticker in sim_tickers:
+            for threshold in config.thresholds:
+                for z_score in config.z_score_thresholds:
+                    for regime_config in config.regime_configs:
+                        job = {
+                            "id": str(uuid.uuid4()),
+                            "batch_id": batch_id,
+                            "run_id": state.run_id,
+                            "model_id": model_id,
+                            "generation": state.current_generation,
+                            "parent_sqn": state.parent_sqn,
+                            "params": {
+                                "model_id": model_id,
+                                "ticker": ticker,
+                                "threshold": threshold,
+                                "z_score_threshold": z_score,
+                                "regime_config": regime_config,
+                                "use_trading_bot": False,
+                                "use_volume_normalization": True
+                            }
+                        }
+                        jobs.append(job)
         
         count = await db.enqueue_jobs(jobs)
-        log.info(f"Queued {count} simulation jobs with priority {state.parent_sqn:.2f}")
+        grid_dims = f"{len(sim_tickers)} tickers × {len(config.thresholds)} thresholds × {len(config.z_score_thresholds)} z-scores × {len(config.regime_configs)} regimes"
+        log.info(f"Queued {count} simulation jobs ({grid_dims}) with priority {state.parent_sqn:.2f}")
         return count
     
     async def _wait_and_evaluate(
@@ -482,19 +591,34 @@ class EvolutionEngine:
     ) -> Optional[Dict[str, Any]]:
         """Wait for simulations to complete and return best result."""
         elapsed = 0.0
+        run_id = state.run_id
+        total_jobs = None
         
         while elapsed < timeout:
-            pending = await db.get_pending_job_count(state.run_id)
+            pending = await db.get_pending_job_count(run_id)
+            completed_count = await db.get_completed_job_count(run_id, state.current_generation)
+            
+            if total_jobs is None and (pending > 0 or completed_count > 0):
+                total_jobs = pending + completed_count
+            
             if pending == 0:
                 break
             
-            log.info(f"Waiting for {pending} simulations...")
+            # Update status with progress
+            progress = f"{completed_count}/{total_jobs}" if total_jobs else f"{pending} pending"
+            await db.update_evolution_run(run_id, step_status=f"Simulating: {progress} ({int(elapsed)}s)")
+            
+            log.info(f"Waiting for {pending} simulations... ({completed_count} completed)")
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
         
+        if elapsed >= timeout:
+            await db.update_evolution_run(run_id, step_status=f"Simulation timeout after {int(timeout)}s")
+            log.warning(f"Simulation timeout after {timeout}s")
+        
         # Get completed jobs for this generation
         completed = await db.get_completed_jobs(
-            state.run_id, 
+            run_id, 
             generation=state.current_generation
         )
         

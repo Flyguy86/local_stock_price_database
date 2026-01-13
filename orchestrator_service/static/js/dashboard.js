@@ -22,7 +22,94 @@ document.addEventListener('DOMContentLoaded', () => {
   loadPromoted();
   setupFormHandler();
   setupSymbolSelector();
+  setupGridCalculator();
+  toggleRegularizationGrid();  // Initialize visibility based on algorithm
 });
+
+// ============================================
+// Regularization Grid Toggle
+// ============================================
+
+function toggleRegularizationGrid() {
+  const algorithm = document.getElementById('algorithm')?.value || '';
+  const regGrid = document.getElementById('regularization-grid');
+  if (!regGrid) return;
+  
+  // Show regularization inputs for ElasticNet, Ridge, Lasso
+  const showGrid = algorithm.includes('elasticnet') || algorithm.includes('ridge') || algorithm.includes('lasso');
+  regGrid.style.display = showGrid ? 'flex' : 'none';
+}
+
+// ============================================
+// Grid Size Calculator
+// ============================================
+
+function setupGridCalculator() {
+  const thresholdsInput = document.getElementById('thresholds');
+  const zScoresInput = document.getElementById('z-scores');
+  
+  thresholdsInput?.addEventListener('input', updateGridSize);
+  zScoresInput?.addEventListener('input', updateGridSize);
+  updateGridSize();  // Initial calculation
+}
+
+function getSelectedRegimeConfigs() {
+  // Build regime configs from checkboxes
+  const configs = [];
+  
+  // VIX regimes (each individually)
+  for (let i = 0; i <= 3; i++) {
+    const cb = document.getElementById(`regime-vix-${i}`);
+    if (cb && cb.checked) {
+      configs.push({ "regime_vix": [i] });
+    }
+  }
+  
+  // GMM regimes (each individually)
+  for (let i = 0; i <= 1; i++) {
+    const cb = document.getElementById(`regime-gmm-${i}`);
+    if (cb && cb.checked) {
+      configs.push({ "regime_gmm": [i] });
+    }
+  }
+  
+  // No filter option
+  const noneBox = document.getElementById('regime-none');
+  if (noneBox && noneBox.checked) {
+    configs.push({});
+  }
+  
+  // Fallback: if nothing selected, use "no filter"
+  if (configs.length === 0) {
+    configs.push({});
+  }
+  
+  return configs;
+}
+
+function updateRegimeConfigs() {
+  // Called when regime checkboxes change - update grid size
+  updateGridSize();
+}
+
+function updateGridSize() {
+  const thresholdsInput = document.getElementById('thresholds');
+  const zScoresInput = document.getElementById('z-scores');
+  
+  const thresholds = (thresholdsInput?.value || '').split(',').filter(t => t.trim()).length;
+  const zScores = (zScoresInput?.value || '').split(',').filter(z => z.trim()).length;
+  const regimes = getSelectedRegimeConfigs().length;
+  
+  // Simulation tickers: use selected count, or 1 if none selected (uses training symbol)
+  const tickers = selectedSimTickers?.size > 0 ? selectedSimTickers.size : 1;
+  
+  const total = tickers * thresholds * zScores * regimes;
+  const gridSizeEl = document.getElementById('grid-size');
+  const gridDimsEl = document.getElementById('grid-dims');
+  
+  if (gridSizeEl) gridSizeEl.textContent = total;
+  if (gridDimsEl) gridDimsEl.textContent = `${tickers} ticker${tickers > 1 ? 's' : ''} × ${thresholds} thresholds × ${zScores} z-scores × ${regimes} regimes`;
+}
 
 // ============================================
 // Symbol Selection from Feature Service
@@ -31,6 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
 let availableOptions = [];
 let availableSymbols = [];
 let selectedReferences = new Set();
+let selectedSimTickers = new Set();  // Simulation tickers (separate from training)
 let selectedDataOptions = null;
 
 async function loadAvailableOptions() {
@@ -118,8 +206,9 @@ async function onDataOptionsChange(selectedOption) {
         </div>
       `;
       
-      // Update reference checkboxes
+      // Update reference checkboxes and simulation ticker checkboxes
       updateReferenceCheckboxes();
+      updateSimTickerCheckboxes();
     } else {
       document.getElementById('symbol-selection').innerHTML = `
         <div style="background: rgba(239, 68, 68, 0.2); padding: 0.5rem; border-radius: 4px;">
@@ -147,7 +236,10 @@ function setupSymbolSelector() {
   // Watch target symbol changes to update reference checkboxes
   const targetSelect = document.getElementById('symbol');
   if (targetSelect) {
-    targetSelect.addEventListener('change', updateReferenceCheckboxes);
+    targetSelect.addEventListener('change', () => {
+      updateReferenceCheckboxes();
+      updateSimTickerCheckboxes();
+    });
   }
 }
 
@@ -191,6 +283,56 @@ function updateReferenceDisplay() {
   } else {
     container.innerHTML = Array.from(selectedReferences).map(sym => `
       <span class="badge" style="cursor: pointer;" onclick="toggleReferenceSymbol('${sym}'); updateReferenceCheckboxes();">
+        ${sym} ×
+      </span>
+    `).join('');
+  }
+}
+
+// ============================================
+// Simulation Tickers (separate from training)
+// ============================================
+
+function updateSimTickerCheckboxes() {
+  const targetSymbol = document.getElementById('symbol').value;
+  const container = document.getElementById('sim-tickers-checkboxes');
+  
+  if (!targetSymbol || availableSymbols.length === 0) {
+    container.innerHTML = '<span style="color: var(--text-muted); font-size: 0.85rem;">Load symbols first</span>';
+    return;
+  }
+  
+  // Show all symbols (including target)
+  container.innerHTML = availableSymbols.map(sym => `
+    <label style="display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
+      <input type="checkbox" value="${sym}" ${selectedSimTickers.has(sym) ? 'checked' : ''} onchange="toggleSimTicker('${sym}')">
+      <span style="font-size: 0.85rem;">${sym}</span>
+    </label>
+  `).join('');
+  
+  updateSimTickerDisplay();
+  updateGridSize();
+}
+
+function toggleSimTicker(symbol) {
+  if (selectedSimTickers.has(symbol)) {
+    selectedSimTickers.delete(symbol);
+  } else {
+    selectedSimTickers.add(symbol);
+  }
+  updateSimTickerDisplay();
+  updateGridSize();
+}
+
+function updateSimTickerDisplay() {
+  const container = document.getElementById('sim-tickers-container');
+  const placeholder = document.getElementById('sim-tickers-placeholder');
+  
+  if (selectedSimTickers.size === 0) {
+    container.innerHTML = '<span style="color: var(--text-muted); font-size: 0.85rem;" id="sim-tickers-placeholder">Using training symbol (select additional tickers below)</span>';
+  } else {
+    container.innerHTML = Array.from(selectedSimTickers).map(sym => `
+      <span class="badge" style="cursor: pointer; background: rgba(59, 130, 246, 0.3);" onclick="toggleSimTicker('${sym}'); updateSimTickerCheckboxes();">
         ${sym} ×
       </span>
     `).join('');
@@ -646,22 +788,38 @@ function setupFormHandler() {
       .map(t => parseFloat(t.trim()))
       .filter(t => !isNaN(t));
     
+    const zScores = document.getElementById('z-scores').value
+      .split(',')
+      .map(z => parseFloat(z.trim()))
+      .filter(z => !isNaN(z));
+    
+    // Regime configs - dynamically built from checkboxes
+    const regimeConfigs = getSelectedRegimeConfigs();
+    
+    // Regularization grid (for ElasticNet, Ridge, Lasso)
+    const alphaGridStr = document.getElementById('alpha-grid')?.value || '';
+    const l1RatioGridStr = document.getElementById('l1-ratio-grid')?.value || '';
+    const alphaGrid = alphaGridStr.split(',').map(a => parseFloat(a.trim())).filter(a => !isNaN(a));
+    const l1RatioGrid = l1RatioGridStr.split(',').map(l => parseFloat(l.trim())).filter(l => !isNaN(l));
+    
     const payload = {
       seed_model_id: document.getElementById('seed-model-id').value || null,
       symbol: document.getElementById('symbol').value,
       reference_symbols: Array.from(selectedReferences),  // Include reference symbols
+      simulation_tickers: selectedSimTickers.size > 0 ? Array.from(selectedSimTickers) : null,  // Simulation tickers (null = use training symbol)
       data_options: selectedDataOptions,  // Include selected fold/options
       algorithm: document.getElementById('algorithm').value,
       target_col: document.getElementById('target-col').value,
       max_generations: parseInt(document.getElementById('max-generations').value),
+      prune_fraction: parseInt(document.getElementById('prune-fraction').value) / 100,  // Convert % to decimal
+      min_features: parseInt(document.getElementById('min-features').value),
       target_transform: document.getElementById('target-transform').value,
       timeframe: document.getElementById('timeframe').value,
       thresholds: thresholds,
-      regime_configs: [
-        {"regime_gmm": [0]},
-        {"regime_gmm": [1]},
-        {"regime_vix": [0, 1]}
-      ],
+      z_score_thresholds: zScores,
+      regime_configs: regimeConfigs,
+      alpha_grid: alphaGrid.length > 0 ? alphaGrid : null,      // L2 penalty grid search
+      l1_ratio_grid: l1RatioGrid.length > 0 ? l1RatioGrid : null,  // L1/L2 mix grid search
       sqn_min: parseFloat(document.getElementById('sqn-min').value),
       sqn_max: parseFloat(document.getElementById('sqn-max').value),
       profit_factor_min: parseFloat(document.getElementById('pf-min').value),

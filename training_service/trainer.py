@@ -53,7 +53,7 @@ if LGBMRegressor:
     ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
     ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None, target_transform: str = "none"):
+def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None, target_transform: str = "none", alpha_grid: list[float] = None, l1_ratio_grid: list[float] = None):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
@@ -471,11 +471,17 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
         if algorithm == "elasticnet_regression" and not params:
             log.info("Starting Grid Search for ElasticNet (Alpha/L1 Ratio) to avoid zero-feature models...")
             
-            # Param Grid
+            # Param Grid - use provided values or defaults
+            # Alpha (L2 penalty): higher = more regularization
+            # L1 ratio: 0 = pure L2 (Ridge), 1 = pure L1 (Lasso), 0.5 = balanced
+            default_alphas = [0.001, 0.01, 0.1, 1.0, 10.0, 50.0, 100.0]
+            default_l1_ratios = [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
+            
             grid_params = {
-                'model__alpha': [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0],
-                'model__l1_ratio': [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
+                'model__alpha': alpha_grid if alpha_grid else default_alphas,
+                'model__l1_ratio': l1_ratio_grid if l1_ratio_grid else default_l1_ratios
             }
+            log.info(f"Grid: alpha={grid_params['model__alpha']}, l1_ratio={grid_params['model__l1_ratio']}")
 
             
             # Use GridSearchCV
@@ -648,15 +654,12 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                      shap_mean = np.mean(np.abs(shap_vals), axis=0)
                      for i, col in enumerate(feature_cols_used):
                          feature_details[col]["shap_mean_abs"] = float(shap_mean[i])
-                elif explainer and is_ohe:
-                     log.info("Skipping detailed SHAP mapping due to OHE expansion (ColumnTransformer).")
-                    
+                     
                      # ----------------------------------------------------
-                     # 4. Regime Interaction Analysis (New)
+                     # 4. Regime Interaction Analysis
                      # ----------------------------------------------------
-                     # Analyze how feature importance flips between regimes.
-                     # We look for columns in the original DF starting with 'regime_'
-                     # irrespective of whether they were used as features.
+                     # Analyze how feature importance varies by regime.
+                     # Only run when we have valid SHAP values mapped to original features.
                      try:
                          regime_interaction = {}
                          # Valid indices for the SHAP evaluation set
@@ -702,6 +705,9 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                      except Exception as reg_err:
                          log.warning(f"Failed to calc regime interactions: {reg_err}")
                      # ----------------------------------------------------
+                         
+                elif explainer and is_ohe:
+                     log.info("Skipping detailed SHAP mapping due to OHE expansion (ColumnTransformer).")
 
             except Exception as e:
                 log.warning(f"Error extracting SHAP values: {e}")

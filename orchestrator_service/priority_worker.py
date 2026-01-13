@@ -146,7 +146,7 @@ class PriorityWorker:
             - model_id: UUID of the model
             - ticker: Trading symbol
             - threshold: Prediction threshold
-            - regime_config: Dict like {"regime_gmm": [1]}
+            - regime_config: Dict like {"regime_gmm": [1]} or {"regime_vix": [3]}
             - z_score_threshold: Optional
             - use_trading_bot: Optional
             - use_volume_normalization: Optional
@@ -155,23 +155,24 @@ class PriorityWorker:
         sim_request = {
             "model_id": params["model_id"],
             "ticker": params["ticker"],
-            "threshold": params.get("threshold", 0.0003),
-            "z_score_threshold": params.get("z_score_threshold", 3.0),
-            "use_trading_bot": params.get("use_trading_bot", False),
-            "use_volume_normalization": params.get("use_volume_normalization", True)
+            "min_prediction_threshold": params.get("threshold", 0.0003),
+            "enable_z_score_check": params.get("z_score_threshold") is not None,
+            "volatility_normalization": params.get("use_volume_normalization", True),
+            "use_bot": params.get("use_trading_bot", False)
         }
         
         # Add regime filter if specified
+        # Format: {"regime_gmm": [1]} -> regime_col="regime_gmm", allowed_regimes=[1]
+        # Format: {"regime_vix": [3]} -> regime_col="regime_vix", allowed_regimes=[3]
         regime_config = params.get("regime_config", {})
         if regime_config:
-            # Format: {"regime_gmm": [1]} -> regime_filter="regime_gmm", regime_values=[1]
             for regime_col, values in regime_config.items():
-                sim_request["regime_filter"] = regime_col
-                sim_request["regime_values"] = values
+                sim_request["regime_col"] = regime_col
+                sim_request["allowed_regimes"] = values
                 break  # Only use first regime config
         
         # Call simulation service
-        url = f"{SIMULATION_URL}/simulate"
+        url = f"{SIMULATION_URL}/api/simulate"
         log.debug(f"POST {url} with {sim_request}")
         
         resp = await self.http_client.post(url, json=sim_request)

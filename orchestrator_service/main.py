@@ -273,19 +273,26 @@ class EvolveRequest(BaseModel):
     seed_features: Optional[List[str]] = None
     symbol: str
     reference_symbols: Optional[List[str]] = None  # Additional tickers for relational features
+    simulation_tickers: Optional[List[str]] = None  # Tickers to run simulations on
     algorithm: str = "RandomForest"
     target_col: str = "close"
     hyperparameters: dict = {}
     target_transform: str = "log_return"
     max_generations: int = 4
+    prune_fraction: float = 0.25  # Prune bottom X% each generation
+    min_features: int = 5         # Stop when reaching this many features
     data_options: Optional[str] = None
     timeframe: str = "1m"
     thresholds: List[float] = [0.0001, 0.0003, 0.0005, 0.0007]
+    z_score_thresholds: List[float] = [2.0, 2.5, 3.0, 3.5]  # Z-score cutoffs
     regime_configs: List[dict] = [
         {"regime_gmm": [0]},
         {"regime_gmm": [1]},
         {"regime_vix": [0, 1]}
     ]
+    # Grid search for regularization (ElasticNet, Ridge, Lasso)
+    alpha_grid: Optional[List[float]] = None    # L2 penalty: [0.001, 0.01, 0.1, 1, 10, 50, 100]
+    l1_ratio_grid: Optional[List[float]] = None # L1/L2 mix: [0.1, 0.3, 0.5, 0.7, 0.9]
     # Holy Grail thresholds
     sqn_min: float = 3.0
     sqn_max: float = 5.0
@@ -343,15 +350,21 @@ async def start_evolution(req: EvolveRequest, background_tasks: BackgroundTasks)
         seed_model_id=req.seed_model_id,
         seed_features=seed_features,
         symbol=req.symbol,
+        simulation_tickers=req.simulation_tickers,
         algorithm=req.algorithm,
         target_col=req.target_col,
         hyperparameters=req.hyperparameters,
         target_transform=req.target_transform,
         max_generations=req.max_generations,
+        prune_fraction=req.prune_fraction,
+        min_features=req.min_features,
         data_options=data_options,
         timeframe=req.timeframe,
         thresholds=req.thresholds,
+        z_score_thresholds=req.z_score_thresholds,
         regime_configs=req.regime_configs,
+        alpha_grid=req.alpha_grid,
+        l1_ratio_grid=req.l1_ratio_grid,
         sqn_min=req.sqn_min,
         sqn_max=req.sqn_max,
         profit_factor_min=req.profit_factor_min,

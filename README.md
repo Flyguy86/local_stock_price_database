@@ -338,6 +338,33 @@ See [orchestrator_service/README.md](orchestrator_service/README.md) for detaile
 - **Priority Worker**: Fixed JSON parsing for params field (`'str' object has no attribute 'get'` error).
 - **Algorithm Dropdown**: Fixed values (e.g., `RandomForest` → `random_forest_regressor`).
 
+#### 🧬 Progressive Pruning Strategy (NEW)
+- **Problem**: Evolution was stopping at Gen 1 when no features had exactly 0 importance (common with RandomForest/XGBoost).
+- **Solution**: Now prunes the **bottom X% of features by importance** each generation.
+- **New Parameters**:
+  - `prune_fraction` (default 25%): Percentage of features to prune each generation
+  - `min_features` (default 5): Minimum features to retain (stops evolution when reached)
+- **Behavior**: Ensures evolution progresses through all generations, gradually focusing on the most predictive features.
+
+#### 📊 Full Simulation Grid Search
+Each trained model runs a **4D grid search** across simulation parameters:
+- **Simulation Tickers**: Run backtests on different tickers than training (test generalization)
+- **Thresholds**: Signal strength cutoffs (e.g., 0.0001, 0.0003, 0.0005, 0.0007)
+- **Z-Score Cutoffs**: Volatility-adjusted signal filtering (e.g., 2.0, 2.5, 3.0, 3.5)
+- **Regime Configs**: Market condition filters (GMM clusters, VIX regimes, no filter)
+
+**Grid Size Example**: 2 tickers × 4 thresholds × 4 z-scores × 4 regimes = **128 simulations per model**
+
+**Use Cases**:
+- Train on GOOGL, simulate on GOOGL + MSFT (test generalization)
+- Train on QQQ, simulate on all available tickers (broad applicability)
+- Train on AAPL, simulate only on AAPL (single-ticker optimization)
+
+#### 🧹 Stale Run Cleanup
+- **Manual Cancel**: Cancel button on active run cards
+- **Cleanup Stale**: Button to mark runs as FAILED if no update for 10+ minutes
+- **API Endpoints**: `POST /runs/{run_id}/cancel`, `POST /runs/cleanup-stale`
+
 #### 🎯 Fold-First Workflow
 - **3-Step Selection**: Load Data Folds → Select Fold → Load Symbols (ensures consistent data options).
 - **Radio Button UI**: Select specific fold option before loading available symbols.
