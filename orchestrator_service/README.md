@@ -413,6 +413,245 @@ If Generation 3 tried to prune back to 4 features, the orchestrator would detect
 - Strategy combinations: 140 per model
 - **Example**: 4 generations × 294 models × 140 strategies = ~165,000 total evaluations
 
+---
+
+### Parallelization Analysis & Optimization Opportunities
+
+#### Current Parallel Execution
+
+**✅ What's Already Parallel:**
+
+1. **Training Grid Search (Within Step E)**
+   - 294 models (7 regimes × 7 alphas × 6 l1_ratios)
+   - Training service uses `GridSearchCV(n_jobs=-1)` → all CPU cores
+   - **Execution**: 294 models in parallel threads
+   - **Bottleneck**: CPU-bound (sklearn training)
+
+2. **Simulation Grid Search (Within Step A)**
+   - 140 simulations (4 thresholds × 5 z-scores × 7 regimes)
+   - Queued to PostgreSQL `priority_jobs` table
+   - Priority workers (`priority_worker_1`, `priority_worker_2`, ...) pull and process
+   - **Execution**: Distributed across N workers
+   - **Bottleneck**: I/O-bound (DuckDB reads, backtest computation)
+   - **Scaling**: Add more worker containers → linear speedup
+
+**⛔ What's Serial:**
+
+1. **Generation Loop (Steps A-F)**
+   - Each generation depends on the previous generation's results
+   - Gen 1 needs Gen 0's feature importance to know what to prune
+   - Gen 2 needs Gen 1's pruned model, etc.
+   - **Cannot parallelize** due to data dependency chain
+
+2. **Single Evolution Run at a Time**
+   - Dashboard only starts one evolution run per user action
+   - Multiple symbols could evolve simultaneously but independently
+   - **Current**: No batch "evolve all symbols" feature
+
+---
+
+#### Optimization Opportunities
+
+##### 🚀 **Immediate Wins** (Low Effort, High Impact)
+
+**1. Add More Priority Workers**
+```yaml
+# docker-compose.yml
+priority_worker_2:
+  build:
+    context: .
+    dockerfile: Dockerfile.optimize
+  container_name: priority_worker_2
+  restart: unless-stopped
+  command: python -m orchestrator_service.priority_worker
+  environment:
+    WORKER_ID: priority_worker_2
+    POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+    SIMULATION_URL: http://simulation_service:8300
+  depends_on:
+    - postgres
+    - simulation_service
+```
+
+- **Benefit**: 2 workers = 2× simulation throughput
+- **Linear scaling**: 4 workers = 4× throughput (up to CPU limits)
+- **Cost**: Each worker needs 1 CPU core + 2GB RAM
+- **Recommended**: N workers = number of CPU cores / 2
+
+**2. Batch Evolution Across Symbols**
+```python
+# New endpoint: POST /evolve/batch
+symbols = ["AAPL", "GOOGL", "MSFT", "NVDA"]
+for symbol in symbols:
+    background_tasks.add_task(engine.run_evolution, config_for_symbol)
+```
+
+- **Benefit**: 4 symbols evolving simultaneously (independent)
+- **Current limitation**: Each run creates separate workers pool contention
+- **Recommended**: Limit to 2-3 concurrent evolution runs to avoid resource starvation
+
+##### ⚡ **Medium-Effort Optimizations**
+
+**3. Pipeline Overlapping (Step A + Step E)**
+
+Currently:
+```
+Gen 0: [Train] → [Simulate 140 jobs] → [Wait] → [Prune]
+Gen 1:           [Wait]                 → [Train] → [Simulate 140 jobs]
+```
+
+Optimized:
+```
+Gen 0: [Train] → [Simulate 140 jobs concurrently with Gen 1 training]
+Gen 1:                                  [Train] → [Simulate]
+```
+
+- **Implementation**: Don't block on simulations completing before training next model
+- **Risk**: Gen 1 might not need to be trained if Gen 0 gets promoted
+- **Benefit**: ~30% faster (overlaps waiting with computation)
+
+**4. Simulation Result Streaming**
+
+Currently:
+```python
+# Wait for ALL 140 simulations, then pick best
+await wait_for_all_jobs()
+best = max(results, key=lambda r: r['sqn'])
+```
+
+Optimized:
+```python
+# Check results as they arrive
+while pending > 0:
+    completed = await get_latest_completed()
+    if any(meets_holy_grail(r) for r in completed):
+        PROMOTE_IMMEDIATELY()
+        cancel_remaining_jobs()
+        break
+```
+
+- **Benefit**: Early termination on Holy Grail hit (saves ~70% of simulations)
+- **Risk**: Might miss a slightly better configuration
+- **Tradeoff**: Speed vs exhaustive search
+
+**5. Fingerprint Cache Pre-check Before Training**
+
+Currently:
+```
+[Get Importance] → [Prune] → [Compute Fingerprint] → [Check Cache] → Maybe Skip Training
+```
+
+Optimized:
+```
+[Get Importance] → [Prune] → [Compute Fingerprint] → [Check Cache]
+   ↓ (if cache miss)
+[Predict likely fingerprints for next 2 generations] → [Warm cache]
+```
+
+- **Benefit**: Detect cycles earlier (e.g., Gen 3 = Gen 1)
+- **Implementation**: Simulate pruning trajectories
+- **Savings**: Skip 1-2 unnecessary training rounds per run
+
+##### 🔬 **Advanced Optimizations** (High Effort, Research Required)
+
+**6. Adaptive Grid Search**
+
+Instead of exhaustive 7×7×6 = 294 models:
+```python
+# Bayesian optimization or Hyperband
+- Start with 10 random configs
+- Identify promising regions
+- Refine top 5 with tighter grids
+- Total: ~50 models instead of 294
+```
+
+- **Benefit**: 6× faster training per generation
+- **Risk**: Might miss global optimum
+- **Research**: sklearn has `HalvingGridSearchCV` for this
+
+**7. Multi-Generation Look-Ahead**
+
+Currently: Prune 25% → train → evaluate → repeat
+
+Optimized:
+```python
+# Predict multiple pruning paths in parallel
+Gen 1a: Remove features [A, B]    → Train → Simulate
+Gen 1b: Remove features [A, C]    → Train → Simulate
+Gen 1c: Remove features [B, C]    → Train → Simulate
+Pick best path based on simulation results
+```
+
+- **Benefit**: Explore feature space faster
+- **Cost**: 3× training/simulation cost per generation
+- **Tradeoff**: Breadth vs depth (genetic algorithm vs hill climbing)
+
+**8. Simulation Approximation via Surrogate Model**
+
+Instead of running full backtest on DuckDB:
+```python
+# Train a lightweight "simulation predictor"
+surrogate = RandomForest(X=strategy_params, y=historical_sqn)
+predicted_sqn = surrogate.predict(new_strategy_config)
+# Only run actual simulation for top 20 predicted configs
+```
+
+- **Benefit**: 7× faster (20 sims instead of 140)
+- **Risk**: Surrogate might be inaccurate
+- **Implementation**: Requires 1000+ historical simulations to train surrogate
+
+---
+
+#### Bottleneck Analysis
+
+**Current Timing Breakdown** (for 1 evolution run, 4 generations):
+
+| Step | Time | Parallelized? | Bottleneck |
+|------|------|---------------|------------|
+| **Step E: Train Model** | 120s | ✅ Yes (n_jobs=-1) | CPU (294 models × 0.4s each) |
+| **Step A: Queue Simulations** | 5s | ⛔ No | PostgreSQL inserts |
+| **Step A: Run Simulations** | 600s | ✅ Yes (N workers) | DuckDB I/O + backtest logic |
+| **Step A: Wait & Evaluate** | 10s | ⛔ No | Single-threaded result aggregation |
+| **Step B: Get Importance** | 15s | ⛔ No | HTTP request + SHAP calculation |
+| **Step C: Prune Features** | 1s | ⛔ No | In-memory sorting |
+| **Step D: Fingerprint** | 0.1s | ⛔ No | SHA-256 hash |
+| **Step F: Record Lineage** | 2s | ⛔ No | PostgreSQL insert |
+| **Total per generation** | ~753s (12.5 min) | - | - |
+| **4 generations** | ~50 minutes | - | - |
+
+**Critical Path**: Step A (simulation grid search) is 80% of total time.
+
+**Optimization Priority:**
+1. 🥇 Add more priority workers (immediate 2-4× speedup)
+2. 🥈 Early termination on Holy Grail hit (saves 70% when successful)
+3. 🥉 Reduce simulation grid (e.g., 70 configs instead of 140 = 50% faster)
+
+---
+
+#### Scaling Recommendations
+
+**Small Setup** (1-2 symbols, rapid iteration):
+- 1 orchestrator
+- 1 training service
+- 1 simulation service
+- 2 priority workers
+- **Throughput**: 1 evolution run every ~30 minutes
+
+**Medium Setup** (5-10 symbols, production):
+- 1 orchestrator
+- 2 training services (load balanced)
+- 2 simulation services (load balanced)
+- 8 priority workers (4 per simulation service)
+- **Throughput**: 2-3 concurrent evolution runs
+
+**Large Setup** (50+ symbols, research cluster):
+- 1 orchestrator
+- 4 training services (load balanced)
+- 4 simulation services (load balanced)
+- 32 priority workers (8 per simulation service)
+- **Throughput**: 10+ concurrent evolution runs
+- **Cost**: 16-core CPU, 64GB RAM, NVMe SSD for DuckDB
+
 ## Database Schema
 
 ### Tables

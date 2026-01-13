@@ -141,6 +141,15 @@ button.secondary:hover {
   background: #475569;
 }
 
+button.danger {
+  background: #dc2626;
+  color: white;
+}
+
+button.danger:hover {
+  background: #b91c1c;
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
