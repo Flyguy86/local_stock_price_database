@@ -360,7 +360,14 @@ class Database:
             if generation is not None:
                 rows = await conn.fetch(
                     """
-                    SELECT * FROM priority_jobs 
+                    SELECT id, run_id, model_id, generation, parent_sqn, status, 
+                           params, created_at, updated_at,
+                           (result->>'sqn')::float as sqn,
+                           (result->>'profit_factor')::float as profit_factor,
+                           (result->>'total_trades')::int as total_trades,
+                           result->>'ticker' as ticker,
+                           result->>'threshold' as threshold
+                    FROM priority_jobs 
                     WHERE run_id = $1 AND generation = $2 AND status = 'COMPLETED'
                     ORDER BY (result->>'sqn')::float DESC NULLS LAST
                     """,
@@ -369,9 +376,17 @@ class Database:
             else:
                 rows = await conn.fetch(
                     """
-                    SELECT * FROM priority_jobs 
+                    SELECT id, run_id, model_id, generation, parent_sqn, status, 
+                           params, created_at, updated_at,
+                           (result->>'sqn')::float as sqn,
+                           (result->>'profit_factor')::float as profit_factor,
+                           (result->>'total_trades')::int as total_trades,
+                           result->>'ticker' as ticker,
+                           result->>'threshold' as threshold
+                    FROM priority_jobs 
                     WHERE run_id = $1 AND status = 'COMPLETED'
                     ORDER BY (result->>'sqn')::float DESC NULLS LAST
+                    LIMIT 1000
                     """,
                     run_id
                 )

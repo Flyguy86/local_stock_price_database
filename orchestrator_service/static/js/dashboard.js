@@ -387,6 +387,14 @@ async function loadRuns() {
     
     tbody.innerHTML = data.runs.map(run => {
       const stepStatus = run.step_status || '-';
+      // Add Resume button for STOPPED/FAILED runs
+      let actionButton = `<button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>`;
+      if (run.status === 'STOPPED' || run.status === 'FAILED') {
+        actionButton = `
+          <button class="primary" onclick="event.stopPropagation(); resumeRun('${run.id}')" title="Resume from generation ${run.current_generation}">▶️ Resume</button>
+          <button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>
+        `;
+      }
       return `
         <tr class="clickable" onclick="showDetails('${run.id}')">
           <td><code>${run.id.substring(0, 8)}...</code></td>
@@ -396,7 +404,7 @@ async function loadRuns() {
           <td>${run.current_generation} / ${run.max_generations}</td>
           <td>${run.best_sqn ? run.best_sqn.toFixed(2) : '-'}</td>
           <td>${new Date(run.created_at).toLocaleString()}</td>
-          <td><button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button></td>
+          <td>${actionButton}</td>
         </tr>
       `;
     }).join('');
@@ -456,6 +464,25 @@ async function cancelRun(runId) {
     }
   } catch (e) {
     showStatus('Error cancelling run', 'error');
+  }
+}
+
+async function resumeRun(runId) {
+  if (!confirm(`Resume interrupted run ${runId.substring(0, 8)}...?\n\nThis will continue from the last completed generation.`)) return;
+  try {
+    const res = await fetch(`${API}/runs/${runId}/resume`, { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      showStatus(`Run resumed from generation ${data.resuming_from_generation}`, 'success');
+      loadRuns();
+      // Auto-refresh to show progress
+      setTimeout(loadRuns, 3000);
+    } else {
+      const data = await res.json();
+      showStatus(data.detail || 'Failed to resume', 'error');
+    }
+  } catch (e) {
+    showStatus('Error resuming run: ' + e.message, 'error');
   }
 }
 
