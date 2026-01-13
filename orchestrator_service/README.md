@@ -4,11 +4,22 @@
 
 The Orchestrator Service automates the **Train → Prune → Simulate** evolution loop to find optimal trading models without manual intervention. It implements a recursive strategy factory that:
 
-1. **Trains** models on engineered features
-2. **Prunes** ineffective features (importance ≤ 0)
-3. **Simulates** strategies with regime filtering and thresholds
-4. **Evolves** by repeating with pruned feature sets
-5. **Promotes** models that meet "Holy Grail" success criteria
+1. **Trains** models on engineered features (with internal grid search)
+2. **Simulates** each model across all regime/threshold/z-score combinations
+3. **Evaluates** results against Holy Grail criteria (auto-promote if met)
+4. **Prunes** ineffective features based on importance
+5. **Evolves** to next generation with reduced feature set
+6. **Repeats** until features cannot be pruned further or max generations reached
+
+### Key Insight: Multi-Dimensional Grid Search
+
+The evolution process explores THREE orthogonal search spaces simultaneously:
+
+1. **Feature Space (Evolution Loop)**: Progressive feature reduction across generations
+2. **Hyperparameter Space (Training Service)**: Grid search over regularization (alpha, l1_ratio) and regime configs
+3. **Strategy Space (Simulation Service)**: Grid search over thresholds, z-scores, and regime filters
+
+Each evolution generation trains ~294 models internally and simulates each across ~140 strategy configurations, ensuring comprehensive optimization before moving to the next feature set.
 
 ## Architecture
 
@@ -206,32 +217,188 @@ Proxy to feature service to list available symbols.
 #### GET `/api/features/columns?symbol={symbol}`
 Get feature columns for a symbol from feature service.
 
-## Evolution Loop Workflow
+## Evolution Loop Workflow - Complete End-to-End Process
 
-### Generation 0 (Seed)
-1. Fetch seed features from feature service (or use provided list)
-2. Train initial model
-3. Queue simulations across all threshold/regime combinations
-4. Wait for results, find best SQN
-5. Evaluate against Holy Grail criteria → **If promoted, stop; else continue**
+### High-Level Flow
 
-### Generation 1+ (Recursive)
-1. Get feature importance from previous generation's model
-2. Prune features with `importance <= 0`
-3. Compute fingerprint from remaining features
-4. Check if fingerprint exists in database:
-   - **If yes**: Reuse existing model (skip training)
-   - **If no**: Train new model, record fingerprint
-5. Record evolution lineage (parent → child, pruned features)
-6. Queue simulations with **priority = parent_sqn** (good parents → higher priority)
-7. Wait for results, find best SQN
-8. Evaluate Holy Grail criteria → **If promoted, stop; else continue**
+Each evolution run explores three orthogonal optimization dimensions:
+1. **Feature Space**: Progressive feature reduction (evolution loop)
+2. **Hyperparameter Space**: Grid search over alpha/l1_ratio/regimes (training)
+3. **Strategy Space**: Grid search over thresholds/z-scores/regimes (simulation)
 
-### Stopping Conditions
-- ✅ **Promoted**: Model meets Holy Grail criteria
-- ✅ **Max Generations**: Reached `max_generations` limit
-- ✅ **No Pruning**: All features have positive importance
-- ✅ **All Pruned**: No features remaining after pruning
+### Detailed Step-by-Step Process
+
+#### **Initialization Phase**
+1. User submits evolution request via dashboard (`POST /evolve`)
+2. Orchestrator creates `evolution_run` record (status = PENDING)
+3. If `seed_model_id` provided → load features from existing model
+4. If `seed_features` provided → train initial model with these features
+5. **Generation 0 begins**
+
+---
+
+#### **Generation N Loop (Repeats until stopping condition)**
+
+**STEP A: Simulate Current Model** ⚙️  
+*Always runs BEFORE pruning to ensure every trained model gets evaluated*
+
+- Queue simulations for current model_id
+- **Training Grid Search** (happens during model creation):
+  - 7 regime configs (VIX 0/1/2/3, GMM 0/1, no-filter)
+  - 7 alpha values (0.001, 0.01, 0.1, 1, 10, 50, 100)
+  - 6 l1_ratio values (0.1, 0.3, 0.5, 0.7, 0.9, 0.95)
+  - Total: ~294 internal models → picks best by validation score
+- **Simulation Grid Search**:
+  - 4 threshold values (e.g., 0.0001, 0.0003, 0.0005, 0.001)
+  - 5 z-score cutoffs (0, 2.0, 2.5, 3.0, 3.5)
+  - 7 regime configs (same as training)
+  - Total: ~140 simulations → picks best by SQN
+- Wait for all simulation jobs to complete (priority workers process queue)
+- Retrieve best simulation result (highest SQN)
+- **Holy Grail Check**:
+  - If SQN, profit_factor, trade_count all within ranges → **PROMOTE & STOP** 🎯
+  - Else continue to pruning
+
+**STEP B: Get Feature Importance** 📊
+
+- Call training service: `GET /api/models/{model_id}/importance`
+- Returns list of `(feature_name, importance_value)` tuples
+- Importance sources:
+  - ElasticNet: `abs(coefficient)`
+  - RandomForest/XGBoost: SHAP values
+  - Linear models: Standardized coefficients
+
+**STEP C: Prune Low-Importance Features** ✂️
+
+- Sort features by importance (ascending)
+- Remove bottom X% (default: 25%, configurable via `prune_fraction`)
+- **Stopping Checks** (if can't prune, loop exits):
+  - All features have equal importance → can't prune → **STOP** ⛔
+  - Pruning would go below `min_features` → **STOP** ⛔
+  - No features left after pruning → **STOP** ⛔
+- **Note**: Simulations already ran in Step A, so results are saved before stopping
+
+**STEP D: Compute Fingerprint** 🔍
+
+- Generate SHA-256 hash of:
+  ```python
+  hash_input = (
+      sorted_features,  # Remaining features after pruning
+      hyperparameters,  # Algorithm, alpha, l1_ratio, etc.
+      target_transform,  # log_return, raw_price, pct_change
+      symbol           # AAPL, SPY, etc.
+  )
+  ```
+- Check `model_fingerprints` table for existing match
+- **If found**: Reuse existing model_id (skip training) → go to Step F
+- **Else**: Continue to Step E
+
+**STEP E: Train Child Model** 🏗️
+
+- Call training service: `POST /api/train`
+- Payload includes:
+  - `features`: Pruned feature list
+  - `symbol`, `target_col`, `target_transform`
+  - `hyperparameters`: Algorithm config
+  - `parent_model_id`: For lineage tracking
+  - `alpha_grid`, `l1_ratio_grid`: For regularization search
+  - `regime_configs`: For regime-specific training
+- Training service performs internal grid search (see Step A)
+- Returns `model_id` of best model
+- Record fingerprint → model_id mapping in database
+
+**STEP F: Record Lineage & Advance Generation** 📝
+
+- Insert into `evolution_log`:
+  - `parent_model_id` → `child_model_id`
+  - `pruned_features`: Which features were removed
+  - `remaining_features`: What child model uses
+  - `generation`: Current iteration number
+  - `parent_sqn`: Best SQN achieved by parent
+- Update `evolution_run`:
+  - `current_generation += 1`
+  - `best_sqn = parent_sqn` (if improved)
+  - `best_model_id = current_model_id`
+- **Child becomes current model** → Loop back to **Step A**
+
+---
+
+#### **Stopping Conditions**
+
+The loop exits when ANY of the following occur:
+
+| Condition | Reason | Results Saved? |
+|-----------|--------|----------------|
+| **Holy Grail Met** | Model achieved target SQN, profit factor, trade count | ✅ Yes (promoted to `promoted_models` table) |
+| **Max Generations** | Reached `max_generations` limit (e.g., 4) | ✅ Yes (best model recorded) |
+| **No Pruning Possible** | All features have equal or positive importance | ✅ Yes (simulations ran in Step A) |
+| **Min Features Reached** | Pruning would violate `min_features` constraint | ✅ Yes (simulations ran in Step A) |
+| **Training Error** | Training service failed to create model | ⚠️ Partial (previous generations saved) |
+| **Simulation Error** | All simulation jobs failed | ⚠️ Partial (model trained but not evaluated) |
+
+**Critical Guarantee**: Every trained model is simulated at least once before the loop can exit, ensuring no model goes unevaluated.
+
+---
+
+### Example Evolution Run
+
+**Request Configuration:**
+- Symbol: `AAPL`
+- Algorithm: `ElasticNet`
+- Seed Features: `['sma_20', 'rsi_14', 'macd_line', 'atr_14', 'volume_sma_20']` (5 features)
+- Max Generations: 3
+- Prune Fraction: 0.25 (remove bottom 25%)
+- Min Features: 2
+- Holy Grail: SQN ≥ 3.0, Profit Factor ≥ 2.0, Trades ≥ 200
+
+**Evolution Timeline:**
+
+| Generation | Features | Training Grid | Simulations | Best SQN | Action |
+|------------|----------|---------------|-------------|----------|--------|
+| **0** | 5 | 294 models | 140 configs | 2.1 | Not promoted → prune |
+| **1** | 4 (pruned `volume_sma_20`) | 294 models | 140 configs | 2.5 | Not promoted → prune |
+| **2** | 3 (pruned `atr_14`) | 294 models | 140 configs | 3.2 | **PROMOTED** 🎯 |
+
+**Total Work:**
+- **882 models trained** (3 generations × 294 models)
+- **420 simulations run** (3 generations × 140 configs)
+- **Result**: Found optimal model with 3 features achieving SQN = 3.2
+
+**Fingerprint Reuse Example:**
+If Generation 3 tried to prune back to 4 features, the orchestrator would detect this fingerprint already exists (from Gen 1) and skip training, reusing the cached model.
+
+---
+
+### Grid Search Dimensions Explained
+
+#### 1. Feature Space (Evolution Loop)
+- **Dimension**: Number and selection of input features
+- **Method**: Progressive pruning based on importance
+- **Scope**: Across generations (4-8 iterations typical)
+
+#### 2. Hyperparameter Space (Training Service)
+- **Dimension**: Regularization strength and mixing ratio
+- **Method**: GridSearchCV over alpha/l1_ratio
+- **Scope**: Within each generation (294 models per generation)
+- **Parameters**:
+  - `alpha`: Controls total regularization strength (7 values)
+  - `l1_ratio`: Mixes L1 (Lasso) vs L2 (Ridge) penalties (6 values)
+  - `regime_configs`: Train on specific market conditions (7 configs)
+
+#### 3. Strategy Space (Simulation Service)
+- **Dimension**: Trading rules and filters
+- **Method**: Exhaustive grid search over strategy parameters
+- **Scope**: Per model (140 simulations per model)
+- **Parameters**:
+  - `threshold`: Minimum prediction confidence to trade (4 values)
+  - `z_score_cutoff`: Outlier filter for predictions (5 values, including 0 = no filter)
+  - `regime_filter`: Only trade in specific market conditions (7 configs)
+
+**Total Search Space per Evolution Run:**
+- Feature combinations: ~C(N, k) where N = seed features, k = min_features
+- Hyperparameter combinations: 294 per generation
+- Strategy combinations: 140 per model
+- **Example**: 4 generations × 294 models × 140 strategies = ~165,000 total evaluations
 
 ## Database Schema
 

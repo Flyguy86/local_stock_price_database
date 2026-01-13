@@ -160,144 +160,28 @@ class EvolutionEngine:
                 log.info(f"Current model: {state.current_model_id}")
                 log.info(f"Current features count: {len(state.current_features)}")
                 
-                # 1. Get feature importance
-                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Getting feature importance")
-                try:
-                    importance = await self._get_feature_importance(state.current_model_id)
-                    log.info(f"Step 1: Got importance for {len(importance)} features")
-                except Exception as e:
-                    log.error(f"Step 1 FAILED: Could not get feature importance: {e}")
-                    state.stopped_reason = f"feature_importance_error: {e}"
-                    break
-                
-                if not importance:
-                    log.warning("Step 1: No importance data returned")
-                    state.stopped_reason = "Could not get feature importance"
-                    break
-                
-                # 2. Prune bottom X% of features by importance
-                try:
-                    pruned, remaining = self._prune_features(
-                        importance, 
-                        prune_fraction=config.prune_fraction,
-                        min_features=config.min_features
-                    )
-                    log.info(f"Step 2: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
-                except Exception as e:
-                    log.error(f"Step 2 FAILED: Pruning error: {e}")
-                    state.stopped_reason = f"pruning_error: {e}"
-                    break
-                
-                if not pruned:
-                    log.info("Step 2: No features to prune (at min_features limit or all equal importance)")
-                    state.stopped_reason = "no_features_to_prune"
-                    break
-                
-                if not remaining or len(remaining) < config.min_features:
-                    log.warning(f"Step 2: Would go below min_features ({config.min_features}), stopping")
-                    state.stopped_reason = "min_features_reached"
-                    break
-                
-                log.info(f"Step 2: Pruned {len(pruned)} low-importance features")
-                log.info(f"Step 2: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
-                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Pruned {len(pruned)}, keeping {len(remaining)} features")
-                
-                # 3. Compute fingerprint
-                try:
-                    fingerprint = compute_fingerprint(
-                        features=remaining,
-                        hyperparams=config.hyperparameters,
-                        target_transform=config.target_transform,
-                        symbol=config.symbol,
-                        target_col=config.target_col
-                    )
-                    log.info(f"Step 3: Computed fingerprint: {fingerprint[:16]}...")
-                except Exception as e:
-                    log.error(f"Step 3 FAILED: Fingerprint error: {e}")
-                    state.stopped_reason = f"fingerprint_error: {e}"
-                    break
-                
-                # 4. Check for existing model
-                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Checking fingerprint cache")
-                try:
-                    existing_model_id = await db.get_model_by_fingerprint(fingerprint)
-                    if existing_model_id:
-                        log.info(f"Step 4: Fingerprint match! Reusing model {existing_model_id}")
-                    else:
-                        log.info("Step 4: No existing model, will train new")
-                except Exception as e:
-                    log.error(f"Step 4 FAILED: Fingerprint lookup error: {e}")
-                    existing_model_id = None  # Continue with training
-                
-                if existing_model_id:
-                    child_model_id = existing_model_id
-                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Reusing cached model")
-                else:
-                    # Step 5: Train new model
-                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Training model ({len(remaining)} features)")
-                    try:
-                        log.info(f"Step 5: Training new model with {len(remaining)} features...")
-                        child_model_id = await self._train_model(
-                            state,
-                            parent_model_id=state.current_model_id,
-                            features=remaining
-                        )
-                        log.info(f"Step 5: Training complete, model ID: {child_model_id}")
-                    except Exception as e:
-                        log.error(f"Step 5 FAILED: Training error: {e}")
-                        state.stopped_reason = f"training_error: {e}"
-                        break
-                    
-                    # Record fingerprint
-                    try:
-                        await db.insert_fingerprint(
-                            fingerprint=fingerprint,
-                            model_id=child_model_id,
-                            features=remaining,
-                            hyperparams=config.hyperparameters,
-                            target_transform=config.target_transform,
-                            symbol=config.symbol
-                        )
-                        log.info("Step 5: Fingerprint recorded")
-                    except Exception as e:
-                        log.warning(f"Step 5: Failed to record fingerprint (non-fatal): {e}")
-                
-                # Step 6: Record evolution lineage
-                try:
-                    await db.insert_evolution_log(
-                        log_id=str(uuid.uuid4()),
-                        run_id=run_id,
-                        parent_model_id=state.current_model_id,
-                        child_model_id=child_model_id,
-                        generation=state.current_generation,
-                        parent_sqn=state.parent_sqn,
-                        pruned_features=pruned,
-                        remaining_features=remaining,
-                        pruning_reason="importance_zero"
-                    )
-                    log.info(f"Step 6: Evolution lineage recorded")
-                except Exception as e:
-                    log.warning(f"Step 6: Failed to record lineage (non-fatal): {e}")
-                
-                # Step 7: Queue simulations
+                # ================================================================
+                # STEP A: Run simulations on CURRENT model (before pruning)
+                # ================================================================
+                # This ensures we always evaluate every trained model
                 await db.update_evolution_run(run_id, step_status=f"{gen_label}: Queueing simulations")
                 try:
-                    log.info(f"Step 7: Queueing simulations for model {child_model_id}")
-                    await self._queue_simulations(state, child_model_id)
-                    log.info("Step 7: Simulations queued")
+                    log.info(f"Step A: Queueing simulations for current model {state.current_model_id}")
+                    await self._queue_simulations(state, state.current_model_id)
+                    log.info("Step A: Simulations queued")
                 except Exception as e:
-                    log.error(f"Step 7 FAILED: Queue simulations error: {e}")
+                    log.error(f"Step A FAILED: Queue simulations error: {e}")
                     state.stopped_reason = f"simulation_queue_error: {e}"
                     break
                 
-                # Step 8: Wait for simulations and evaluate
+                # Wait for simulations and evaluate
                 await db.update_evolution_run(run_id, step_status=f"{gen_label}: Waiting for simulation results...")
                 try:
-                    log.info("Step 8: Waiting for simulation results...")
-                    best_result = await self._wait_and_evaluate(state, child_model_id)
-                    log.info(f"Step 8: Got result - SQN: {best_result.get('sqn', 'N/A') if best_result else 'None'}")
+                    log.info("Step A: Waiting for simulation results...")
+                    best_result = await self._wait_and_evaluate(state, state.current_model_id)
+                    log.info(f"Step A: Got result - SQN: {best_result.get('sqn', 'N/A') if best_result else 'None'}")
                 except Exception as e:
-                    log.error(f"Step 8 FAILED: Simulation evaluation error: {e}")
+                    log.error(f"Step A FAILED: Simulation evaluation error: {e}")
                     best_result = None
                 
                 if best_result:
@@ -318,10 +202,154 @@ class EvolutionEngine:
                     
                     if evaluation.meets_all:
                         state.promoted = True
-                        await self._record_promotion(state, child_model_id, best_result, evaluation)
-                        log.info(f"🎯 Model {child_model_id} PROMOTED!")
+                        await self._record_promotion(state, state.current_model_id, best_result, evaluation)
+                        log.info(f"🎯 Model {state.current_model_id} PROMOTED!")
+                        break  # Stop evolution - we found a winner!
+                    
+                    # Update best results in run record
+                    await db.update_evolution_run(
+                        run_id,
+                        best_sqn=state.parent_sqn,
+                        best_model_id=state.current_model_id
+                    )
                 
-                # Update state for next iteration
+                # ================================================================
+                # STEP B: Get feature importance for pruning
+                # ================================================================
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Getting feature importance")
+                try:
+                    importance = await self._get_feature_importance(state.current_model_id)
+                    log.info(f"Step B: Got importance for {len(importance)} features")
+                except Exception as e:
+                    log.error(f"Step B FAILED: Could not get feature importance: {e}")
+                    state.stopped_reason = f"feature_importance_error: {e}"
+                    break
+                
+                if not importance:
+                    log.warning("Step B: No importance data returned")
+                    state.stopped_reason = "no_importance_data"
+                    break
+                
+                # ================================================================
+                # STEP C: Prune bottom X% of features by importance
+                # ================================================================
+                try:
+                    pruned, remaining = self._prune_features(
+                        importance, 
+                        prune_fraction=config.prune_fraction,
+                        min_features=config.min_features
+                    )
+                    log.info(f"Step C: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
+                except Exception as e:
+                    log.error(f"Step C FAILED: Pruning error: {e}")
+                    state.stopped_reason = f"pruning_error: {e}"
+                    break
+                
+                # Check if we can continue pruning
+                # Note: We've already simulated the current model in Step A, so results are saved
+                if not pruned:
+                    log.info("Step C: No features to prune (at min_features limit or all equal importance)")
+                    log.info("Step C: Current model has been evaluated, cannot create child generation")
+                    state.stopped_reason = "no_features_to_prune"
+                    break  # Can't create a new generation without pruning
+                
+                if not remaining or len(remaining) < config.min_features:
+                    log.warning(f"Step C: Would go below min_features ({config.min_features})")
+                    log.info("Step C: Current model has been evaluated, stopping at feature limit")
+                    state.stopped_reason = "min_features_reached"
+                    break  # Can't train a valid model with fewer features
+                
+                log.info(f"Step C: Pruned {len(pruned)} low-importance features")
+                log.info(f"Step C: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Pruned {len(pruned)}, keeping {len(remaining)} features")
+                
+                # ================================================================
+                # STEP D: Compute fingerprint for child model
+                # ================================================================
+                try:
+                    fingerprint = compute_fingerprint(
+                        features=remaining,
+                        hyperparams=config.hyperparameters,
+                        target_transform=config.target_transform,
+                        symbol=config.symbol,
+                        target_col=config.target_col
+                    )
+                    log.info(f"Step D: Computed fingerprint: {fingerprint[:16]}...")
+                except Exception as e:
+                    log.error(f"Step D FAILED: Fingerprint error: {e}")
+                    state.stopped_reason = f"fingerprint_error: {e}"
+                    break
+                
+                # Check for existing model with same fingerprint
+                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Checking fingerprint cache")
+                try:
+                    existing_model_id = await db.get_model_by_fingerprint(fingerprint)
+                    if existing_model_id:
+                        log.info(f"Step D: Fingerprint match! Reusing model {existing_model_id}")
+                    else:
+                        log.info("Step D: No existing model, will train new")
+                except Exception as e:
+                    log.error(f"Step D FAILED: Fingerprint lookup error: {e}")
+                    existing_model_id = None  # Continue with training
+                
+                if existing_model_id:
+                    child_model_id = existing_model_id
+                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Reusing cached model")
+                else:
+                    # ================================================================
+                    # STEP E: Train child model with pruned features
+                    # ================================================================
+                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Training child model ({len(remaining)} features)")
+                    try:
+                        log.info(f"Step E: Training child model with {len(remaining)} features...")
+                        child_model_id = await self._train_model(
+                            state,
+                            parent_model_id=state.current_model_id,
+                            features=remaining
+                        )
+                        log.info(f"Step E: Training complete, child model ID: {child_model_id}")
+                    except Exception as e:
+                        log.error(f"Step E FAILED: Training error: {e}")
+                        state.stopped_reason = f"training_error: {e}"
+                        break
+                    
+                    # Record fingerprint
+                    try:
+                        await db.insert_fingerprint(
+                            fingerprint=fingerprint,
+                            model_id=child_model_id,
+                            features=remaining,
+                            hyperparams=config.hyperparameters,
+                            target_transform=config.target_transform,
+                            symbol=config.symbol
+                        )
+                        log.info("Step E: Fingerprint recorded")
+                    except Exception as e:
+                        log.warning(f"Step E: Failed to record fingerprint (non-fatal): {e}")
+                
+                # ================================================================
+                # STEP F: Record evolution lineage
+                # ================================================================
+                try:
+                    await db.insert_evolution_log(
+                        log_id=str(uuid.uuid4()),
+                        run_id=run_id,
+                        parent_model_id=state.current_model_id,
+                        child_model_id=child_model_id,
+                        generation=state.current_generation,
+                        parent_sqn=state.parent_sqn,
+                        pruned_features=pruned,
+                        remaining_features=remaining,
+                        pruning_reason="importance_zero"
+                    )
+                    log.info(f"Step F: Evolution lineage recorded")
+                except Exception as e:
+                    log.warning(f"Step F: Failed to record lineage (non-fatal): {e}")
+                
+                # ================================================================
+                # Update state: child becomes current for next iteration
+                # Child model will be simulated in Step A of next iteration
+                # ================================================================
                 state.current_model_id = child_model_id
                 state.current_features = remaining
                 state.current_generation += 1
@@ -332,6 +360,8 @@ class EvolutionEngine:
                     best_sqn=state.parent_sqn,
                     best_model_id=state.current_model_id
                 )
+                
+                log.info(f"Step F: Advancing to Generation {state.current_generation}, child model {child_model_id} will be simulated next iteration")
             
             # Final status
             final_status = "PROMOTED" if state.promoted else "COMPLETED"

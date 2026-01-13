@@ -264,7 +264,11 @@ When adding new indicators or columns to `feature_service/pipeline.py`, keep the
 
 ## Orchestrator Service - Recursive Strategy Factory
 
-The Orchestrator Service automates the **Train → Prune → Simulate → Evolve** loop to discover optimal trading models without manual intervention.
+The Orchestrator Service automates the **Train → Simulate → Evaluate → Prune → Evolve** loop to discover optimal trading models without manual intervention. It explores three orthogonal optimization dimensions simultaneously:
+
+1. **Feature Space**: Progressive feature reduction across generations (evolution loop)
+2. **Hyperparameter Space**: Grid search over alpha/l1_ratio/regimes within each training job (~294 models per generation)
+3. **Strategy Space**: Grid search over thresholds/z-scores/regime filters within each simulation (~140 configs per model)
 
 ### Quick Start
 ```bash
@@ -276,28 +280,62 @@ open http://localhost:8400
 ```
 
 ### Key Features
-- **Automated Evolution**: Train model → Prune features (importance ≤ 0) → Simulate strategies → Repeat
+- **Multi-Dimensional Grid Search**: Comprehensive search across features, hyperparameters, and strategy rules
+- **Guaranteed Evaluation**: Every trained model gets simulated before the loop can exit
 - **Model Fingerprinting**: SHA-256 deduplication prevents retraining identical configurations
-- **Priority Queue**: Higher parent SQN → higher child simulation priority
-- **Holy Grail Criteria**: Configurable thresholds (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
-- **Lineage Tracking**: Full ancestry DAG for every promoted model
+- **Priority Queue**: Higher parent SQN → higher child simulation priority (good parents first)
+- **Holy Grail Criteria**: Configurable auto-promotion thresholds (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
+- **Lineage Tracking**: Full ancestry DAG from seed to promoted model
 - **Distributed Workers**: Scale simulation execution across multiple nodes
 
 ### Architecture
 - **Port**: 8400
-- **Database**: PostgreSQL (shared state, priority queue, lineage)
-- **Workers**: Pull from priority queue, run simulations, report results
-- **Integration**: HTTP calls to Training (8200), Simulation (8300), Feature (8100) services
+- **Database**: PostgreSQL (shared state, priority queue, lineage tracking)
+- **Workers**: Pull highest-priority jobs, run simulations via HTTP, report results
+- **Integration**: Coordinates Training (8200), Simulation (8300), Feature (8100) services
+
+### Evolution Loop Workflow
+Each generation follows this sequence:
+
+**Step A**: Queue simulations for current model (before pruning)
+- Training grid search: 7 regimes × 7 alphas × 6 l1_ratios = ~294 models → pick best
+- Simulation grid search: 4 thresholds × 5 z-scores × 7 regimes = ~140 configs → pick best SQN
+- Check Holy Grail criteria → if met, **PROMOTE** model and stop
+
+**Step B**: Get feature importance from current model (SHAP, coefficients, permutation)
+
+**Step C**: Prune bottom X% of features (default 25%)
+- If can't prune (min_features reached or all equal importance) → **STOP** (simulations already ran!)
+
+**Step D**: Compute fingerprint of remaining features → check cache → reuse if exists
+
+**Step E**: Train child model with pruned feature set (or skip if cached)
+
+**Step F**: Record lineage, advance generation → loop back to Step A
+
+### Stopping Conditions
+| Condition | Simulations Ran? | Results Saved? |
+|-----------|------------------|----------------|
+| Holy Grail Met | ✅ Yes | ✅ Promoted |
+| Max Generations | ✅ Yes | ✅ Best model recorded |
+| Can't Prune | ✅ Yes | ✅ Last model evaluated |
+| Min Features | ✅ Yes | ✅ Last model evaluated |
+
+**Critical Guarantee**: Simulations always run in Step A (before pruning checks), ensuring no trained model goes unevaluated.
+
+### Example Run
+- Symbol: `AAPL`, Features: 21 → 16 → 12 → 9 (3 generations)
+- Work: 3 generations × 294 models × 140 simulations = **~124,000 evaluations**
+- Result: Found model with 9 features achieving SQN = 3.8
 
 ### API Endpoints
-- `POST /evolve` - Start new evolution run
-- `GET /runs` - List evolution runs
+- `POST /evolve` - Start new evolution run with grid search configs
+- `GET /runs` - List evolution runs (filter by status, limit)
+- `GET /runs/{run_id}` - Get run details with full lineage
 - `GET /promoted` - List models meeting Holy Grail criteria
 - `POST /jobs/claim` - Worker job claiming (internal)
 
-### Evolution Loop
-1. **Train** model on engineered features
-2. **Prune** features with importance ≤ 0
+**For complete documentation**, see [orchestrator_service/README.md](orchestrator_service/README.md)
 3. **Check** fingerprint - reuse existing model if configuration seen before
 4. **Queue** simulations with priority = parent_sqn
 5. **Evaluate** results against Holy Grail criteria
