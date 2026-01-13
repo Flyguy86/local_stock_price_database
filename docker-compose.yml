@@ -28,6 +28,7 @@ services:
       context: .
       dockerfile: Dockerfile.orchestrator
     container_name: orchestrator
+    restart: unless-stopped
     ports:
       - "8400:8400"
     volumes:
@@ -57,6 +58,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     environment:
       ALPACA_KEY_ID: ${ALPACA_KEY_ID:-}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
@@ -71,6 +73,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.feature
+    restart: unless-stopped
     environment:
       SOURCE_DUCKDB_PATH: ${SOURCE_DUCKDB_PATH:-/app/data/duckdb/local.db}
       DEST_DUCKDB_PATH: ${DEST_DUCKDB_PATH:-/app/data/duckdb/features.db}
@@ -87,6 +90,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.training
+    restart: unless-stopped
     environment:
       LOG_LEVEL: INFO
     volumes:
@@ -100,6 +104,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.simulation
+    restart: unless-stopped
     environment:
       LOG_LEVEL: INFO
       MODELS_DIR: /app/data/models
@@ -117,6 +122,7 @@ services:
       context: .
       dockerfile: Dockerfile.optimize
     container_name: optimization_c2
+    restart: unless-stopped
     command: python optimization_service/main.py
     ports:
       - "8002:8002"
@@ -134,6 +140,7 @@ services:
       context: .
       dockerfile: Dockerfile.optimize
     container_name: priority_worker_1
+    restart: unless-stopped
     command: python -m orchestrator_service.priority_worker
     volumes:
       - ./data:/app/data

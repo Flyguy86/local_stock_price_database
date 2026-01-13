@@ -45,6 +45,29 @@ async def lifespan(app: FastAPI):
     log.info(f"Training URL: {engine.training_url}")
     log.info(f"Simulation URL: {engine.simulation_url}")
     
+    # Recovery: Mark any RUNNING/PENDING runs as STOPPED (container restarted)
+    try:
+        async with db.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE evolution_runs 
+                SET status = 'STOPPED', 
+                    step_status = 'Interrupted by container restart'
+                WHERE status IN ('RUNNING', 'PENDING')
+                RETURNING id, symbol
+                """
+            )
+            recovered = await conn.fetch(
+                "SELECT id, symbol FROM evolution_runs WHERE step_status = 'Interrupted by container restart'"
+            )
+            if recovered:
+                for row in recovered:
+                    log.warning(f"Recovered stalled run {row['id']} (symbol: {row['symbol']}) - marked as STOPPED")
+            else:
+                log.info("No stalled evolution runs to recover")
+    except Exception as e:
+        log.error(f"Failed to recover stalled runs: {e}")
+    
     yield
     
     # Shutdown
@@ -410,6 +433,51 @@ async def cancel_run(run_id: str):
     await db.update_evolution_run(run_id, status="CANCELLED", step_status="Cancelled by user")
     log.info(f"Cancelled evolution run {run_id}")
     return {"status": "cancelled", "run_id": run_id}
+
+
+@app.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str, background_tasks: BackgroundTasks):
+    """Resume a STOPPED evolution run (e.g., after container restart)."""
+    run = await db.get_evolution_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    if run["status"] not in ("STOPPED", "FAILED"):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Can only resume STOPPED/FAILED runs, current status: {run['status']}"
+        )
+    
+    # Reconstruct EvolutionConfig from stored run config
+    import json
+    config_dict = json.loads(run["config"]) if isinstance(run["config"], str) else run["config"]
+    
+    # Update to resume from current state
+    config_dict["seed_model_id"] = run["best_model_id"] or run["seed_model_id"]
+    config_dict["max_generations"] = run["max_generations"] - run["current_generation"]
+    
+    config = EvolutionConfig(**config_dict)
+    
+    # Mark as RUNNING and restart in background
+    await db.update_evolution_run(run_id, status="RUNNING", step_status="Resuming from interruption")
+    log.info(f"Resuming evolution run {run_id} from generation {run['current_generation']}")
+    
+    # Run evolution in background
+    async def run_evolution():
+        try:
+            result = await engine.run_evolution(config)
+            log.info(f"Resumed evolution {run_id} completed: {result}")
+        except Exception as e:
+            log.error(f"Resumed evolution {run_id} failed: {e}")
+            await db.update_evolution_run(run_id, status="FAILED")
+    
+    background_tasks.add_task(run_evolution)
+    
+    return {
+        "status": "resumed",
+        "run_id": run_id,
+        "resuming_from_generation": run["current_generation"]
+    }
 
 
 @app.post("/runs/cleanup-stale")
