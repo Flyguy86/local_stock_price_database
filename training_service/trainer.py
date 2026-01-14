@@ -110,7 +110,7 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
                 "test_r2": float(test_r2),
                 "grid_search_rank": idx + 1
             }),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            # Let DB default handle created_at instead of ISO string
             "is_grid_member": True,  # Flag to identify grid search models
             "artifact_path": grid_model_path,
             "name": f"{symbol}-{algorithm}-grid{idx+1}-{datetime.now().strftime('%Y%m%d%H%M')}"
@@ -688,7 +688,7 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
             
             best_model = grid_search.best_estimator_
             best_params = grid_search.best_params_
@@ -792,7 +792,7 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} XGBoost models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used, 
-                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_
@@ -855,7 +855,7 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} LightGBM models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_
@@ -918,7 +918,7 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} RandomForest models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_

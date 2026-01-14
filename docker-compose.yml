@@ -41,6 +41,7 @@ services:
       POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
       DEFAULT_MAX_GENERATIONS: "4"
       LOG_LEVEL: INFO
+      UVICORN_ACCESS_LOG: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,20 +171,21 @@ services:
         condition: service_started
 
   # ============================================
-  # Test Suite - Run all 208+ tests
+  # Test Suite - Runs automatically on startup
   # ============================================
   tests:
     build:
       context: .
       dockerfile: Dockerfile.training  # Use training dockerfile (has all dependencies)
     container_name: test_runner
-    profiles: ["test"]  # Only run when explicitly requested
+    restart: "no"  # Don't restart - run once and exit
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: orchestrator
       DB_PASSWORD: orchestrator_secret
       DB_NAME: strategy_factory_test
+      TEST_POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -192,44 +194,54 @@ services:
     working_dir: /app
     command: >
       sh -c "
-        echo '============================================';
-        echo 'Waiting for PostgreSQL to be ready...';
-        echo '============================================';
-        sleep 5;
         echo '';
         echo '============================================';
-        echo 'Installing test dependencies...';
+        echo '🧪 Test Suite Starting...';
         echo '============================================';
+        echo 'Waiting for PostgreSQL to be ready...';
+        sleep 5;
+        echo '';
+        echo 'Installing test dependencies...';
         pip install -q -r tests/requirements.txt;
         echo '';
         echo '============================================';
-        echo 'Running Test Suite (208+ tests)';
+        echo '🧪 Running Grid Search Integration Tests';
         echo '============================================';
-        pytest tests/ -v --tb=short --color=yes -m 'not slow' || exit 1;
+        pytest tests/integration/test_grid_search_workflow.py -v --tb=short --color=yes || exit 1;
         echo '';
         echo '============================================';
-        echo 'All Tests Passed! ✅';
+        echo '🧪 Running Core Integration Tests';
         echo '============================================';
+        pytest tests/integration/test_training_workflow.py -v --tb=short --color=yes -m 'not slow' || exit 1;
+        echo '';
+        echo '============================================';
+        echo '✅ All Critical Tests Passed!';
+        echo '============================================';
+        echo '';
       "
     depends_on:
       postgres:
         condition: service_healthy
+      training_service:
+        condition: service_started
 
   # ============================================
   # Test Suite - Full (includes slow tests)
+  # Run manually: docker-compose run tests-full
   # ============================================
   tests-full:
     build:
       context: .
       dockerfile: Dockerfile.training
     container_name: test_runner_full
-    profiles: ["test"]
+    profiles: ["manual"]  # Only run when explicitly requested
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: orchestrator
       DB_PASSWORD: orchestrator_secret
       DB_NAME: strategy_factory_test
+      TEST_POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -264,19 +276,21 @@ services:
 
   # ============================================
   # Test Suite - With Coverage Report
+  # Run manually: docker-compose run tests-coverage
   # ============================================
   tests-coverage:
     build:
       context: .
       dockerfile: Dockerfile.training
     container_name: test_runner_coverage
-    profiles: ["test"]
+    profiles: ["manual"]  # Only run when explicitly requested
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: orchestrator
       DB_PASSWORD: orchestrator_secret
       DB_NAME: strategy_factory_test
+      TEST_POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test
       PYTHONPATH: /app
       PYTHONUNBUFFERED: "1"
     volumes:

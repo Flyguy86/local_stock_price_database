@@ -45,6 +45,11 @@ logging.basicConfig(
     force=True
 )
 
+# Suppress noisy HTTP client logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 # Add buffer handler to root logger to capture ALL logs
 # Only add to root logger - child loggers will propagate up automatically
 _handler = BufferHandler()
@@ -1890,4 +1895,4 @@ if __name__ == "__main__":
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     
-    uvicorn.run(app, host="0.0.0.0", port=8400, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8400, log_level="info", access_log=False)

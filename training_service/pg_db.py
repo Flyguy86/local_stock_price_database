@@ -111,6 +111,14 @@ async def ensure_tables():
             ON models(symbol)
         """)
         
+        # Add is_grid_member column if not exists (migration)
+        await conn.execute("""
+            DO $$ BEGIN
+                ALTER TABLE models ADD COLUMN IF NOT EXISTS is_grid_member BOOLEAN DEFAULT FALSE;
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$;
+        """)
+        
         # Features importance log
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS features_log (
