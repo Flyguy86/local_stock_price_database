@@ -475,6 +475,17 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             remainder='passthrough' 
         )
 
+        # Add n_jobs=-1 to tree-based models to utilize all CPUs
+        # This makes each individual training job use all available cores
+        if algorithm in ['random_forest_regressor', 'random_forest_classifier', 
+                         'xgboost_regressor', 'xgboost_classifier',
+                         'lightgbm_regressor', 'lightgbm_classifier']:
+            if 'n_jobs' not in params and 'n_jobs' not in str(params):
+                # Set n_jobs=-1 if not already specified
+                params = params.copy() if params else {}
+                params['n_jobs'] = -1
+                log.info(f"Set n_jobs=-1 for {algorithm} to use all CPU cores")
+        
         final_estimator = ModelClass(**params)
         
         # Fix for ElasticNet: sklearn default alpha=1.0 is too high and causes zero coefficients
