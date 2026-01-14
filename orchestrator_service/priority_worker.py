@@ -57,7 +57,43 @@ class PriorityWorker:
         self.http_client = httpx.AsyncClient(timeout=300.0)  # 5 min timeout for sims
         
         await self.db.register_worker(WORKER_ID)
+        
+        # Clean up orphaned jobs from stopped/cancelled runs
+        await self._cleanup_orphaned_jobs()
+        
         log.info("Worker registered and ready")
+    
+    async def _cleanup_orphaned_jobs(self):
+        """Cancel pending/running jobs that belong to stopped evolution runs."""
+        try:
+            async with self.db.acquire() as conn:
+                result = await conn.execute("""
+                    UPDATE priority_jobs 
+                    SET status = 'CANCELLED', 
+                        result = '{"error": "Evolution run no longer active", "cancelled": true}'
+                    WHERE status IN ('PENDING', 'RUNNING')
+                    AND run_id IN (
+                        SELECT id FROM evolution_runs 
+                        WHERE status NOT IN ('RUNNING', 'PENDING')
+                    )
+                """)
+                
+                # Get count of cancelled jobs
+                cancelled = await conn.fetch("""
+                    SELECT run_id, COUNT(*) as cnt 
+                    FROM priority_jobs 
+                    WHERE status = 'CANCELLED' 
+                    AND result::text LIKE '%Evolution run no longer active%'
+                    GROUP BY run_id
+                """)
+                
+                if cancelled:
+                    for row in cancelled:
+                        log.warning(f"Cancelled {row['cnt']} orphaned jobs from run {row['run_id']}")
+                else:
+                    log.info("No orphaned jobs to clean up")
+        except Exception as e:
+            log.error(f"Failed to clean up orphaned jobs: {e}")
     
     async def stop(self):
         """Clean shutdown."""
@@ -71,31 +107,64 @@ class PriorityWorker:
         """Main worker loop."""
         await self.start()
         
+        # Initial health check
+        log.info("Performing initial simulation service health check...")
+        is_healthy = await self._check_simulation_health()
+        if not is_healthy:
+            log.warning("Simulation service is not healthy at startup - will retry on each job")
+        
+        health_check_counter = 0
+        
         try:
             while self.running:
                 try:
+                    # Periodic health check every 10 iterations (when idle)
+                    health_check_counter += 1
+                    if health_check_counter >= 10:
+                        log.debug("Performing periodic health check...")
+                        await self._check_simulation_health()
+                        health_check_counter = 0
+                    
                     # Try to claim a job
                     job = await self.db.claim_job(WORKER_ID)
                     
                     if job:
+                        health_check_counter = 0  # Reset counter when processing
                         await self._process_job(job)
                     else:
                         # No jobs available, wait and retry
+                        log.debug(f"No jobs available, waiting {POLL_INTERVAL}s...")
                         await asyncio.sleep(POLL_INTERVAL)
                         
                 except asyncio.CancelledError:
                     log.info("Worker cancelled")
                     break
                 except Exception as e:
-                    log.error(f"Error in worker loop: {e}")
+                    log.error(f"Error in worker loop: {e}", exc_info=True)
                     await asyncio.sleep(POLL_INTERVAL)
                     
         finally:
             await self.stop()
     
+    async def _check_simulation_health(self) -> bool:
+        """Check if simulation service is healthy."""
+        try:
+            resp = await self.http_client.get(f"{SIMULATION_URL}/health", timeout=5.0)
+            if resp.status_code == 200:
+                health = resp.json()
+                log.info(f"Simulation service health: {health}")
+                return health.get("status") == "healthy"
+            else:
+                log.error(f"Simulation health check returned {resp.status_code}")
+                return False
+        except Exception as e:
+            log.error(f"Simulation health check failed: {e}")
+            return False
+    
     async def _process_job(self, job: Dict[str, Any]):
         """Process a single job."""
         job_id = job["id"]
+        run_id = job.get("run_id")
         params = job["params"]
         
         # Parse params if it's a JSON string
@@ -108,8 +177,33 @@ class PriorityWorker:
                 params = {}
         
         log.info(f"Processing job {job_id}")
+        log.info(f"  Run: {run_id}")
         log.info(f"  Model: {job.get('model_id')}")
         log.info(f"  Params: threshold={params.get('threshold')}, regime={params.get('regime_config')}")
+        
+        # Health check before processing
+        is_healthy = await self._check_simulation_health()
+        if not is_healthy:
+            log.error(f"Simulation service is unhealthy - aborting job {job_id}")
+            await self.db.complete_job(
+                job_id,
+                result={"error": "Simulation service is unhealthy or unreachable"},
+                status="FAILED"
+            )
+            return
+        
+        # CRITICAL: Check if evolution run is still active before processing
+        if run_id:
+            run_status = await self.db.get_evolution_run_status(run_id)
+            if run_status not in ["RUNNING", "PENDING"]:
+                log.warning(f"Job {job_id} belongs to inactive run {run_id} (status: {run_status}) - cancelling")
+                await self.db.complete_job(
+                    job_id,
+                    {"error": f"Evolution run {run_id} is {run_status}, not running", "cancelled": True},
+                    success=False
+                )
+                await self.db.update_worker_status(WORKER_ID, "IDLE", None)
+                return
         
         try:
             # Update worker status
@@ -117,6 +211,26 @@ class PriorityWorker:
             
             # Run simulation
             result = await self._run_simulation(params)
+            
+            # Save simulation fingerprint if provided
+            if "simulation_fingerprint" in params and "model_fingerprint" in params:
+                try:
+                    await self.db.insert_simulation_fingerprint(
+                        fingerprint=params["simulation_fingerprint"],
+                        model_fingerprint=params["model_fingerprint"],
+                        model_id=params["model_id"],
+                        target_ticker=params.get("target_ticker", params.get("ticker")),
+                        simulation_ticker=params.get("ticker"),
+                        threshold=params.get("threshold", 0.0),
+                        z_score_threshold=params.get("z_score_threshold", 0.0),
+                        regime_config=params.get("regime_config", {}),
+                        train_window=params.get("train_window", 20000),
+                        test_window=params.get("test_window", 1000),
+                        result=result
+                    )
+                    log.info(f"Saved simulation fingerprint {params['simulation_fingerprint'][:16]}... (model: {params['model_fingerprint'][:16]}...)")
+                except Exception as e:
+                    log.warning(f"Failed to save simulation fingerprint: {e}")
             
             # Report success
             await self.db.complete_job(job_id, result, success=True)
@@ -137,6 +251,21 @@ class PriorityWorker:
             await self.db.update_worker_status(WORKER_ID, "IDLE", None)
             
             self.jobs_failed += 1
+    
+    async def _check_simulation_health(self) -> bool:
+        """Check if simulation service is healthy."""
+        try:
+            resp = await self.http_client.get(f"{SIMULATION_URL}/health", timeout=5.0)
+            if resp.status_code == 200:
+                health = resp.json()
+                log.info(f"Simulation service health: {health}")
+                return health.get("status") == "healthy"
+            else:
+                log.error(f"Simulation health check returned {resp.status_code}")
+                return False
+        except Exception as e:
+            log.error(f"Simulation health check failed: {e}")
+            return False
     
     async def _run_simulation(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -173,10 +302,31 @@ class PriorityWorker:
         
         # Call simulation service
         url = f"{SIMULATION_URL}/api/simulate"
-        log.debug(f"POST {url} with {sim_request}")
+        log.info(f"Calling simulation service: POST {url}")
+        log.info(f"Payload: model_id={sim_request['model_id'][:12]}..., ticker={sim_request['ticker']}")
+        log.debug(f"Full simulation request: {sim_request}")
         
-        resp = await self.http_client.post(url, json=sim_request)
-        resp.raise_for_status()
+        try:
+            resp = await self.http_client.post(url, json=sim_request)
+            resp.raise_for_status()
+        except httpx.TimeoutException as e:
+            log.error(f"Simulation TIMEOUT: {e}")
+            log.error(f"  URL: {url}")
+            log.error(f"  Model: {sim_request['model_id']}")
+            log.error(f"  Ticker: {sim_request['ticker']}")
+            raise
+        except httpx.HTTPStatusError as e:
+            log.error(f"Simulation HTTP {e.response.status_code} error")
+            log.error(f"  URL: {url}")
+            log.error(f"  Response: {e.response.text[:500]}")
+            log.error(f"  Model: {sim_request['model_id']}")
+            log.error(f"  Ticker: {sim_request['ticker']}")
+            raise
+        except Exception as e:
+            log.error(f"Unexpected simulation error: {e}", exc_info=True)
+            log.error(f"  URL: {url}")
+            log.error(f"  Request: {sim_request}")
+            raise
         
         result = resp.json()
         

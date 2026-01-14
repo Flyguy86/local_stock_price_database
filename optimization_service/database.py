@@ -1,170 +1,207 @@
-import duckdb
+import asyncpg
 import uuid
 import json
 import logging
-from pathlib import Path
+import os
 from datetime import datetime
 
-DB_PATH = Path("/app/data/duckdb/optimization.db")
+POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory")
 log = logging.getLogger("optimization.db")
 
-def ensure_tables():
-    if not DB_PATH.parent.exists():
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    
-    with duckdb.connect(str(DB_PATH)) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS jobs (
+# Global connection pool
+_pool = None
+
+async def get_pool():
+    """Get or create the connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(POSTGRES_URL, min_size=2, max_size=10)
+    return _pool
+
+async def close_pool():
+    """Close the connection pool."""
+    global _pool
+    if _pool:
+        await _pool.close()
+        _pool = None
+
+async def ensure_tables():
+    """Create optimization tables if they don't exist."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS optimization_jobs (
                 id VARCHAR PRIMARY KEY,
                 batch_id VARCHAR,
                 status VARCHAR,
-                params JSON,
-                result JSON,
+                params JSONB,
+                result JSONB,
                 worker_id VARCHAR,
                 created_at TIMESTAMP,
                 updated_at TIMESTAMP,
-                progress DOUBLE
+                progress DOUBLE PRECISION
             )
         """)
         
-        # Add progress column if missing (migration)
-        try:
-            conn.execute("ALTER TABLE jobs ADD COLUMN progress DOUBLE")
-        except:
-            pass
-            
-        # Worker tracking table
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS workers (
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS optimization_workers (
                 id VARCHAR PRIMARY KEY,
                 last_heartbeat TIMESTAMP,
                 current_job_id VARCHAR,
                 status VARCHAR
             )
         """)
+        
+        # Create indexes for performance
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_opt_jobs_status ON optimization_jobs(status)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_opt_jobs_batch ON optimization_jobs(batch_id)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_opt_jobs_created ON optimization_jobs(created_at)
+        """)
 
-def create_jobs(batch_params_list):
-    ensure_tables()
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_opt_jobs_created ON optimization_jobs(created_at)
+        """)
+
+async def create_jobs(batch_params_list):
+    """Create a batch of optimization jobs."""
+    await ensure_tables()
     batch_id = str(uuid.uuid4())[:8]
     now = datetime.now()
     
-    data = []
-    for params in batch_params_list:
-        job_id = str(uuid.uuid4())
-        data.append((
-            job_id, 
-            batch_id, 
-            "PENDING", 
-            json.dumps(params), 
-            None, 
-            None, 
-            now, 
-            now,
-            0.0
-        ))
-    
-    # Insert efficiently
-    if not data:
+    if not batch_params_list:
         return batch_id
 
-    with duckdb.connect(str(DB_PATH)) as conn:
-        conn.executemany("""
-            INSERT INTO jobs (id, batch_id, status, params, result, worker_id, created_at, updated_at, progress)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, data)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for params in batch_params_list:
+                job_id = str(uuid.uuid4())
+                await conn.execute("""
+                    INSERT INTO optimization_jobs 
+                    (id, batch_id, status, params, result, worker_id, created_at, updated_at, progress)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                """, job_id, batch_id, "PENDING", json.dumps(params), None, None, now, now, 0.0)
         
     return batch_id
 
-def claim_job(worker_id):
+async def claim_job(worker_id):
     """
-    Atomically claim a pending job (simplistic lock via status update).
-    DuckDB concurrency is limited for writes, but this is a low-frequency operation.
+    Atomically claim a pending job using SELECT FOR UPDATE.
     """
-    ensure_tables()
+    await ensure_tables()
     updated_at = datetime.now()
     
-    with duckdb.connect(str(DB_PATH)) as conn:
-        # Find one pending
-        job = conn.execute("""
-            SELECT id, params FROM jobs 
-            WHERE status = 'PENDING' 
-            ORDER BY created_at ASC 
-            LIMIT 1
-        """).fetchone()
-        
-        if job:
-            job_id, params_json = job
-            # Update to RUNNING
-            conn.execute("""
-                UPDATE jobs 
-                SET status = 'RUNNING', worker_id = ?, updated_at = ?
-                WHERE id = ?
-            """, [worker_id, updated_at, job_id])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Find and lock one pending job
+            row = await conn.fetchrow("""
+                SELECT id, params FROM optimization_jobs 
+                WHERE status = 'PENDING' 
+                ORDER BY created_at ASC 
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            """)
             
-            return {"id": job_id, "params": json.loads(params_json)}
+            if row:
+                job_id = row['id']
+                params_json = row['params']
+                
+                # Update to RUNNING
+                await conn.execute("""
+                    UPDATE optimization_jobs 
+                    SET status = 'RUNNING', worker_id = $1, updated_at = $2
+                    WHERE id = $3
+                """, worker_id, updated_at, job_id)
+                
+                # Parse JSON string if needed
+                if isinstance(params_json, str):
+                    params = json.loads(params_json)
+                else:
+                    params = params_json
+                
+                return {"id": job_id, "params": params}
             
     return None
 
-def update_job_progress(job_id, progress):
+async def update_job_progress(job_id, progress):
     """Update job progress (0.0 to 1.0)."""
-    with duckdb.connect(str(DB_PATH)) as conn:
-        conn.execute("""
-            UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ?
-        """, [progress, datetime.now(), job_id])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE optimization_jobs SET progress = $1, updated_at = $2 WHERE id = $3
+        """, progress, datetime.now(), job_id)
 
-def complete_job(job_id, result_dict, status="COMPLETED"):
+async def complete_job(job_id, result_dict, status="COMPLETED"):
+    """Mark job as completed with result."""
     updated_at = datetime.now()
     result_json = json.dumps(result_dict) if result_dict else None
     
-    with duckdb.connect(str(DB_PATH)) as conn:
-        conn.execute("""
-            UPDATE jobs 
-            SET status = ?, result = ?, updated_at = ?, progress = 1.0
-            WHERE id = ?
-        """, [status, result_json, updated_at, job_id])
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE optimization_jobs 
+            SET status = $1, result = $2, updated_at = $3, progress = 1.0
+            WHERE id = $4
+        """, status, result_json, updated_at, job_id)
 
-def worker_heartbeat(worker_id, current_job_id=None):
+async def worker_heartbeat(worker_id, current_job_id=None):
     """Record worker heartbeat."""
-    ensure_tables()
+    await ensure_tables()
     now = datetime.now()
     
-    with duckdb.connect(str(DB_PATH)) as conn:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         # Upsert worker
-        conn.execute("""
-            INSERT INTO workers (id, last_heartbeat, current_job_id, status)
-            VALUES (?, ?, ?, 'ACTIVE')
+        await conn.execute("""
+            INSERT INTO optimization_workers (id, last_heartbeat, current_job_id, status)
+            VALUES ($1, $2, $3, 'ACTIVE')
             ON CONFLICT (id) DO UPDATE SET
-                last_heartbeat = EXCLUDED.last_heartbeat,
-                current_job_id = EXCLUDED.current_job_id,
+                last_heartbeat = $2,
+                current_job_id = $3,
                 status = 'ACTIVE'
-        """, [worker_id, now, current_job_id])
+        """, worker_id, now, current_job_id)
 
-def _get_active_workers_inner(conn):
-    """Internal helper that reuses an existing connection. REMOVED ensure_tables() call."""
-    try:
-        rows = conn.execute("""
-            SELECT w.id, w.last_heartbeat, w.current_job_id, j.params, j.progress
-            FROM workers w
-            LEFT JOIN jobs j ON w.current_job_id = j.id
-            WHERE w.last_heartbeat > NOW() - INTERVAL 30 SECONDS
-        """).fetchall()
-        
-        workers = []
-        for r in rows:
-            workers.append({
-                "id": r[0],
-                "last_heartbeat": str(r[1]),
-                "current_job_id": r[2],
-                "job_params": json.loads(r[3]) if r[3] else None,
-                "progress": r[4] if r[4] else 0.0
-            })
-        return workers
-    except Exception as e:
-        log.warning(f"Error reading workers (tables might not exist yet): {e}")
-        return []
+async def get_active_workers():
+    """Get list of active workers with their current jobs."""
+    await ensure_tables()
+    
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            rows = await conn.fetch("""
+                SELECT w.id, w.last_heartbeat, w.current_job_id, j.params, j.progress
+                FROM optimization_workers w
+                LEFT JOIN optimization_jobs j ON w.current_job_id = j.id
+                WHERE w.last_heartbeat > NOW() - INTERVAL '30 seconds'
+            """)
+            
+            workers = []
+            for r in rows:
+                params = r['params']
+                if isinstance(params, str):
+                    params = json.loads(params)
+                    
+                workers.append({
+                    "id": r['id'],
+                    "last_heartbeat": str(r['last_heartbeat']),
+                    "current_job_id": r['current_job_id'],
+                    "job_params": params if params else None,
+                    "progress": r['progress'] if r['progress'] else 0.0
+                })
+            return workers
+        except Exception as e:
+            log.warning(f"Error reading workers: {e}")
+            return []
 
-def get_dashboard_stats():
-    ensure_tables()
+async def get_dashboard_stats():
+    """Get optimization dashboard statistics."""
+    await ensure_tables()
     
     # Import here to avoid circular imports
     import sys
@@ -174,106 +211,126 @@ def get_dashboard_stats():
     try:
         from simulation_service.core import get_available_models
         models_list = get_available_models()
-        # Build lookup: model_id -> model_name
         model_name_lookup = {m['id']: m['name'] for m in models_list}
     except Exception as e:
         log.warning(f"Could not load model names: {e}")
         model_name_lookup = {}
     
-    with duckdb.connect(str(DB_PATH)) as conn:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
         try:
-            status_counts = conn.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall()
-            recent_completed = conn.execute("""
+            # Status counts
+            status_rows = await conn.fetch("""
+                SELECT status, COUNT(*) as cnt FROM optimization_jobs GROUP BY status
+            """)
+            status_counts = {r['status']: r['cnt'] for r in status_rows}
+            
+            # Recent completed
+            recent_rows = await conn.fetch("""
                 SELECT id, batch_id, params, result, updated_at 
-                FROM jobs 
+                FROM optimization_jobs 
                 WHERE status = 'COMPLETED' 
                 ORDER BY updated_at DESC 
                 LIMIT 20
-            """).fetchall()
+            """)
             
+            recent_completed = []
+            for r in recent_rows:
+                params = r['params'] if not isinstance(r['params'], str) else json.loads(r['params'])
+                result = r['result'] if not isinstance(r['result'], str) else json.loads(r['result'])
+                recent_completed.append({
+                    "id": r['id'],
+                    "batch": r['batch_id'],
+                    "params": params,
+                    "result": result,
+                    "ts": r['updated_at']
+                })
+            
+            # Leaderboard
             leaderboard = []
             try:
-                all_completed = conn.execute("SELECT params, result FROM jobs WHERE status = 'COMPLETED'").fetchall()
-                for p_raw, r_raw in all_completed:
-                    if r_raw:
-                        r = json.loads(r_raw)
-                        p = json.loads(p_raw)
+                all_completed = await conn.fetch("""
+                    SELECT params, result FROM optimization_jobs WHERE status = 'COMPLETED'
+                """)
+                
+                for row in all_completed:
+                    p = row['params'] if not isinstance(row['params'], str) else json.loads(row['params'])
+                    r = row['result'] if not isinstance(row['result'], str) else json.loads(row['result'])
+                    
+                    if not r or "error" in r:
+                        continue
                         
-                        if "error" in r:
-                            continue
-                            
-                        metric = r.get("strategy_return_pct", -999)
-                        hit_rate = r.get("hit_rate_pct", 0.0)
-                        sqn = r.get("sqn", 0.0)
-                        
-                        # Build simulation methods summary
-                        sim_methods = []
-                        sim_methods.append(f"Initial Capital: ${p.get('initial_cash', 10000):,.2f}")
-                        sim_methods.append(f"Prediction Threshold: {p.get('min_prediction_threshold', 0.0):.4f}")
-                        
-                        if r.get("slippage_enabled", True):
-                            bars = r.get("slippage_bars", 4)
-                            sim_methods.append(f"SLIPPAGE: {bars}-bar execution delay")
-                        else:
-                            sim_methods.append("SLIPPAGE: DISABLED")
-                        
-                        total_fees = r.get("total_fees", 0.0)
-                        avg_fee = r.get("avg_fee_per_trade", 0.02)
-                        sim_methods.append(f"TRANSACTION COSTS: ${avg_fee:.2f}/trade, Total: ${total_fees:.2f}")
-                        
-                        if p.get("use_bot", False):
-                            sim_methods.append("TRADING BOT: Enabled")
-                        
-                        regime_col = p.get("regime_col")
-                        if regime_col:
-                            allowed = p.get("allowed_regimes", [])
-                            sim_methods.append(f"REGIME: {regime_col} in {allowed}")
-                        
-                        if p.get("enable_z_score_check", False):
-                            sim_methods.append("Z-SCORE: Enabled")
-                        
-                        if p.get("volatility_normalization", False):
-                            sim_methods.append("VOL NORM: Enabled")
-                        
-                        # Get model display name from lookup, fallback to ID
-                        model_id = p.get("model_id", "")
-                        model_display_name = model_name_lookup.get(model_id, model_id)
-                        
-                        leaderboard.append({
-                            "ticker": p.get("ticker"),
-                            "model": model_display_name,  # Use display name
-                            "model_id": model_id,  # Keep ID for reference
-                            "return": metric,
-                            "hit_rate": hit_rate,
-                            "trades": r.get("total_trades"),
-                            "sqn": sqn,
-                            "expectancy": r.get("expectancy", 0.0),
-                            "profit_factor": r.get("profit_factor", 0.0),
-                            "threshold": p.get("min_prediction_threshold", 0.0),
-                            "z_score": p.get("enable_z_score_check", False),
-                            "vol_norm": p.get("volatility_normalization", False),
-                            "use_bot": p.get("use_bot", False),
-                            "regime_col": p.get("regime_col", "None"),
-                            "allowed_regimes": ",".join(map(str, p.get("allowed_regimes", []))) if p.get("allowed_regimes") else "All",
-                            "initial_cash": p.get("initial_cash", 10000),
-                            "full_params": p,
-                            "sim_methods": "\n".join(sim_methods)
-                        })
-                        
+                    metric = r.get("strategy_return_pct", -999)
+                    hit_rate = r.get("hit_rate_pct", 0.0)
+                    sqn = r.get("sqn", 0.0)
+                    
+                    # Build simulation methods summary
+                    sim_methods = []
+                    sim_methods.append(f"Initial Capital: ${p.get('initial_cash', 10000):,.2f}")
+                    sim_methods.append(f"Prediction Threshold: {p.get('min_prediction_threshold', 0.0):.4f}")
+                    
+                    if r.get("slippage_enabled", True):
+                        bars = r.get("slippage_bars", 4)
+                        sim_methods.append(f"SLIPPAGE: {bars}-bar execution delay")
+                    else:
+                        sim_methods.append("SLIPPAGE: DISABLED")
+                    
+                    total_fees = r.get("total_fees", 0.0)
+                    avg_fee = r.get("avg_fee_per_trade", 0.02)
+                    sim_methods.append(f"TRANSACTION COSTS: ${avg_fee:.2f}/trade, Total: ${total_fees:.2f}")
+                    
+                    if p.get("use_bot", False):
+                        sim_methods.append("TRADING BOT: Enabled")
+                    
+                    regime_col = p.get("regime_col")
+                    if regime_col:
+                        allowed = p.get("allowed_regimes", [])
+                        sim_methods.append(f"REGIME: {regime_col} in {allowed}")
+                    
+                    if p.get("enable_z_score_check", False):
+                        sim_methods.append("Z-SCORE: Enabled")
+                    
+                    if p.get("volatility_normalization", False):
+                        sim_methods.append("VOL NORM: Enabled")
+                    
+                    model_id = p.get("model_id", "")
+                    model_display_name = model_name_lookup.get(model_id, model_id)
+                    
+                    leaderboard.append({
+                        "ticker": p.get("ticker"),
+                        "model": model_display_name,
+                        "model_id": model_id,
+                        "return": metric,
+                        "hit_rate": hit_rate,
+                        "trades": r.get("total_trades"),
+                        "sqn": sqn,
+                        "expectancy": r.get("expectancy", 0.0),
+                        "profit_factor": r.get("profit_factor", 0.0),
+                        "threshold": p.get("min_prediction_threshold", 0.0),
+                        "z_score": p.get("enable_z_score_check", False),
+                        "vol_norm": p.get("volatility_normalization", False),
+                        "use_bot": p.get("use_bot", False),
+                        "regime_col": p.get("regime_col", "None"),
+                        "allowed_regimes": ",".join(map(str, p.get("allowed_regimes", []))) if p.get("allowed_regimes") else "All",
+                        "initial_cash": p.get("initial_cash", 10000),
+                        "full_params": p,
+                        "sim_methods": "\n".join(sim_methods)
+                    })
+                    
                 leaderboard.sort(key=lambda x: (x["sqn"], x["return"]), reverse=True)
                 
             except Exception as e:
                 log.error(f"Leaderboard error: {e}")
                 leaderboard = []
 
+            workers = await get_active_workers()
+
             return {
-                "counts": {s: c for s, c in status_counts},
-                "recent": [
-                    {"id": r[0], "batch": r[1], "params": json.loads(r[2]), "result": json.loads(r[3]), "ts": r[4]} 
-                    for r in recent_completed
-                ],
+                "counts": status_counts,
+                "recent": recent_completed,
                 "leaderboard": leaderboard,
-                "workers": _get_active_workers_inner(conn)
+                "workers": workers
             }
-        except duckdb.CatalogException:
+        except Exception as e:
+            log.error(f"Error getting dashboard stats: {e}")
             return {"counts": {}, "recent": [], "leaderboard": [], "workers": []}

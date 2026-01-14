@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pydantic import BaseModel
 
 from .db import db
-from .fingerprint import compute_fingerprint
+from .fingerprint import compute_fingerprint, compute_simulation_fingerprint
 from .criteria import evaluate_holy_grail, format_criteria_result, HolyGrailCriteria
 
 log = logging.getLogger("orchestrator.evolution")
@@ -77,6 +77,15 @@ class EvolutionState:
     parent_sqn: float = 0.0
     promoted: bool = False
     stopped_reason: Optional[str] = None
+    
+    # Progress tracking
+    models_trained: int = 0
+    models_total: int = 0
+    simulations_completed: int = 0
+    simulations_total: int = 0
+    
+    # Track all trained models for simulation phase
+    trained_models: List[Dict[str, Any]] = field(default_factory=list)  # [{model_id, generation, features_count}]
 
 
 class EvolutionEngine:
@@ -136,11 +145,71 @@ class EvolutionEngine:
         try:
             await db.update_evolution_run(run_id, status="RUNNING", step_status="Initializing")
             
+            # Calculate total work upfront
+            # NOTE: Currently using GridSearchCV which returns best model only
+            # If we implement full grid enumeration, update this calculation
+            state.models_total = config.max_generations  # One model per generation (best from grid search)
+            
+            # Simulation grid calculation
+            sim_tickers = config.simulation_tickers or [config.symbol]
+            num_tickers = len(sim_tickers)
+            num_thresholds = len(config.thresholds)
+            num_z_scores = len(config.z_score_thresholds)
+            num_regimes = len(config.regime_configs)
+            sims_per_model = num_tickers * num_thresholds * num_z_scores * num_regimes
+            
+            # Total sims = sims_per_model × number of models we'll train
+            state.simulations_total = sims_per_model * config.max_generations
+            
+            log.info(f"Work estimate: {state.models_total} models, {state.simulations_total} simulations")
+            log.info(f"Simulation grid: {num_tickers} tickers × {num_thresholds} thresholds × {num_z_scores} z-scores × {num_regimes} regimes = {sims_per_model} per model")
+            
+            # Update database with totals
+            await db.update_evolution_run(
+                run_id,
+                models_total=state.models_total,
+                simulations_total=state.simulations_total
+            )
+            
             # Initialize: get seed model's features or use provided
             if config.seed_model_id:
                 await db.update_evolution_run(run_id, step_status="Loading seed model features")
                 state.current_model_id = config.seed_model_id
                 state.current_features = await self._get_model_features(config.seed_model_id)
+                
+                # Validate seed model before adding to trained models
+                try:
+                    seed_importance = await self._get_feature_importance(config.seed_model_id)
+                    non_zero_count = sum(1 for v in seed_importance.values() if v != 0)
+                    
+                    if non_zero_count == 0:
+                        log.error(f"Seed model {config.seed_model_id} has ALL ZERO importance features")
+                        state.stopped_reason = "seed_model_invalid_all_zero_importance"
+                        await db.update_evolution_run(
+                            run_id,
+                            status="FAILED",
+                            step_status=f"Seed model has all zero importance - cannot proceed: {state.stopped_reason}"
+                        )
+                        return {
+                            "run_id": run_id,
+                            "generations_completed": 0,
+                            "models_trained": 0,
+                            "final_model_id": config.seed_model_id,
+                            "promoted": False,
+                            "best_sqn": 0.0,
+                            "stopped_reason": state.stopped_reason
+                        }
+                    
+                    log.info(f"Seed model validation passed - {non_zero_count}/{len(seed_importance)} features have non-zero importance")
+                except Exception as e:
+                    log.warning(f"Could not validate seed model importance: {e}")
+                
+                # Add seed model to trained models list
+                state.trained_models.append({
+                    "model_id": config.seed_model_id,
+                    "generation": 0,
+                    "features_count": len(state.current_features)
+                })
             elif config.seed_features:
                 state.current_features = config.seed_features
                 await db.update_evolution_run(run_id, step_status=f"Training initial model with {len(state.current_features)} features")
@@ -150,10 +219,54 @@ class EvolutionEngine:
                     parent_model_id=None,
                     features=state.current_features
                 )
+                # Update model counter
+                state.models_trained += 1
+                await db.update_evolution_run(run_id, models_trained=state.models_trained)
+                
+                # Validate initial trained model
+                try:
+                    initial_importance = await self._get_feature_importance(state.current_model_id)
+                    non_zero_count = sum(1 for v in initial_importance.values() if v != 0)
+                    
+                    if non_zero_count == 0:
+                        log.error(f"Initial trained model {state.current_model_id} has ALL ZERO importance features")
+                        state.stopped_reason = "initial_model_invalid_all_zero_importance"
+                        await db.update_evolution_run(
+                            run_id,
+                            status="FAILED",
+                            step_status=f"Initial model has all zero importance - cannot proceed: {state.stopped_reason}"
+                        )
+                        return {
+                            "run_id": run_id,
+                            "generations_completed": 0,
+                            "models_trained": 0,
+                            "final_model_id": state.current_model_id,
+                            "promoted": False,
+                            "best_sqn": 0.0,
+                            "stopped_reason": state.stopped_reason
+                        }
+                    
+                    log.info(f"Initial model validation passed - {non_zero_count}/{len(initial_importance)} features have non-zero importance")
+                except Exception as e:
+                    log.warning(f"Could not validate initial model importance: {e}")
+                
+                # Add to trained models list
+                state.trained_models.append({
+                    "model_id": state.current_model_id,
+                    "generation": 0,
+                    "features_count": len(state.current_features)
+                })
             else:
                 raise ValueError("Must provide seed_model_id or seed_features")
             
-            # Evolution loop
+            # ================================================================
+            # PHASE 1: TRAIN ALL MODELS (GENERATIONAL PRUNING)
+            # ================================================================
+            log.info("=" * 60)
+            log.info("PHASE 1: TRAINING ALL MODELS")
+            log.info("=" * 60)
+            
+            # Evolution loop - train models through progressive feature pruning
             while state.current_generation < config.max_generations:
                 gen_label = f"Gen {state.current_generation}/{config.max_generations}"
                 log.info(f"=== Generation {state.current_generation} ===")
@@ -161,77 +274,24 @@ class EvolutionEngine:
                 log.info(f"Current features count: {len(state.current_features)}")
                 
                 # ================================================================
-                # STEP A: Run simulations on CURRENT model (before pruning)
-                # ================================================================
-                # This ensures we always evaluate every trained model
-                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Queueing simulations")
-                try:
-                    log.info(f"Step A: Queueing simulations for current model {state.current_model_id}")
-                    await self._queue_simulations(state, state.current_model_id)
-                    log.info("Step A: Simulations queued")
-                except Exception as e:
-                    log.error(f"Step A FAILED: Queue simulations error: {e}")
-                    state.stopped_reason = f"simulation_queue_error: {e}"
-                    break
-                
-                # Wait for simulations and evaluate
-                await db.update_evolution_run(run_id, step_status=f"{gen_label}: Waiting for simulation results...")
-                try:
-                    log.info("Step A: Waiting for simulation results...")
-                    best_result = await self._wait_and_evaluate(state, state.current_model_id)
-                    log.info(f"Step A: Got result - SQN: {best_result.get('sqn', 'N/A') if best_result else 'None'}")
-                except Exception as e:
-                    log.error(f"Step A FAILED: Simulation evaluation error: {e}")
-                    best_result = None
-                
-                if best_result:
-                    state.parent_sqn = best_result.get("sqn", 0)
-                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Evaluating results (SQN={state.parent_sqn:.2f})")
-                    
-                    # Check Holy Grail criteria
-                    criteria = HolyGrailCriteria(
-                        sqn_min=config.sqn_min,
-                        sqn_max=config.sqn_max,
-                        profit_factor_min=config.profit_factor_min,
-                        profit_factor_max=config.profit_factor_max,
-                        trade_count_min=config.trade_count_min,
-                        trade_count_max=config.trade_count_max
-                    )
-                    evaluation = evaluate_holy_grail(best_result, criteria)
-                    log.info(format_criteria_result(evaluation))
-                    
-                    if evaluation.meets_all:
-                        state.promoted = True
-                        await self._record_promotion(state, state.current_model_id, best_result, evaluation)
-                        log.info(f"🎯 Model {state.current_model_id} PROMOTED!")
-                        break  # Stop evolution - we found a winner!
-                    
-                    # Update best results in run record
-                    await db.update_evolution_run(
-                        run_id,
-                        best_sqn=state.parent_sqn,
-                        best_model_id=state.current_model_id
-                    )
-                
-                # ================================================================
-                # STEP B: Get feature importance for pruning
+                # STEP A: Get feature importance from CURRENT model
                 # ================================================================
                 await db.update_evolution_run(run_id, step_status=f"{gen_label}: Getting feature importance")
                 try:
                     importance = await self._get_feature_importance(state.current_model_id)
-                    log.info(f"Step B: Got importance for {len(importance)} features")
+                    log.info(f"Step A: Got importance for {len(importance)} features from training")
                 except Exception as e:
-                    log.error(f"Step B FAILED: Could not get feature importance: {e}")
+                    log.error(f"Step A FAILED: Could not get feature importance: {e}")
                     state.stopped_reason = f"feature_importance_error: {e}"
                     break
                 
                 if not importance:
-                    log.warning("Step B: No importance data returned")
+                    log.warning("Step A: No importance data returned")
                     state.stopped_reason = "no_importance_data"
                     break
                 
                 # ================================================================
-                # STEP C: Prune bottom X% of features by importance
+                # STEP B: Prune low-importance features
                 # ================================================================
                 try:
                     pruned, remaining = self._prune_features(
@@ -239,32 +299,31 @@ class EvolutionEngine:
                         prune_fraction=config.prune_fraction,
                         min_features=config.min_features
                     )
-                    log.info(f"Step C: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
+                    log.info(f"Step B: Pruning complete - {len(pruned)} removed, {len(remaining)} remaining")
                 except Exception as e:
-                    log.error(f"Step C FAILED: Pruning error: {e}")
+                    log.error(f"Step B FAILED: Pruning error: {e}")
                     state.stopped_reason = f"pruning_error: {e}"
                     break
                 
                 # Check if we can continue pruning
-                # Note: We've already simulated the current model in Step A, so results are saved
                 if not pruned:
-                    log.info("Step C: No features to prune (at min_features limit or all equal importance)")
-                    log.info("Step C: Current model has been evaluated, cannot create child generation")
+                    log.info("Step B: No features to prune (at min_features limit or all equal importance)")
+                    log.info("Step B: Cannot create child generation, stopping training phase")
                     state.stopped_reason = "no_features_to_prune"
-                    break  # Can't create a new generation without pruning
+                    break
                 
                 if not remaining or len(remaining) < config.min_features:
-                    log.warning(f"Step C: Would go below min_features ({config.min_features})")
-                    log.info("Step C: Current model has been evaluated, stopping at feature limit")
+                    log.warning(f"Step B: Would go below min_features ({config.min_features})")
+                    log.info("Step B: Stopping at feature limit")
                     state.stopped_reason = "min_features_reached"
-                    break  # Can't train a valid model with fewer features
+                    break
                 
-                log.info(f"Step C: Pruned {len(pruned)} low-importance features")
-                log.info(f"Step C: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
+                log.info(f"Step B: Pruned {len(pruned)} low-importance features")
+                log.info(f"Step B: Remaining {len(remaining)} features: {remaining[:10]}{'...' if len(remaining) > 10 else ''}")
                 await db.update_evolution_run(run_id, step_status=f"{gen_label}: Pruned {len(pruned)}, keeping {len(remaining)} features")
                 
                 # ================================================================
-                # STEP D: Compute fingerprint for child model
+                # STEP C: Compute fingerprint for child model
                 # ================================================================
                 try:
                     fingerprint = compute_fingerprint(
@@ -277,9 +336,9 @@ class EvolutionEngine:
                         l1_ratio_grid=config.l1_ratio_grid,
                         regime_configs=config.regime_configs
                     )
-                    log.info(f"Step D: Computed fingerprint: {fingerprint[:16]}...")
+                    log.info(f"Step C: Computed fingerprint: {fingerprint[:16]}...")
                 except Exception as e:
-                    log.error(f"Step D FAILED: Fingerprint error: {e}")
+                    log.error(f"Step C FAILED: Fingerprint error: {e}")
                     state.stopped_reason = f"fingerprint_error: {e}"
                     break
                 
@@ -288,35 +347,86 @@ class EvolutionEngine:
                 try:
                     existing_model_id = await db.get_model_by_fingerprint(fingerprint)
                     if existing_model_id:
-                        log.info(f"Step D: Fingerprint match! Reusing model {existing_model_id}")
+                        log.info(f"Step C: Fingerprint match! Reusing model {existing_model_id}")
                     else:
-                        log.info("Step D: No existing model, will train new")
+                        log.info("Step C: No existing model, will train new")
                 except Exception as e:
-                    log.error(f"Step D FAILED: Fingerprint lookup error: {e}")
+                    log.error(f"Step C FAILED: Fingerprint lookup error: {e}")
                     existing_model_id = None  # Continue with training
                 
                 if existing_model_id:
                     child_model_id = existing_model_id
                     await db.update_evolution_run(run_id, step_status=f"{gen_label}: Reusing cached model")
+                    # Single cached model - add to list
+                    state.current_generation += 1
+                    state.trained_models.append({
+                        "model_id": child_model_id,
+                        "generation": state.current_generation,
+                        "features_count": len(remaining)
+                    })
+                    state.models_trained += 1
+                    await db.update_evolution_run(run_id, models_trained=state.models_trained)
                 else:
                     # ================================================================
-                    # STEP E: Train child model with pruned features
+                    # STEP D: Train child model(s) with pruned features
+                    # NOTE: For ElasticNet with grid search, training service currently
+                    # uses GridSearchCV which returns only the BEST model.
+                    # TODO: Update training service to save ALL grid combinations as separate models
                     # ================================================================
-                    await db.update_evolution_run(run_id, step_status=f"{gen_label}: Training child model ({len(remaining)} features)")
+                    await db.update_evolution_run(
+                        run_id, 
+                        step_status=f"{gen_label}: Training model ({len(remaining)} features)"
+                    )
+                    
                     try:
-                        log.info(f"Step E: Training child model with {len(remaining)} features...")
+                        log.info(f"Step D: Training model with {len(remaining)} features...")
                         child_model_id = await self._train_model(
                             state,
                             parent_model_id=state.current_model_id,
                             features=remaining
                         )
-                        log.info(f"Step E: Training complete, child model ID: {child_model_id}")
+                        log.info(f"Step D: Training complete, model ID: {child_model_id}")
+                        
+                        # Validate model - check if it has any non-zero importance features
+                        try:
+                            child_importance = await self._get_feature_importance(child_model_id)
+                            non_zero_count = sum(1 for v in child_importance.values() if v != 0)
+                            
+                            if non_zero_count == 0:
+                                log.error(f"Step D: Model {child_model_id} has ALL ZERO importance features - SKIPPING")
+                                log.warning(f"Step D: Bad model will not be simulated. Continuing to next iteration.")
+                                await db.update_evolution_run(
+                                    run_id, 
+                                    step_status=f"{gen_label}: Model failed (all zero importance) - skipping"
+                                )
+                                # Don't add to trained_models, don't increment generation
+                                # Continue training loop to try next generation
+                                state.current_model_id = child_model_id  # Still update for importance extraction
+                                state.current_features = remaining
+                                continue  # Skip to next iteration without incrementing generation
+                            
+                            log.info(f"Step D: Model validation passed - {non_zero_count}/{len(child_importance)} features have non-zero importance")
+                            
+                        except Exception as e:
+                            log.warning(f"Step D: Could not validate model importance (continuing anyway): {e}")
+                        
+                        # Add single model (training service returns best from grid search)
+                        state.current_generation += 1
+                        state.trained_models.append({
+                            "model_id": child_model_id,
+                            "generation": state.current_generation,
+                            "features_count": len(remaining)
+                        })
+                        state.models_trained += 1
+                        await db.update_evolution_run(run_id, models_trained=state.models_trained)
+                        
                     except Exception as e:
-                        log.error(f"Step E FAILED: Training error: {e}")
+                        log.error(f"Step D FAILED: Training error: {e}")
                         state.stopped_reason = f"training_error: {e}"
                         break
                     
                     # Record fingerprint with full config for reproducibility
+                    # For grid search, we record one fingerprint for the base feature set
                     try:
                         full_config = {
                             **config.hyperparameters,
@@ -332,71 +442,214 @@ class EvolutionEngine:
                             target_transform=config.target_transform,
                             symbol=config.symbol
                         )
-                        log.info("Step E: Fingerprint recorded")
+                        log.info("Step D: Fingerprint recorded")
                     except Exception as e:
-                        log.warning(f"Step E: Failed to record fingerprint (non-fatal): {e}")
+                        log.warning(f"Step D: Failed to record fingerprint (non-fatal): {e}")
                 
-                # ================================================================
-                # STEP F: Record evolution lineage
-                # ================================================================
+                # Record evolution lineage (use first child model as representative)
+                representative_model = state.trained_models[-1]["model_id"] if state.trained_models else child_model_id
                 try:
                     await db.insert_evolution_log(
                         log_id=str(uuid.uuid4()),
                         run_id=run_id,
                         parent_model_id=state.current_model_id,
-                        child_model_id=child_model_id,
+                        child_model_id=representative_model,
                         generation=state.current_generation,
-                        parent_sqn=state.parent_sqn,
+                        parent_sqn=0.0,  # Will be filled in after simulations
                         pruned_features=pruned,
                         remaining_features=remaining,
-                        pruning_reason="importance_zero"
+                        pruning_reason="importance_based"
                     )
-                    log.info(f"Step F: Evolution lineage recorded")
+                    log.info(f"Evolution lineage recorded: Gen {state.current_generation} ({len([m for m in state.trained_models if m['generation'] == state.current_generation])} models)")
                 except Exception as e:
-                    log.warning(f"Step F: Failed to record lineage (non-fatal): {e}")
+                    log.warning(f"Failed to record lineage (non-fatal): {e}")
                 
-                # ================================================================
-                # Update state: child becomes current for next iteration
-                # Child model will be simulated in Step A of next iteration
-                # ================================================================
-                state.current_model_id = child_model_id
+                # Update state for next iteration - use first model from current generation
+                # Feature importance will be similar across grid search variants
+                state.current_model_id = representative_model
                 state.current_features = remaining
-                state.current_generation += 1
                 
+            # ================================================================
+            # PHASE 2: SIMULATE ALL MODELS
+            # ================================================================
+            
+            # Safety check: Don't proceed to simulation if no valid models were trained
+            if len(state.trained_models) == 0:
+                log.error("No valid models to simulate - all models had zero importance")
+                state.stopped_reason = "no_valid_models_all_zero_importance"
                 await db.update_evolution_run(
                     run_id,
-                    current_generation=state.current_generation,
-                    best_sqn=state.parent_sqn,
-                    best_model_id=state.current_model_id
+                    status="FAILED",
+                    step_status=f"Phase 1 complete - no valid models to simulate: {state.stopped_reason}"
+                )
+                return {
+                    "run_id": run_id,
+                    "generations_completed": 0,
+                    "models_trained": 0,
+                    "final_model_id": state.current_model_id,
+                    "promoted": False,
+                    "best_sqn": 0.0,
+                    "stopped_reason": state.stopped_reason
+                }
+            
+            log.info("=" * 60)
+            log.info(f"PHASE 2: SIMULATING ALL MODELS ({len(state.trained_models)} models)")
+            log.info("=" * 60)
+            
+            await db.update_evolution_run(run_id, step_status="Phase 2: Queueing all simulations")
+            
+            # Queue simulations for all trained models
+            total_queued = 0
+            for i, model_info in enumerate(state.trained_models):
+                model_id = model_info["model_id"]
+                generation = model_info["generation"]
+                log.info(f"Queueing simulations for model {i+1}/{len(state.trained_models)}: {model_id} (Gen {generation})")
+                
+                # Temporarily set generation for simulation tagging
+                temp_gen = state.current_generation
+                state.current_generation = generation
+                
+                try:
+                    num_queued = await self._queue_simulations(state, model_id)
+                    total_queued += num_queued
+                    log.info(f"  Queued {num_queued} simulations for model {model_id}")
+                except Exception as e:
+                    log.error(f"  Failed to queue simulations for model {model_id}: {e}")
+                
+                state.current_generation = temp_gen
+            
+            log.info(f"Total simulations queued: {total_queued}")
+            await db.update_evolution_run(run_id, step_status=f"Phase 2: Waiting for {total_queued} simulations")
+            
+            # Wait for ALL simulations across ALL models
+            log.info("Waiting for all simulations to complete...")
+            best_overall_result = None
+            best_overall_sqn = -999
+            best_overall_model_id = None
+            
+            # Poll for completion of all simulations
+            elapsed = 0.0
+            poll_interval = 10.0
+            timeout = 7200.0  # 2 hours for all simulations
+            
+            while elapsed < timeout:
+                pending = await db.get_pending_job_count(run_id)
+                
+                # Update simulation progress
+                total_completed = 0
+                for model_info in state.trained_models:
+                    generation = model_info["generation"]
+                    completed_count = await db.get_completed_job_count(run_id, generation)
+                    total_completed += completed_count
+                
+                state.simulations_completed = total_completed
+                await db.update_evolution_run(run_id, simulations_completed=total_completed)
+                
+                if pending == 0:
+                    log.info(f"All simulations complete ({total_completed} total)")
+                    break
+                
+                progress_pct = int((total_completed / state.simulations_total) * 100) if state.simulations_total > 0 else 0
+                await db.update_evolution_run(
+                    run_id, 
+                    step_status=f"Phase 2: Simulations {total_completed}/{state.simulations_total} ({progress_pct}%) - {int(elapsed)}s"
                 )
                 
-                log.info(f"Step F: Advancing to Generation {state.current_generation}, child model {child_model_id} will be simulated next iteration")
+                log.info(f"Waiting for {pending} simulations... ({total_completed}/{state.simulations_total} completed)")
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
             
-            # Final status
-            final_status = "PROMOTED" if state.promoted else "COMPLETED"
+            if elapsed >= timeout:
+                state.stopped_reason = "simulation_timeout"
+                log.warning(f"Simulation phase timeout after {timeout}s")
+            
+            # Evaluate all results to find best model + config combination
+            log.info("Evaluating all simulation results...")
+            await db.update_evolution_run(run_id, step_status="Phase 2: Evaluating all results")
+            
+            for i, model_info in enumerate(state.trained_models):
+                model_id = model_info["model_id"]
+                generation = model_info["generation"]
+                
+                # Get all completed jobs for this model's generation
+                completed = await db.get_completed_jobs(run_id, generation=generation)
+                
+                if not completed:
+                    log.warning(f"No completed simulations for model {model_id} (Gen {generation})")
+                    continue
+                
+                # Find best result for this model
+                for job in completed:
+                    result = job.get("result", {})
+                    if isinstance(result, str):
+                        import json
+                        result = json.loads(result)
+                    
+                    sqn = result.get("sqn", 0)
+                    if sqn > best_overall_sqn:
+                        best_overall_sqn = sqn
+                        best_overall_result = result
+                        best_overall_model_id = model_id
+                
+                log.info(f"Model {i+1}/{len(state.trained_models)} (Gen {generation}): Best SQN = {best_overall_sqn:.2f}")
+            
+            log.info(f"Overall best result: Model {best_overall_model_id}, SQN = {best_overall_sqn:.2f}")
+            
+            # Check if best result meets Holy Grail criteria
+            if best_overall_result:
+                criteria = HolyGrailCriteria(
+                    sqn_min=config.sqn_min,
+                    sqn_max=config.sqn_max,
+                    profit_factor_min=config.profit_factor_min,
+                    profit_factor_max=config.profit_factor_max,
+                    trade_count_min=config.trade_count_min,
+                    trade_count_max=config.trade_count_max
+                )
+                evaluation = evaluate_holy_grail(best_overall_result, criteria)
+                log.info(format_criteria_result(evaluation))
+                
+                if evaluation.meets_all:
+                    state.promoted = True
+                    await self._record_promotion(state, best_overall_model_id, best_overall_result, evaluation)
+                    log.info(f"🎯 Model {best_overall_model_id} PROMOTED!")
+                
+                # Update best results
+                await db.update_evolution_run(
+                    run_id,
+                    best_sqn=best_overall_sqn,
+                    best_model_id=best_overall_model_id
+                )
+                
+                state.parent_sqn = best_overall_sqn
+            
+            # Final status update
+            final_reason = state.stopped_reason or ("promoted" if state.promoted else "no_promotion")
             await db.update_evolution_run(
                 run_id,
-                status=final_status,
-                promoted=state.promoted
+                status="COMPLETED" if state.promoted else "FAILED",
+                step_status=f"Complete: {len(state.trained_models)} models trained, {state.simulations_completed} simulations run. Reason: {final_reason}"
             )
             
-            log.info(f"Evolution run {run_id} finished: {final_status}")
+            log.info(f"Evolution run {run_id} finished: {'COMPLETED' if state.promoted else 'FAILED'} (reason: {state.stopped_reason or 'no_promotion'})")
             
-        except Exception as e:
-            import traceback
-            log.error(f"Evolution run {run_id} failed: {e}")
-            log.error(f"Traceback: {traceback.format_exc()}")
-            await db.update_evolution_run(run_id, status="FAILED")
-            raise
+            return {
+                "run_id": run_id,
+                "generations_completed": len(state.trained_models) - 1,  # Subtract initial model
+                "models_trained": len(state.trained_models),
+                "final_model_id": best_overall_model_id or state.current_model_id,
+                "promoted": state.promoted,
+                "best_sqn": state.parent_sqn,
+                "stopped_reason": state.stopped_reason
+            }
         
-        return {
-            "run_id": run_id,
-            "generations_completed": state.current_generation,
-            "final_model_id": state.current_model_id,
-            "promoted": state.promoted,
-            "best_sqn": state.parent_sqn,
-            "stopped_reason": state.stopped_reason
-        }
+        except Exception as e:
+            log.error(f"Evolution run failed with exception: {e}", exc_info=True)
+            await db.update_evolution_run(
+                run_id,
+                status="FAILED",
+                step_status=f"Exception: {str(e)}"
+            )
+            raise
     
     async def _get_model_features(self, model_id: str) -> List[str]:
         """Get feature list from training service."""
@@ -419,6 +672,33 @@ class EvolutionEngine:
         except Exception as e:
             log.error(f"Failed to get importance for {model_id}: {e}")
             return {}
+    
+    async def _get_grid_search_models(self, base_model_id: str) -> List[str]:
+        """
+        Get all model IDs from a grid search training job.
+        For ElasticNet with grid search, the training service creates multiple models.
+        Returns list of model IDs in the grid.
+        """
+        try:
+            # Query training service for all models from this training job
+            resp = await self.http_client.get(f"{self.training_url}/models")
+            resp.raise_for_status()
+            models = resp.json()
+            
+            # Filter models that belong to this grid search
+            # The base_model_id is the job_id, grid models have parent_model_id or similar
+            # For now, we'll get models that were created around the same time
+            # A better approach would be for training service to return grid_models with the base model
+            
+            # Fallback: if training service doesn't support grid model retrieval,
+            # just return the base model
+            # TODO: Update training service to return grid models
+            log.warning(f"Grid search model retrieval not fully implemented, using base model only")
+            return [base_model_id]
+            
+        except Exception as e:
+            log.error(f"Failed to get grid search models for {base_model_id}: {e}")
+            return [base_model_id]
     
     def _prune_features(
         self, 
@@ -546,10 +826,19 @@ class EvolutionEngine:
                     continue
                 
                 status = model.get("status")
+                columns_initial = model.get("columns_initial")
+                columns_remaining = model.get("columns_remaining")
+                
+                # Build status message with column info if available
+                status_msg = f"Training: {status}"
+                if columns_initial and columns_remaining:
+                    dropped = columns_initial - columns_remaining
+                    status_msg += f" ({columns_remaining}/{columns_initial} cols, dropped {dropped})"
+                status_msg += f" ({int(elapsed)}s)"
                 
                 if status != last_status:
                     log.info(f"Model {model_id} status: {status}")
-                    await db.update_evolution_run(run_id, step_status=f"Training: {status} ({int(elapsed)}s)")
+                    await db.update_evolution_run(run_id, step_status=status_msg)
                     last_status = status
                 
                 if status == "completed":
@@ -575,6 +864,7 @@ class EvolutionEngine:
     ) -> int:
         """
         Queue simulation jobs with priority - full grid search.
+        Checks simulation fingerprints to avoid duplicate work.
         
         Grid dimensions:
         - Thresholds: Signal strength cutoffs (e.g., 0.0001 to 0.001)
@@ -588,6 +878,47 @@ class EvolutionEngine:
         config = state.config
         jobs = []
         batch_id = str(uuid.uuid4())
+        skipped_count = 0
+        
+        # Get model details and compute model fingerprint for simulation fingerprinting
+        try:
+            model_features = await self._get_model_features(model_id)
+            # Parse data_options for train/test window
+            data_opts = {}
+            if config.data_options:
+                import json
+                data_opts = json.loads(config.data_options) if isinstance(config.data_options, str) else config.data_options
+            train_window = data_opts.get("train_window", 20000)
+            test_window = data_opts.get("test_window", 1000)
+            
+            # Compute MODEL fingerprint (same config = same fingerprint even if retrained)
+            model_fingerprint = compute_fingerprint(
+                features=model_features,
+                hyperparams=config.hyperparameters,
+                target_transform=config.target_transform,
+                symbol=config.symbol,
+                target_col=config.target_col,
+                alpha_grid=config.alpha_grid,
+                l1_ratio_grid=config.l1_ratio_grid,
+                regime_configs=config.regime_configs
+            )
+            log.info(f"Model fingerprint for simulations: {model_fingerprint[:16]}...")
+        except Exception as e:
+            log.warning(f"Failed to get model details for fingerprinting: {e}. Queueing all simulations without dedup.")
+            model_features = state.current_features
+            train_window = 20000
+            test_window = 1000
+            # Fallback fingerprint
+            model_fingerprint = compute_fingerprint(
+                features=model_features,
+                hyperparams=config.hyperparameters,
+                target_transform=config.target_transform,
+                symbol=config.symbol,
+                target_col=config.target_col,
+                alpha_grid=config.alpha_grid,
+                l1_ratio_grid=config.l1_ratio_grid,
+                regime_configs=config.regime_configs
+            )
         
         # Get simulation tickers (defaults to training symbol if not specified)
         sim_tickers = config.get_simulation_tickers()
@@ -597,6 +928,26 @@ class EvolutionEngine:
             for threshold in config.thresholds:
                 for z_score in config.z_score_thresholds:
                     for regime_config in config.regime_configs:
+                        # Compute simulation fingerprint using MODEL fingerprint
+                        # This ensures same model config + same sim params = reusable result
+                        sim_fingerprint = compute_simulation_fingerprint(
+                            model_fingerprint=model_fingerprint,
+                            target_ticker=config.symbol,
+                            simulation_ticker=ticker,
+                            threshold=threshold,
+                            z_score_threshold=z_score,
+                            regime_config=regime_config,
+                            train_window=train_window,
+                            test_window=test_window
+                        )
+                        
+                        # Check if this simulation already ran
+                        existing = await db.get_simulation_by_fingerprint(sim_fingerprint)
+                        if existing and existing.get("result_sqn") is not None:
+                            log.info(f"Simulation fingerprint {sim_fingerprint[:16]}... already exists (SQN={existing.get('result_sqn'):.2f}), skipping")
+                            skipped_count += 1
+                            continue
+                        
                         job = {
                             "id": str(uuid.uuid4()),
                             "batch_id": batch_id,
@@ -611,14 +962,22 @@ class EvolutionEngine:
                                 "z_score_threshold": z_score,
                                 "regime_config": regime_config,
                                 "use_trading_bot": False,
-                                "use_volume_normalization": True
+                                "use_volume_normalization": True,
+                                # Store fingerprints for saving after completion
+                                "simulation_fingerprint": sim_fingerprint,
+                                "model_fingerprint": model_fingerprint,
+                                "target_ticker": config.symbol,
+                                "train_window": train_window,
+                                "test_window": test_window
                             }
                         }
                         jobs.append(job)
         
         count = await db.enqueue_jobs(jobs)
         grid_dims = f"{len(sim_tickers)} tickers × {len(config.thresholds)} thresholds × {len(config.z_score_thresholds)} z-scores × {len(config.regime_configs)} regimes"
-        log.info(f"Queued {count} simulation jobs ({grid_dims}) with priority {state.parent_sqn:.2f}")
+        total_possible = len(sim_tickers) * len(config.thresholds) * len(config.z_score_thresholds) * len(config.regime_configs)
+        log.info(f"Queued {count} simulation jobs ({grid_dims}), skipped {skipped_count} already tested, with priority {state.parent_sqn:.2f}")
+        log.info(f"Fingerprint deduplication: {skipped_count}/{total_possible} simulations reused from cache")
         return count
     
     async def _wait_and_evaluate(
@@ -632,6 +991,7 @@ class EvolutionEngine:
         elapsed = 0.0
         run_id = state.run_id
         total_jobs = None
+        gen_sims_start = state.simulations_completed  # Track sims before this generation
         
         while elapsed < timeout:
             pending = await db.get_pending_job_count(run_id)
@@ -639,6 +999,11 @@ class EvolutionEngine:
             
             if total_jobs is None and (pending > 0 or completed_count > 0):
                 total_jobs = pending + completed_count
+            
+            # Update cumulative simulation counter
+            if completed_count > 0:
+                state.simulations_completed = gen_sims_start + completed_count
+                await db.update_evolution_run(run_id, simulations_completed=state.simulations_completed)
             
             if pending == 0:
                 break
@@ -662,7 +1027,8 @@ class EvolutionEngine:
         )
         
         if not completed:
-            log.warning("No completed simulations found")
+            log.warning(f"No completed simulations found for generation {state.current_generation} (model {model_id})")
+            log.warning(f"Checked after {int(elapsed)}s - pending jobs remaining: {pending}")
             return None
         
         # Find best by SQN

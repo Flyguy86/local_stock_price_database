@@ -4,9 +4,11 @@ Recursive Strategy Factory for automated model evolution.
 """
 import os
 import logging
+import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
+from collections import deque
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -17,11 +19,38 @@ from .db import db
 from .evolution import engine, EvolutionConfig
 from .criteria import HolyGrailCriteria
 
+# Log Buffer for Live Logs
+log_buffer = deque(maxlen=10000)
+log_lock = threading.Lock()
+
+class BufferHandler(logging.Handler):
+    """Custom handler to capture logs in memory buffer."""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # Filter out noisy GET requests
+            if any(x in msg for x in ["GET /runs", "GET /promoted", "GET /jobs/pending", "GET /health"]):
+                return
+            with log_lock:
+                log_buffer.append(msg)
+        except Exception:
+            self.handleError(record)
+
 # Configure logging
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    force=True
 )
+
+# Add buffer handler to root logger to capture ALL logs
+# Only add to root logger - child loggers will propagate up automatically
+_handler = BufferHandler()
+_handler.setLevel(logging.INFO)
+_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [%(name)s] %(message)s'))
+root_logger = logging.getLogger()
+root_logger.addHandler(_handler)
+
 log = logging.getLogger("orchestrator.api")
 
 # Paths
@@ -35,6 +64,7 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup
     log.info("Orchestrator Service starting...")
+    log.info(f"Log buffer initialized with capacity: {log_buffer.maxlen}")
     await db.connect()
     await engine.start()
     
@@ -48,25 +78,45 @@ async def lifespan(app: FastAPI):
     # Recovery: Mark any RUNNING/PENDING runs as STOPPED (container restarted)
     try:
         async with db.acquire() as conn:
-            result = await conn.execute(
-                """
-                UPDATE evolution_runs 
-                SET status = 'STOPPED', 
-                    step_status = 'Interrupted by container restart'
-                WHERE status IN ('RUNNING', 'PENDING')
-                RETURNING id, symbol
-                """
+            # Find runs that were interrupted
+            interrupted_runs = await conn.fetch(
+                "SELECT id, symbol FROM evolution_runs WHERE status IN ('RUNNING', 'PENDING')"
             )
-            recovered = await conn.fetch(
-                "SELECT id, symbol FROM evolution_runs WHERE step_status = 'Interrupted by container restart'"
-            )
-            if recovered:
-                for row in recovered:
-                    log.warning(f"Recovered stalled run {row['id']} (symbol: {row['symbol']}) - marked as STOPPED")
+            
+            if interrupted_runs:
+                log.warning(f"Found {len(interrupted_runs)} interrupted evolution runs - cleaning up")
+                
+                for row in interrupted_runs:
+                    run_id = row['id']
+                    symbol = row['symbol']
+                    
+                    # Cancel all pending/running simulation jobs for this run
+                    cancelled = await conn.execute(
+                        """
+                        UPDATE priority_jobs 
+                        SET status = 'CANCELLED'
+                        WHERE run_id = $1 AND status IN ('PENDING', 'RUNNING')
+                        """,
+                        run_id
+                    )
+                    log.info(f"Cancelled pending simulations for run {run_id} (symbol: {symbol})")
+                
+                # Mark runs as stopped
+                await conn.execute(
+                    """
+                    UPDATE evolution_runs 
+                    SET status = 'STOPPED', 
+                        step_status = 'Interrupted by container restart'
+                    WHERE status IN ('RUNNING', 'PENDING')
+                    """
+                )
+                
+                for row in interrupted_runs:
+                    log.warning(f"Marked run {row['id']} (symbol: {row['symbol']}) as STOPPED")
             else:
-                log.info("No stalled evolution runs to recover")
+                log.info("No interrupted evolution runs to recover")
     except Exception as e:
-        log.error(f"Failed to recover stalled runs: {e}")
+        log.error(f"Failed to recover interrupted runs: {e}")
     
     yield
     
@@ -96,6 +146,17 @@ if STATIC_DIR.exists():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy", "service": "orchestrator"}
+
+
+@app.get("/logs")
+async def get_logs():
+    """Get recent logs from buffer."""
+    with log_lock:
+        logs_list = list(log_buffer)
+        # Add debug info if buffer is empty
+        if not logs_list:
+            return ["[No logs in buffer yet - check if handler is capturing logs]"]
+        return logs_list
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -480,37 +541,37 @@ async def resume_run(run_id: str, background_tasks: BackgroundTasks):
             "message": f"Resumed with {pending_count} pending simulations"
         }
     
-    # No pending jobs - need to restart the evolution loop
-    # Reconstruct EvolutionConfig from stored run config
-    import json
-    config_dict = json.loads(run["config"]) if isinstance(run["config"], str) else run["config"]
-    
-    # Check if we need to continue or just evaluate existing results
+    # No pending jobs - check if we have completed jobs to evaluate
     completed_count = await db.get_completed_job_count(run_id, run["current_generation"])
     
     if completed_count > 0:
-        # We have completed simulations - need to evaluate them and continue loop
+        # Evolution loop is not running - cannot truly resume mid-generation
+        # User should start a new evolution using best model as seed
         await db.update_evolution_run(
             run_id,
-            status="RUNNING",
-            step_status=f"Resumed: Evaluating {completed_count} completed simulations"
+            status="STOPPED",
+            step_status=f"Cannot resume: {completed_count} sims completed but evolution loop not running. Start new run with best model as seed."
         )
-        log.info(f"Resumed run {run_id}: Evaluating {completed_count} completed simulations")
+        log.warning(f"Run {run_id}: Cannot resume - evolution engine not running. User should start new evolution.")
         
-        # TODO: Continue evolution loop from current state
-        # For now, just mark as running so manual intervention can assess
-        return {
-            "status": "resumed",
-            "run_id": run_id,
-            "message": f"Marked as RUNNING - {completed_count} simulations completed, awaiting evaluation"
-        }
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume this run - the evolution engine is not running. "
+                   f"{completed_count} simulations completed in generation {run['current_generation']}. "
+                   f"To continue: Start a new evolution run using the best model from this run as 'seed_model_id'."
+        )
     
-    # No pending or completed jobs - something went wrong
-    return {
-        "status": "error",
-        "run_id": run_id,
-        "message": "No pending or completed simulations found - run may need manual restart"
-    }
+    # No pending or completed jobs - mark as failed
+    await db.update_evolution_run(
+        run_id,
+        status="FAILED",
+        step_status="No active simulations found"
+    )
+    
+    raise HTTPException(
+        status_code=400,
+        detail="No pending or completed simulations found - run cannot be resumed"
+    )
 
 
 @app.post("/runs/cleanup-stale")

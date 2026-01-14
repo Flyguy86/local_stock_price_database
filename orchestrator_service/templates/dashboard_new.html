@@ -17,6 +17,36 @@
       <div class="badge">Port: 8400</div>
     </header>
 
+    <!-- Live Logs Terminal -->
+    <section>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+        <h2>📜 Live Logs</h2>
+        <div style="display: flex; gap: 1rem; align-items: center;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
+            <input type="checkbox" id="auto-scroll-logs" checked> Auto-scroll
+          </label>
+          <button onclick="toggleLogsHeight()" id="logs-toggle-btn" class="secondary" style="padding: 0.3rem 0.8rem; font-size: 0.85rem;">⬆️ Expand</button>
+          <button onclick="clearLogs()" class="secondary" style="padding: 0.3rem 0.8rem; font-size: 0.85rem;">Clear</button>
+        </div>
+      </div>
+      <div id="logs-container" data-expanded="false" style="
+        height: 100px;
+        overflow-y: auto;
+        background: #0a0a0a;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.75rem;
+        font-family: 'Courier New', monospace;
+        font-size: 0.8rem;
+        line-height: 1.3;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        transition: height 0.3s ease;
+      ">
+        Loading logs...
+      </div>
+    </section>
+
     <!-- Stats Overview -->
     <section>
       <h2>📊 System Status</h2>
@@ -121,9 +151,10 @@
               <div class="group">
                 <label>Target Transform</label>
                 <select id="target-transform">
-                  <option value="log_return">log_return</option>
+                  <option value="log_return">log_return (stationary)</option>
+                  <option value="log">log (price level)</option>
                   <option value="pct_change">pct_change</option>
-                  <option value="none">none</option>
+                  <option value="none">none (raw price)</option>
                 </select>
               </div>
             </div>
@@ -156,11 +187,11 @@
             <div id="regularization-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px;">
               <div class="group">
                 <label>Alpha Grid (L2 penalty, comma-separated)</label>
-                <input type="text" id="alpha-grid" value="0.001, 0.01, 0.1, 1, 10, 50, 100" title="Regularization strength: higher = more penalty on large coefficients">
+                <input type="text" id="alpha-grid" value="0.0001, 0.001, 0.01, 0.1" title="Regularization strength. Lower alpha = less penalty on coefficients. Start with 0.0001 (near-zero regularization), then fine-tune upward. Higher alpha = more penalty on large coefficients. Suggested: 0.0001, 0.001, 0.01, 0.1 for most cases. Increase (0.5, 1.0) for high multicollinearity. Note: alpha=0 is not supported (use LinearRegression instead).">
               </div>
               <div class="group">
                 <label>L1 Ratio Grid (Lasso/Ridge mix)</label>
-                <input type="text" id="l1-ratio-grid" value="0.1, 0.3, 0.5, 0.7, 0.9, 0.95" title="0 = pure Ridge (L2), 1 = pure Lasso (L1), 0.5 = balanced">
+                <input type="text" id="l1-ratio-grid" value="0.1, 0.5, 0.9" title="L1/L2 penalty mix (only applies when alpha > 0). 0 = pure Ridge (L2 - keeps all features), 1 = pure Lasso (L1 - sparse, zeros some features), 0.5 = balanced ElasticNet. Suggested: 0.1, 0.5, 0.9 to test Ridge-like, balanced, and Lasso-like behavior.">
               </div>
             </div>
           </div>
@@ -325,13 +356,15 @@
             <th>Status</th>
             <th>Current Step</th>
             <th>Generation</th>
+            <th>Models</th>
+            <th>Simulations</th>
             <th>Best SQN</th>
             <th>Created</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="runs-table">
-          <tr><td colspan="8" style="color: var(--text-muted);">Loading...</td></tr>
+          <tr><td colspan="10" style="color: var(--text-muted);">Loading...</td></tr>
         </tbody>
       </table>
     </section>
@@ -439,7 +472,7 @@
     </section>
   </div>
 
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=3">
-  <script src="/static/js/dashboard.js?v=3"></script>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=4">
+  <script src="/static/js/dashboard.js?v=4"></script>
 </body>
 </html>

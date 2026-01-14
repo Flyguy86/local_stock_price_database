@@ -13,13 +13,15 @@ setInterval(() => {
   loadStats();
   loadRuns();
   loadPromoted();
-}, 10000);
+  loadLogs();
+}, 5000);
 
 // Initial load
 document.addEventListener('DOMContentLoaded', () => {
   loadStats();
   loadRuns();
   loadPromoted();
+  loadLogs();
   setupFormHandler();
   setupSymbolSelector();
   setupGridCalculator();
@@ -381,12 +383,21 @@ async function loadRuns() {
     const tbody = document.getElementById('runs-table');
     
     if (!data.runs || data.runs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" style="color: var(--text-muted);">No evolution runs yet. Start one above!</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="color: var(--text-muted);">No evolution runs yet. Start one above!</td></tr>';
       return;
     }
     
     tbody.innerHTML = data.runs.map(run => {
       const stepStatus = run.step_status || '-';
+      
+      // Format progress indicators
+      const modelProgress = run.models_total > 0 
+        ? `${run.models_trained || 0}/${run.models_total}`
+        : '-';
+      const simProgress = run.simulations_total > 0
+        ? `${run.simulations_completed || 0}/${run.simulations_total}`
+        : '-';
+      
       // Add action buttons based on status
       let actionButton = `<button class="secondary" onclick="event.stopPropagation(); showDetails('${run.id}')">View</button>`;
       
@@ -409,6 +420,8 @@ async function loadRuns() {
           <td><span class="badge ${run.status.toLowerCase()}">${run.status}</span></td>
           <td style="font-size: 0.85rem; color: var(--text-muted);">${stepStatus}</td>
           <td>${run.current_generation} / ${run.max_generations}</td>
+          <td><span style="font-size: 0.9rem;">${modelProgress}</span></td>
+          <td><span style="font-size: 0.9rem;">${simProgress}</span></td>
           <td>${run.best_sqn ? run.best_sqn.toFixed(2) : '-'}</td>
           <td>${new Date(run.created_at).toLocaleString()}</td>
           <td>${actionButton}</td>
@@ -432,6 +445,13 @@ async function loadRuns() {
 
 function renderActiveRunCard(run) {
   const stepStatus = run.step_status || '';
+  const modelProgress = run.models_total > 0 
+    ? `${run.models_trained || 0}/${run.models_total}`
+    : '0/0';
+  const simProgress = run.simulations_total > 0
+    ? `${run.simulations_completed || 0}/${run.simulations_total}`
+    : '0/0';
+  
   return `
     <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; margin-bottom: 0.5rem;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -451,6 +471,10 @@ function renderActiveRunCard(run) {
         </div>
         <div class="progress-bar" style="margin-top: 0.25rem;">
           <div class="progress-fill" style="width: ${(run.current_generation / run.max_generations) * 100}%"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">
+          <span>🧠 Models: ${modelProgress}</span>
+          <span>📊 Sims: ${simProgress}</span>
         </div>
         ${stepStatus ? `<div style="margin-top: 0.5rem; font-size: 0.85rem; color: var(--primary); font-style: italic;">📍 ${stepStatus}</div>` : ''}
       </div>
@@ -919,4 +943,96 @@ function setupFormHandler() {
       btn.textContent = '🧬 Start Evolution';
     }
   });
+}
+// ============================================
+// Live Logs Terminal
+// ============================================
+
+function toggleLogsHeight() {
+  const container = document.getElementById('logs-container');
+  const btn = document.getElementById('logs-toggle-btn');
+  const isExpanded = container.getAttribute('data-expanded') === 'true';
+  
+  if (isExpanded) {
+    // Collapse
+    container.style.height = '100px';
+    container.setAttribute('data-expanded', 'false');
+    btn.textContent = '⬆️ Expand';
+  } else {
+    // Expand
+    container.style.height = '1000px';
+    container.setAttribute('data-expanded', 'true');
+    btn.textContent = '⬇️ Collapse';
+  }
+}
+
+async function loadLogs() {
+  try {
+    // Fetch logs from all three services
+    const [orchResp, trainResp, simResp] = await Promise.all([
+      fetch(`${API}/logs`).catch(() => ({json: () => []})),
+      fetch('http://localhost:8200/logs').catch(() => ({json: () => []})),
+      fetch('http://localhost:8300/logs').catch(() => ({json: () => []}))
+    ]);
+    
+    const orchLogs = await orchResp.json();
+    const trainLogs = await trainResp.json();
+    const simLogs = await simResp.json();
+    
+    // Combine and tag logs by service
+    const allLogs = [
+      ...orchLogs.map(l => ({text: l, service: 'ORCH'})),
+      ...trainLogs.map(l => ({text: l, service: 'TRAIN'})),
+      ...simLogs.map(l => ({text: l, service: 'SIM'}))
+    ];
+    
+    // Sort by timestamp (extract from log line)
+    allLogs.sort((a, b) => {
+      const timeA = a.text.substring(0, 19); // YYYY-MM-DD HH:MM:SS
+      const timeB = b.text.substring(0, 19);
+      return timeA.localeCompare(timeB);
+    });
+    
+    const container = document.getElementById('logs-container');
+    if (!container) return;
+    
+    const autoScroll = document.getElementById('auto-scroll-logs')?.checked ?? true;
+    const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 50;
+    
+    // Format logs with color coding and service badges
+    container.innerHTML = allLogs.map(({text, service}) => {
+      let color = '#e5e7eb'; // default gray
+      if (text.includes('ERROR')) color = '#ef4444';
+      else if (text.includes('WARNING')) color = '#f59e0b';
+      else if (text.includes('INFO')) color = '#10b981';
+      else if (text.includes('DEBUG')) color = '#6b7280';
+      
+      // Service badge colors
+      let badgeColor = '#3b82f6'; // blue for ORCH
+      if (service === 'TRAIN') badgeColor = '#8b5cf6'; // purple
+      if (service === 'SIM') badgeColor = '#ec4899'; // pink
+      
+      return `<div style="color: ${color};"><span style="background: ${badgeColor}; padding: 1px 4px; border-radius: 3px; font-size: 0.7rem; margin-right: 6px;">${service}</span>${escapeHtml(text)}</div>`;
+    }).join('');
+    
+    // Auto-scroll if enabled and was at bottom
+    if (autoScroll && wasAtBottom) {
+      container.scrollTop = container.scrollHeight;
+    }
+  } catch (e) {
+    console.error('Failed to load logs:', e);
+  }
+}
+
+function clearLogs() {
+  const container = document.getElementById('logs-container');
+  if (container) {
+    container.innerHTML = '<div style="color: #6b7280;">Logs cleared. Waiting for new entries...</div>';
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }

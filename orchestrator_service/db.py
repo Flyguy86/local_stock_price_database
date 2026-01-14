@@ -91,6 +91,62 @@ class Database:
                 symbol
             )
 
+    async def get_simulation_by_fingerprint(self, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Check if simulation with this fingerprint already exists."""
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM simulation_fingerprints WHERE fingerprint = $1",
+                fingerprint
+            )
+            return dict(row) if row else None
+    
+    async def insert_simulation_fingerprint(
+        self,
+        fingerprint: str,
+        model_fingerprint: str,
+        model_id: str,
+        target_ticker: str,
+        simulation_ticker: str,
+        threshold: float,
+        z_score_threshold: float,
+        regime_config: Dict[str, Any],
+        train_window: int,
+        test_window: int,
+        result: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Record a simulation fingerprint with results."""
+        import json
+        async with self.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO simulation_fingerprints
+                (fingerprint, model_fingerprint, model_id, target_ticker, simulation_ticker,
+                 threshold, z_score_threshold, regime_config, train_window, test_window,
+                 result_sqn, result_profit_factor, result_total_trades, full_result)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (fingerprint) DO UPDATE SET
+                    model_id = EXCLUDED.model_id,
+                    result_sqn = EXCLUDED.result_sqn,
+                    result_profit_factor = EXCLUDED.result_profit_factor,
+                    result_total_trades = EXCLUDED.result_total_trades,
+                    full_result = EXCLUDED.full_result
+                """,
+                fingerprint,
+                model_fingerprint,
+                model_id,
+                target_ticker,
+                simulation_ticker,
+                threshold,
+                z_score_threshold,
+                json.dumps(regime_config or {}),
+                train_window,
+                test_window,
+                result.get("sqn") if result else None,
+                result.get("profit_factor") if result else None,
+                result.get("total_trades") if result else None,
+                json.dumps(result) if result else None
+            )
+
     # ==========================================
     # Evolution Run Operations
     # ==========================================
@@ -127,7 +183,11 @@ class Database:
         current_generation: Optional[int] = None,
         best_sqn: Optional[float] = None,
         best_model_id: Optional[str] = None,
-        promoted: Optional[bool] = None
+        promoted: Optional[bool] = None,
+        models_trained: Optional[int] = None,
+        models_total: Optional[int] = None,
+        simulations_completed: Optional[int] = None,
+        simulations_total: Optional[int] = None
     ) -> None:
         """Update evolution run status."""
         updates = ["updated_at = CURRENT_TIMESTAMP"]
@@ -158,6 +218,22 @@ class Database:
             updates.append(f"promoted = ${param_idx}")
             params.append(promoted)
             param_idx += 1
+        if models_trained is not None:
+            updates.append(f"models_trained = ${param_idx}")
+            params.append(models_trained)
+            param_idx += 1
+        if models_total is not None:
+            updates.append(f"models_total = ${param_idx}")
+            params.append(models_total)
+            param_idx += 1
+        if simulations_completed is not None:
+            updates.append(f"simulations_completed = ${param_idx}")
+            params.append(simulations_completed)
+            param_idx += 1
+        if simulations_total is not None:
+            updates.append(f"simulations_total = ${param_idx}")
+            params.append(simulations_total)
+            param_idx += 1
         
         params.append(run_id)
         query = f"UPDATE evolution_runs SET {', '.join(updates)} WHERE id = ${param_idx}"
@@ -172,6 +248,14 @@ class Database:
                 "SELECT * FROM evolution_runs WHERE id = $1", run_id
             )
             return dict(row) if row else None
+    
+    async def get_evolution_run_status(self, run_id: str) -> Optional[str]:
+        """Get just the status of an evolution run (faster than full fetch)."""
+        async with self.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT status FROM evolution_runs WHERE id = $1", run_id
+            )
+            return row["status"] if row else None
     
     async def list_evolution_runs(
         self, 

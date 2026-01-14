@@ -252,87 +252,72 @@ Each evolution run explores three orthogonal optimization dimensions:
 
 #### **Generation N Loop (Repeats until stopping condition)**
 
-**STEP A: Simulate Current Model** ⚙️  
-*Always runs BEFORE pruning to ensure every trained model gets evaluated*
+**STEP A: Get Feature Importance from Current Model** 📊  
+*Extract importance scores from the trained model's coefficients/SHAP values*
 
-- Queue simulations for current model_id
-- **Training Grid Search** (happens during model creation):
-  - 7 regime configs (VIX 0/1/2/3, GMM 0/1, no-filter)
-  - 7 alpha values (0.001, 0.01, 0.1, 1, 10, 50, 100)
-  - 6 l1_ratio values (0.1, 0.3, 0.5, 0.7, 0.9, 0.95)
-  - Total: ~294 internal models → picks best by validation score
-- **Simulation Grid Search**:
-  - 4 threshold values (e.g., 0.0001, 0.0003, 0.0005, 0.001)
-  - 5 z-score cutoffs (0, 2.0, 2.5, 3.0, 3.5)
-  - 7 regime configs (same as training)
-  - Total: ~140 simulations → picks best by SQN
-- Wait for all simulation jobs to complete (priority workers process queue)
-- Retrieve best simulation result (highest SQN)
-- **Holy Grail Check**:
-  - If SQN, profit_factor, trade_count all within ranges → **PROMOTE & STOP** 🎯
-  - Else continue to pruning
+- Call training service: `GET /api/model/{model_id}/importance`
+- Returns dict of `{feature_name: importance_value}`
+- Importance calculation methods:
+  - **ElasticNet/Lasso/Ridge**: `abs(coefficient)` from linear model weights
+  - **RandomForest/XGBoost**: SHAP values (Shapley Additive Explanations)
+  - **Linear models**: Standardized coefficients (scaled by feature variance)
 
-**STEP B: Get Feature Importance** 📊
+**STEP B: Prune Low-Importance Features** ✂️
 
-- Call training service: `GET /api/models/{model_id}/importance`
-- Returns list of `(feature_name, importance_value)` tuples
-- Importance sources:
-  - ElasticNet: `abs(coefficient)`
-  - RandomForest/XGBoost: SHAP values
-  - Linear models: Standardized coefficients
+- Sort features by **absolute importance** (ascending order: lowest first)
+- Calculate `num_to_prune = floor(num_features × prune_fraction)`
+  - Default `prune_fraction = 0.25` → remove bottom 25%
+- Remove bottom `num_to_prune` features
+- **Stopping Checks** (if ANY condition true, loop exits):
+  - ⛔ **All features have equal importance** → can't determine which to prune → **STOP**
+  - ⛔ **Pruning would go below `min_features`** (default 5) → **STOP**
+  - ⛔ **No features remaining after pruning** → **STOP**
 
-**STEP C: Prune Low-Importance Features** ✂️
+**STEP C: Compute Fingerprint** 🔍
 
-- Sort features by importance (ascending)
-- Remove bottom X% (default: 25%, configurable via `prune_fraction`)
-- **Stopping Checks** (if can't prune, loop exits):
-  - All features have equal importance → can't prune → **STOP** ⛔
-  - Pruning would go below `min_features` → **STOP** ⛔
-  - No features left after pruning → **STOP** ⛔
-- **Note**: Simulations already ran in Step A, so results are saved before stopping
-
-**STEP D: Compute Fingerprint** 🔍
-
-- Generate SHA-256 hash of:
+- Generate SHA-256 hash of **complete training configuration**:
   ```python
-  hash_input = (
-      sorted_features,  # Remaining features after pruning
-      hyperparameters,  # Algorithm, alpha, l1_ratio, etc.
-      target_transform,  # log_return, raw_price, pct_change
-      symbol           # AAPL, SPY, etc.
-  )
+  hash_input = canonicalize({
+      "features": sorted(remaining_features),
+      "hyperparameters": hyperparameters,
+      "target_transform": target_transform,
+      "symbol": symbol,
+      "target_col": target_col,
+      "alpha_grid": sorted(alpha_grid),
+      "l1_ratio_grid": sorted(l1_ratio_grid),
+      "regime_configs": sorted_normalized(regime_configs)
+  })
+  fingerprint = sha256(hash_input).hexdigest()
   ```
-- Check `model_fingerprints` table for existing match
-- **If found**: Reuse existing model_id (skip training) → go to Step F
-- **Else**: Continue to Step E
+- **If match found**: Reuse existing model_id (skip training) → go to Step E
+- **Else**: Continue to Step D
 
-**STEP E: Train Child Model** 🏗️
+**STEP D: Train Child Model with Pruned Features** 🏗️
 
 - Call training service: `POST /api/train`
-- Payload includes:
-  - `features`: Pruned feature list
-  - `symbol`, `target_col`, `target_transform`
-  - `hyperparameters`: Algorithm config
-  - `parent_model_id`: For lineage tracking
-  - `alpha_grid`, `l1_ratio_grid`: For regularization search
-  - `regime_configs`: For regime-specific training
-- Training service performs internal grid search (see Step A)
-- Returns `model_id` of best model
-- Record fingerprint → model_id mapping in database
+- Payload: pruned features, symbol, hyperparameters, alpha/l1_ratio grids
+- **Training Service Internal Grid Search**:
+  - Creates 7 × 7 × 6 = **294 model variations**
+  - Uses `GridSearchCV(n_jobs=-1, cv=5)` → parallel CPU training
+  - Picks best model by validation score
+  - Returns `child_model_id`
+
+**STEP E: Simulate Child Model** ⚙️  
+*Test the pruned model with full strategy grid search*
+
+- Queue 140 simulation jobs (4 thresholds × 5 z-scores × 7 regimes)
+- Priority workers execute backtests in parallel
+- Wait for completion, retrieve best result (highest SQN)
+- **Holy Grail Check**:
+  - If criteria met → **PROMOTE child & STOP** 🎯
+  - Else continue to Step F
 
 **STEP F: Record Lineage & Advance Generation** 📝
 
-- Insert into `evolution_log`:
-  - `parent_model_id` → `child_model_id`
-  - `pruned_features`: Which features were removed
-  - `remaining_features`: What child model uses
-  - `generation`: Current iteration number
-  - `parent_sqn`: Best SQN achieved by parent
-- Update `evolution_run`:
-  - `current_generation += 1`
-  - `best_sqn = parent_sqn` (if improved)
-  - `best_model_id = current_model_id`
-- **Child becomes current model** → Loop back to **Step A**
+- Insert evolution lineage (parent→child, pruned features, SQN)
+- Update evolution run state (generation++, best_sqn, best_model_id)
+- **Child becomes current** for next iteration
+- **Loop back to STEP A** with child as new current model
 
 ---
 
@@ -342,14 +327,14 @@ The loop exits when ANY of the following occur:
 
 | Condition | Reason | Results Saved? |
 |-----------|--------|----------------|
-| **Holy Grail Met** | Model achieved target SQN, profit factor, trade count | ✅ Yes (promoted to `promoted_models` table) |
+| **Holy Grail Met** | Child model achieved target SQN, profit factor, trade count | ✅ Yes (promoted to `promoted_models` table) |
 | **Max Generations** | Reached `max_generations` limit (e.g., 4) | ✅ Yes (best model recorded) |
-| **No Pruning Possible** | All features have equal or positive importance | ✅ Yes (simulations ran in Step A) |
-| **Min Features Reached** | Pruning would violate `min_features` constraint | ✅ Yes (simulations ran in Step A) |
+| **No Pruning Possible** | All features have equal importance | ⚠️ Partial (current model not simulated) |
+| **Min Features Reached** | Pruning would violate `min_features` constraint | ⚠️ Partial (current model not simulated) |
 | **Training Error** | Training service failed to create model | ⚠️ Partial (previous generations saved) |
 | **Simulation Error** | All simulation jobs failed | ⚠️ Partial (model trained but not evaluated) |
 
-**Critical Guarantee**: Every trained model is simulated at least once before the loop can exit, ensuring no model goes unevaluated.
+**Note**: With the new flow (importance → prune → train → simulate), if pruning fails, the current model has NOT been simulated. Only the child models (after successful pruning and training) get simulated.
 
 ---
 

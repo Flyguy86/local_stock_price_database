@@ -76,23 +76,47 @@ def run_worker():
             except:
                 pass
             
-            # 2. Run Simulation
+            # 2. Run Simulation with Timeout Protection
+            import signal
+            from contextlib import contextmanager
+            
+            @contextmanager
+            def timeout(seconds):
+                """Context manager for timeout on blocking operations."""
+                def timeout_handler(signum, frame):
+                    raise TimeoutError(f"Simulation exceeded {seconds}s timeout")
+                
+                # Set the signal handler
+                old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(seconds)
+                try:
+                    yield
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old_handler)
+            
             try:
-                sim_result = run_simulation(
-                    model_id=params["model_id"],
-                    ticker=params["ticker"],
-                    initial_cash=params.get("initial_cash", 10000),
-                    use_bot=params.get("use_bot", False),
-                    min_prediction_threshold=params.get("min_prediction_threshold", 0.0),
-                    enable_z_score_check=params.get("enable_z_score_check", False),
-                    volatility_normalization=params.get("volatility_normalization", False),
-                    regime_col=params.get("regime_col"),
-                    allowed_regimes=params.get("allowed_regimes"),
-                    enable_slippage=params.get("enable_slippage", True),
-                    slippage_bars=params.get("slippage_bars", 4),
-                    transaction_fee=params.get("transaction_fee", 0.02),
-                    save_to_history=False
-                )
+                # Apply 5-minute timeout for simulation
+                with timeout(300):  # 5 minutes
+                    sim_result = run_simulation(
+                        model_id=params["model_id"],
+                        ticker=params["ticker"],
+                        initial_cash=params.get("initial_cash", 10000),
+                        use_bot=params.get("use_bot", False),
+                        min_prediction_threshold=params.get("min_prediction_threshold", 0.0),
+                        enable_z_score_check=params.get("enable_z_score_check", False),
+                        volatility_normalization=params.get("volatility_normalization", False),
+                        regime_col=params.get("regime_col"),
+                        allowed_regimes=params.get("allowed_regimes"),
+                        enable_slippage=params.get("enable_slippage", True),
+                        slippage_bars=params.get("slippage_bars", 4),
+                        transaction_fee=params.get("transaction_fee", 0.02),
+                        save_to_history=False
+                    )
+                
+                # Validate result structure
+                if not sim_result or "stats" not in sim_result:
+                    raise ValueError("Simulation returned invalid result (missing stats)")
                 
                 summary = {
                     "strategy_return_pct": sim_result["stats"]["strategy_return_pct"],
@@ -113,6 +137,17 @@ def run_worker():
                 }, timeout=10)
                 log.info(f"Worker {WORKER_ID} completed job {job_id}. Return: {summary['strategy_return_pct']:.2f}%, SQN: {summary['sqn']:.2f}")
                 
+            except TimeoutError as e:
+                log.error(f"Worker {WORKER_ID} job {job_id} TIMEOUT: {e}")
+                try:
+                    requests.post(f"{API_URL}/worker/complete", json={
+                        "job_id": job_id,
+                        "result": {"error": f"Simulation timeout (>300s): {str(e)}"},
+                        "status": "FAILED"
+                    }, timeout=10)
+                except Exception as report_err:
+                    log.error(f"Failed to report timeout to C2: {report_err}")
+                    
             except Exception as e:
                 log.error(f"Worker {WORKER_ID} job {job_id} failed: {e}", exc_info=True)
                 traceback.print_exc()

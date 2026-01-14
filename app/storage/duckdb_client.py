@@ -3,12 +3,23 @@ import duckdb
 from pathlib import Path
 import pandas as pd
 import os
+import logging
 from .schema import table_blueprints
+from .migrate import run_all_migrations
+
+log = logging.getLogger(__name__)
 
 class DuckDBClient:
     def __init__(self, db_path: Path, parquet_root: Path):
         self.db_path = db_path
         self.parquet_root = parquet_root
+        
+        # Run migrations before connecting
+        try:
+            run_all_migrations(db_path)
+        except Exception as e:
+            log.warning(f"Migration failed (will continue): {e}")
+        
         self.conn = duckdb.connect(str(self.db_path))
         for ddl in table_blueprints():
             self.conn.execute(ddl)

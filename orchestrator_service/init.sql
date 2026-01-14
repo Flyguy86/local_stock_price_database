@@ -53,18 +53,68 @@ CREATE TABLE IF NOT EXISTS evolution_runs (
     best_sqn DOUBLE PRECISION,
     best_model_id VARCHAR(64),
     promoted BOOLEAN DEFAULT FALSE,
+    models_trained INTEGER DEFAULT 0,              -- Progress: models completed
+    models_total INTEGER DEFAULT 0,                -- Total models to train (grid size × generations)
+    simulations_completed INTEGER DEFAULT 0,        -- Progress: simulations completed
+    simulations_total INTEGER DEFAULT 0,            -- Total simulations (models × sim grid size)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Add step_status column if not exists (for migrations)
+-- Add columns if not exists (for migrations)
 DO $$ BEGIN
     ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS step_status VARCHAR(128);
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS models_trained INTEGER DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS models_total INTEGER DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS simulations_completed INTEGER DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS simulations_total INTEGER DEFAULT 0;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_runs_status ON evolution_runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_symbol ON evolution_runs(symbol);
+
+-- ============================================
+-- Simulation Fingerprints (Deduplication)
+-- ============================================
+CREATE TABLE IF NOT EXISTS simulation_fingerprints (
+    fingerprint VARCHAR(64) PRIMARY KEY,         -- SHA-256 hash of simulation config
+    model_fingerprint VARCHAR(64) NOT NULL,      -- SHA-256 hash of model config (links to model_fingerprints.fingerprint)
+    model_id VARCHAR(64),                        -- Optional: actual model_id used (for tracking)
+    target_ticker VARCHAR(16) NOT NULL,          -- Symbol model was trained on
+    simulation_ticker VARCHAR(16) NOT NULL,      -- Symbol being simulated
+    threshold DOUBLE PRECISION NOT NULL,         -- Trading signal threshold
+    z_score_threshold DOUBLE PRECISION NOT NULL, -- Outlier filter cutoff
+    regime_config JSONB,                         -- Market regime filter
+    train_window INTEGER NOT NULL,               -- Training fold size
+    test_window INTEGER NOT NULL,                -- Test fold size
+    result_sqn DOUBLE PRECISION,                 -- SQN from simulation
+    result_profit_factor DOUBLE PRECISION,       -- Profit factor
+    result_total_trades INTEGER,                 -- Trade count
+    full_result JSONB,                           -- Complete simulation output
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sim_fingerprints_model_fp ON simulation_fingerprints(model_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_sim_fingerprints_model_id ON simulation_fingerprints(model_id);
+CREATE INDEX IF NOT EXISTS idx_sim_fingerprints_ticker ON simulation_fingerprints(target_ticker, simulation_ticker);
+CREATE INDEX IF NOT EXISTS idx_sim_fingerprints_sqn ON simulation_fingerprints(result_sqn DESC);
 
 -- ============================================
 -- Priority Job Queue

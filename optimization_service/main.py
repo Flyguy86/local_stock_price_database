@@ -12,7 +12,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from optimization_service import database
-from optimization_service.database import get_dashboard_stats, ensure_tables, DB_PATH, create_jobs, claim_job, complete_job, worker_heartbeat
+from optimization_service.database import (
+    get_dashboard_stats, ensure_tables, create_jobs, 
+    claim_job, complete_job, worker_heartbeat, get_pool, close_pool
+)
 from simulation_service.core import get_available_models, get_available_tickers
 
 log = logging.getLogger("optimization.server")
@@ -23,7 +26,7 @@ from optimization_service.worker import run_worker
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    database.ensure_tables()
+    await database.ensure_tables()
     log.info("Optimization C2 startup complete")
     
     # Start internal worker thread
@@ -43,6 +46,43 @@ async def lifespan(app: FastAPI):
             
     except Exception as e:
         log.error(f"✗ Failed to start worker thread: {e}", exc_info=True)
+    
+    # Start stuck job monitor
+    async def monitor_stuck_jobs():
+        """Background task to auto-fail jobs stuck for >10 minutes."""
+        import asyncio
+        from datetime import datetime, timedelta
+        
+        while True:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+                
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    # Find jobs claimed >10 minutes ago still in RUNNING state
+                    cutoff = datetime.now() - timedelta(minutes=10)
+                    stuck = await conn.fetch("""
+                        SELECT id, updated_at FROM optimization_jobs 
+                        WHERE status = 'RUNNING' 
+                        AND updated_at < $1
+                    """, cutoff)
+                    
+                    if stuck:
+                        log.warning(f"Found {len(stuck)} stuck jobs (>10min). Auto-failing...")
+                        for row in stuck:
+                            job_id = row['id']
+                            updated_at = row['updated_at']
+                            log.warning(f"Auto-failing stuck job {job_id} (last updated at {updated_at})")
+                            await conn.execute("""
+                                UPDATE optimization_jobs 
+                                SET status = 'FAILED', 
+                                    result = $1,
+                                    updated_at = $2
+                                WHERE id = $3
+                            """, '{"error": "Job stuck >10 minutes, auto-failed"}', datetime.now(), job_id)
+            except Exception as e:
+                log.error(f"Stuck job monitor error: {e}")
+                await asyncio.sleep(60)
     
     yield
     log.info("Optimization C2 shutdown")
@@ -74,10 +114,10 @@ async def index(request: Request):
     })
 
 @app.get("/api/stats")
-def get_stats():
+async def get_stats():
     """Get dashboard statistics including leaderboard."""
     try:
-        return get_dashboard_stats()
+        return await get_dashboard_stats()
     except Exception as e:
         log.error(f"Failed to get stats: {e}")
         return {"counts": {}, "recent": [], "leaderboard": [], "workers": [], "error": str(e)}
@@ -127,7 +167,7 @@ async def create_batch_endpoint(config: dict):
                                     jobs.append(job_params)
         
         log.info(f"Created {len(jobs)} job configurations")
-        batch_id = create_jobs(jobs)
+        batch_id = await create_jobs(jobs)
         log.info(f"✓ Batch {batch_id} created successfully with {len(jobs)} jobs")
         
         return {"batch_id": batch_id, "jobs_created": len(jobs)}
@@ -137,24 +177,24 @@ async def create_batch_endpoint(config: dict):
         return {"error": str(e), "batch_id": None, "jobs_created": 0}
 
 @app.post("/api/worker/heartbeat")
-def worker_heartbeat_endpoint(payload: dict):
+async def worker_heartbeat_endpoint(payload: dict):
     worker_id = payload.get("worker_id")
     job_id = payload.get("job_id")
-    worker_heartbeat(worker_id, job_id)
+    await worker_heartbeat(worker_id, job_id)
     return {"status": "ok"}
 
 @app.post("/api/worker/claim")
-def claim_job_endpoint(payload: dict):
+async def claim_job_endpoint(payload: dict):
     worker_id = payload.get("worker_id", "unknown")
-    job = claim_job(worker_id)
+    job = await claim_job(worker_id)
     return job
 
 @app.post("/api/worker/complete")
-def complete_job_endpoint(payload: dict):
+async def complete_job_endpoint(payload: dict):
     job_id = payload.get("job_id")
     result = payload.get("result")
     status = payload.get("status", "COMPLETED")
-    complete_job(job_id, result, status)
+    await complete_job(job_id, result, status)
     return {"status": "ok"}
 
 @app.get("/history/top")

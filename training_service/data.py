@@ -222,6 +222,11 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # Add small epsilon to avoid div/0 if accidentally 0 (though prices shouldn't be)
         df["target"] = np.log((future_val + 1e-9) / (df[target_col] + 1e-9))
         log.info(f"Target: Log Return of {target_col} (lookforward={lookforward})")
+    elif target_transform == "log":
+        # Log Price: predict log(Future Price)
+        # Useful for regression when price levels matter
+        df["target"] = np.log(future_val + 1e-9)
+        log.info(f"Target: Log of {target_col} (lookforward={lookforward})")
     elif target_transform == "pct_change":
         # Pct Change = (Future - Current) / Current
         df["target"] = (future_val - df[target_col]) / (df[target_col] + 1e-9)

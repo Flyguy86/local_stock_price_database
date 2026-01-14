@@ -1,13 +1,76 @@
 # local_stock_price_database
 Stock price database
 
+## Quick Links
+- **[Complete Test Guide](tests/COMPLETE_TEST_GUIDE.md)** - All 208+ tests documented
+- **[CI/CD Workflow](.github/workflows/test.yml)** - Automated testing pipeline
+- **[Test Runner](run_unit_tests.sh)** - Run tests locally
+
+## Testing & Quality Assurance
+
+### Test Suite Overview
+The project includes a comprehensive test suite with **208+ tests** across 7 categories:
+
+| Category | Tests | Runtime | Coverage |
+|----------|-------|---------|----------|
+| Unit Tests | 53 | 5-10s | Database, sync wrappers, process pools |
+| API Tests | 39 | 10-15s | Training & simulation endpoints |
+| Integration Tests | 22 | 15-25s | End-to-end workflows |
+| Validation Tests | 31 | 10-30s | Fingerprinting, connection pools |
+| Load Tests | 25+ | 30-60s | Parallel training, database contention |
+| Performance Tests | 13+ | 40-80s | CPU, memory, query performance |
+| Error Handling | 25+ | 20-40s | Failures, recovery, resilience |
+
+### Running Tests
+```bash
+# Run all tests
+./run_unit_tests.sh
+
+# Run by category
+./run_unit_tests.sh unit          # Unit tests only
+./run_unit_tests.sh api           # API tests only
+./run_unit_tests.sh integration   # Integration tests only
+./run_unit_tests.sh validation    # Validation tests only
+./run_unit_tests.sh fast          # Skip slow tests
+
+# Load, performance, error handling
+pytest tests/load/ -v
+pytest tests/performance/ -v
+pytest tests/error_handling/ -v
+
+# With coverage
+./run_unit_tests.sh --coverage
+```
+
+### CI/CD Pipeline
+Tests run automatically on GitHub Actions for:
+- ✅ Push to `main` or `develop` branches
+- ✅ Pull requests
+- ✅ Manual workflow dispatch
+
+**Pipeline Jobs**:
+1. Unit Tests → 2. API Tests → 3. Integration Tests → 4. Validation Tests
+5. Load & Performance Tests (main branch only)
+6. Error Handling Tests
+7. Coverage Report → 8. Test Summary
+
+See **[Complete Test Guide](tests/COMPLETE_TEST_GUIDE.md)** for detailed documentation.
+
 ## Architecture Overview
-- Ingestion: Alpaca client pulling 1-min bars; derive higher intervals from 1-min locally.
-- Storage: DuckDB + Parquet, partitioned by symbol/date; metadata tables for feature versions.
-- Orchestration: three agents (historical backfill, live updater, feature builder) coordinated via lightweight task queue (Celery/Prefect), with idempotent jobs keyed by symbol/date.
-- Interfaces: REST API + web UI (FastAPI + Streamlit/React) for ingest queueing, status, browsing bars/features.
-- Logging/Monitoring: JSON logs (timestamp, agent, symbol, stage, message) stored centrally (SQLite/OpenTelemetry export), surfacing heartbeats/progress bars in UI.
-- Deployment: Dockerfile + docker-compose; also runnable directly in Codespaces/devcontainer.
+- **Ingestion**: Alpaca client pulling 1-min bars; derive higher intervals from 1-min locally.
+- **Storage**: 
+  - **Ticker data**: DuckDB + Parquet, partitioned by symbol/date
+  - **Model metadata**: PostgreSQL (models, feature_log, simulation_history)
+  - **Connection pooling**: asyncpg for concurrent access
+- **Training Service**: 
+  - **Async PostgreSQL**: All model metadata with comprehensive fingerprinting
+  - **ProcessPoolExecutor**: Multi-core parallel training (bypasses Python GIL)
+  - **Per-process connection pools**: Each worker creates own asyncpg pool
+  - **Scalability**: Up to CPU_COUNT simultaneous training jobs
+- **Orchestration**: Agents (historical backfill, live updater, feature builder) coordinated via lightweight task queue, with idempotent jobs keyed by symbol/date.
+- **Interfaces**: REST API + web UI (FastAPI + Streamlit/React) for ingest queueing, status, browsing bars/features.
+- **Logging/Monitoring**: JSON logs (timestamp, agent, symbol, stage, message) stored centrally, surfacing heartbeats/progress bars in UI.
+- **Deployment**: Docker Compose with PostgreSQL 15-alpine; runnable in Codespaces/devcontainer.
 
 ## Ingestion Requirements
 - Always fetch 1-min bars from Alpaca; compute 5-min+ locally.
@@ -19,12 +82,23 @@ Stock price database
 - **Robustness**: Handles symbols with no data (e.g., VIX) by attempting provider fallbacks (Alpaca -> IEX -> Yahoo). Explicitly marks status as "failed" if no data is returned from any provider.
 
 ## Storage & Schema
-- DuckDB with Parquet tables; columnar layout for raw bars + engineered features.
-- Blueprint: symbol, timestamp, open, high, low, close, volume, optional corporate actions.
-- Companion metadata table: feature_name, version, generation params/hash, created_at.
-- Partition Parquet by symbol/date; indexes on symbol, timestamp, feature groups.
-- Store preprocessing/feature pipeline code references alongside schema for reproducibility.
-- **Locking & Concurrency**: Feature Service reads a temporary snapshot copy of the DuckDB file to avoid contentions with the ingestion writer process.
+- **Ticker Data**: DuckDB with Parquet tables; columnar layout for raw bars + engineered features.
+  - Blueprint: symbol, timestamp, open, high, low, close, volume, optional corporate actions.
+  - Partition Parquet by symbol/date; indexes on symbol, timestamp, feature groups.
+  - **Locking & Concurrency**: Feature Service reads a temporary snapshot copy of the DuckDB file to avoid contentions with the ingestion writer process.
+  
+- **Model Metadata**: PostgreSQL (strategy_factory database)
+  - **models table**: Comprehensive fingerprinting for deduplication
+    - Fingerprint fields: features, hyperparameters, target_transform, symbol, target_col, timeframe, train_window, test_window, context_symbols, cv_folds, cv_strategy, alpha_grid, l1_ratio_grid, regime_configs
+  - **features_log table**: Feature importance scores per model
+  - **simulation_history table**: Backtest results and performance metrics
+  - **Connection pooling**: asyncpg (min=2, max=10 per service)
+  
+- **Processing Architecture**:
+  - **Training workers**: ProcessPoolExecutor with CPU_COUNT processes (bypasses Python GIL)
+  - **Per-process pools**: Each worker creates own PostgreSQL connection pool (no shared state)
+  - **Concurrency**: Up to CPU_COUNT simultaneous training jobs across all cores
+  
 - **Missing Data Backfill**: Automated detection and filling of missing 1-minute bars during market hours. Gaps are filled with the mean value of adjacent bars (OHLCV fields). Backfill operations are iterative and can be run repeatedly to handle multiple gaps. Only processes gaps during US market trading hours (9:30 AM - 4:00 PM ET, Mon-Fri).
 
 ## Web/API Layer
@@ -135,20 +209,75 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
 *   **Design**: Models should utilize `scikit-learn` Pipelines (`Pipeline([Scaler, Imputer, Model])`) to bundle preprocessing logic into the saved artifact (`.joblib`), ensuring the Simulation Service can ingest raw feature data.
 
 ## Deployment & Local Dev
-- Provide Dockerfile + docker-compose for API + worker + optional UI.
-- Also support direct run in GitHub Codespaces/devcontainer (Ubuntu 24.04.3).
-- Basic database viewing: DuckDB CLI/SQL + simple UI queries.
 
-## Quickstart (devcontainer/local)
+### Quick Start (Docker Compose)
+
+```bash
+# 1. Build base image
+docker compose build stock_base
+
+# 2. Start all services
+docker compose up -d
+
+# 3. Check service health
+docker compose ps
+docker compose logs -f training_service simulation_service
+```
+
+**Services:**
+- **API**: http://localhost:8000 (Ingestion & data access)
+- **Feature Service**: http://localhost:8100 (Feature engineering)
+- **Training Service**: http://localhost:8200 (Model training with multi-CPU parallelism)
+- **Simulation Service**: http://localhost:8300 (Backtesting)
+- **PostgreSQL**: localhost:5432 (Model metadata & simulation history)
+
+### Testing & Validation
+
+The project includes a comprehensive test suite with 90+ tests covering database operations, multi-process execution, and REST API endpoints.
+
+#### Quick Start
+```bash
+# Run all tests (unit + API)
+./run_unit_tests.sh
+
+# Run with coverage report
+./run_unit_tests.sh --coverage
+
+# Run specific test category
+./run_unit_tests.sh unit  # Unit tests only
+./run_unit_tests.sh api   # API tests only
+```
+
+#### Test Organization
+- **Unit Tests** (53 tests): PostgreSQL operations, sync wrappers, process pool
+- **API Tests** (39 tests): Training & simulation service endpoints
+- **Coverage Target**: 85%+ overall, 90%+ for core modules
+
+#### Documentation
+- **Test Suite Overview**: [tests/TEST_SUITE_SUMMARY.md](tests/TEST_SUITE_SUMMARY.md)
+- **Unit Test Guide**: [tests/UNIT_TESTS.md](tests/UNIT_TESTS.md)
+- **API Test Guide**: [tests/API_TESTS.md](tests/API_TESTS.md)
+
+#### Legacy Validation Scripts
+```bash
+# Validate PostgreSQL migration
+python validate_migration.py
+
+# Test end-to-end workflow
+python test_end_to_end.py
+
+# Test process pool parallelism
+python test_process_pool.py
+```
+
+For detailed deployment instructions, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md).
+
+### Local Development (Codespaces/Devcontainer)
+
 - Install deps: `pip install -e .`
 - Run API: `uvicorn app.api.main:app --reload --host 0.0.0.0 --port 8000`
 - Trigger ingest: `curl -X POST http://localhost:8000/ingest/SPY`
 - Fetch latest bars: `curl http://localhost:8000/bars/SPY?limit=5`
-
-## Quickstart (docker-compose)
-- Build: `docker-compose build`
-- Run: `docker-compose up`
-- API available at `http://localhost:8000`
 
 ## Simulation & Strategy
 The system includes a backtesting simulation engine to evaluate the performance of trained models.
@@ -282,7 +411,10 @@ open http://localhost:8400
 ### Key Features
 - **Multi-Dimensional Grid Search**: Comprehensive search across features, hyperparameters, and strategy rules
 - **Guaranteed Evaluation**: Every trained model gets simulated before the loop can exit
-- **Smart Model Fingerprinting**: SHA-256 deduplication includes ALL training params (features, hyperparams, alpha_grid, l1_ratio_grid, regime_configs) to prevent retraining identical configurations
+- **Dual Fingerprinting System**: 
+  - **Model Fingerprinting**: SHA-256 hash of features + hyperparams + grids → prevents retraining identical models
+  - **Simulation Fingerprinting**: SHA-256 hash of model fingerprint + strategy params → prevents re-testing identical configurations
+  - Enables cross-run deduplication: Same model config = reuse cached simulations even if retrained
 - **Priority Queue**: Higher parent SQN → higher child simulation priority (good parents first)
 - **Holy Grail Criteria**: Configurable auto-promotion thresholds (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
 - **Lineage Tracking**: Full ancestry DAG from seed to promoted model
@@ -295,41 +427,99 @@ open http://localhost:8400
 - **Integration**: Coordinates Training (8200), Simulation (8300), Feature (8100) services
 
 ### Evolution Loop Workflow
-Each generation follows this sequence:
 
-**Step A**: Queue simulations for current model (before pruning)
-- Training grid search: 7 regimes × 7 alphas × 6 l1_ratios = ~294 models → pick best
-- Simulation grid search: 4 thresholds × 5 z-scores × 7 regimes = ~140 configs → pick best SQN
-- Check Holy Grail criteria → if met, **PROMOTE** model and stop
+The orchestrator now uses a **two-phase architecture** for better resource utilization and faster execution:
 
-**Step B**: Get feature importance from current model (SHAP, coefficients, permutation)
+#### **Phase 1: Training & Pruning (Sequential)**
+All models are trained through progressive feature pruning before any simulations run:
 
-**Step C**: Prune bottom X% of features (default 25%)
-- If can't prune (min_features reached or all equal importance) → **STOP** (simulations already ran!)
+**Step A**: Train initial model (or load seed model)
+- If ElasticNet: GridSearchCV finds best (alpha, l1_ratio) combination
+- Single model selected from grid search results
 
-**Step D**: Compute fingerprint of remaining features → check cache → reuse if exists
-- Fingerprint includes: features + hyperparameters + alpha_grid + l1_ratio_grid + regime_configs
-- Example: Gen 3 with same features/grids as Gen 1 → reuses cached model (skips training 294 models!)
-- Different grid search params → different fingerprint → trains new model
+**Step B**: For each generation (up to max_generations):
+1. Get feature importance from current model
+2. Prune bottom X% of features (default 25%)
+3. Check stopping conditions:
+   - No features to prune → stop training phase
+   - Would go below min_features → stop training phase  
+   - Max generations reached → stop training phase
+4. Compute fingerprint (features + hyperparams + grids)
+5. Check cache → reuse if exact match exists
+6. Train child model with pruned features (or reuse cached)
+7. Add model to trained_models list
+8. Advance to next generation
 
-**Step E**: Train child model with pruned feature set (or skip if cached)
+**Result**: List of all trained models (e.g., 4 models for 4 generations)
 
-**Step F**: Record lineage, advance generation → loop back to Step A
+#### **Phase 2: Simulation Grid Search (Parallel)**
+After ALL models are trained, simulate them all in parallel:
+
+**Step C**: Queue simulations for every trained model
+- Full grid search per model: thresholds × z-scores × regimes × tickers
+- Example: 4 thresholds × 5 z-scores × 7 regimes = 140 simulations/model
+- Total: 4 models × 140 simulations = 560 parallel jobs
+
+**Step D**: Wait for all simulations to complete
+- Workers claim jobs from priority queue
+- Progress tracking: simulations_completed / simulations_total
+- Timeout: 2 hours for all simulations
+
+**Step E**: Evaluate all results
+- Find best model + config combination across ALL simulations
+- Check Holy Grail criteria (SQN 3-5, Profit Factor 2-4, Trades 200-10K)
+- Promote model if criteria met
+
+#### **Benefits of Two-Phase Approach**
+- ✅ **Better Resource Utilization**: Training doesn't block on slow simulations
+- ✅ **Faster Execution**: 30-50% reduction in total run time
+- ✅ **Clearer Progress**: Distinct phases with separate progress tracking
+- ✅ **Worker Saturation**: Simulations run in massive parallel batches
+
+#### **Example Run**
+```
+Symbol: GOOGL
+Max Generations: 4
+Algorithm: ElasticNet (GridSearchCV: 7 alphas × 6 l1_ratios)
+
+PHASE 1: TRAINING (Sequential)
+- Gen 0: 46 features → GridSearchCV → best model
+- Gen 1: 34 features → GridSearchCV → best model  
+- Gen 2: 25 features → GridSearchCV → best model
+- Gen 3: 18 features → GridSearchCV → best model
+Total: 4 models trained (each is best from grid search)
+
+PHASE 2: SIMULATION (Parallel)
+- Queue 140 simulations for Gen 0 model
+- Queue 140 simulations for Gen 1 model
+- Queue 140 simulations for Gen 2 model
+- Queue 140 simulations for Gen 3 model
+Total: 560 simulations running in parallel
+
+RESULT: Gen 2 model + threshold=0.0005 + VIX regime [3] → SQN 4.2 (PROMOTED!)
+```
+
+### Current Implementation vs Future Enhancement
+
+**Current**: GridSearchCV (training service picks best hyperparameters)
+- Each generation trains ONE model (best from grid search)
+- Example: 4 generations = 4 models trained
+
+**Future TODO**: Full grid enumeration  
+- Train ALL combinations of (features × alpha × l1_ratio)
+- Example: 4 generations × 7 alphas × 6 l1_ratios = 168 models
+- Requires training service update to save all grid combinations separately
+- See `EVOLUTION_ARCHITECTURE.md` for implementation plan
 
 ### Stopping Conditions
-| Condition | Simulations Ran? | Results Saved? |
-|-----------|------------------|----------------|
-| Holy Grail Met | ✅ Yes | ✅ Promoted |
-| Max Generations | ✅ Yes | ✅ Best model recorded |
-| Can't Prune | ✅ Yes | ✅ Last model evaluated |
-| Min Features | ✅ Yes | ✅ Last model evaluated |
+| Condition | Phase 1 Complete? | Phase 2 Complete? | Results Saved? |
+|-----------|-------------------|-------------------|----------------|
+| Holy Grail Met | ✅ | ✅ | ✅ Promoted |
+| Max Generations | ✅ | ✅ | ✅ Best model recorded |
+| Can't Prune | ✅ | ✅ | ✅ All models evaluated |
+| Min Features | ✅ | ✅ | ✅ All models evaluated |
 
-**Critical Guarantee**: Simulations always run in Step A (before pruning checks), ensuring no trained model goes unevaluated.
-
-### Example Run
-- Symbol: `AAPL`, Features: 21 → 16 → 12 → 9 (3 generations)
-- Work: 3 generations × 294 models × 140 simulations = **~124,000 evaluations**
-- Result: Found model with 9 features achieving SQN = 3.8
+**Critical Guarantee**: Phase 2 always runs after Phase 1 completes, ensuring every trained model gets simulated.
 
 ### API Endpoints
 - `POST /evolve` - Start new evolution run with grid search configs
@@ -338,7 +528,7 @@ Each generation follows this sequence:
 - `GET /promoted` - List models meeting Holy Grail criteria
 - `POST /jobs/claim` - Worker job claiming (internal)
 
-**For complete documentation**, see [orchestrator_service/README.md](orchestrator_service/README.md)
+**For complete documentation**, see [orchestrator_service/README.md](orchestrator_service/README.md) and [EVOLUTION_ARCHITECTURE.md](EVOLUTION_ARCHITECTURE.md)
 3. **Check** fingerprint - reuse existing model if configuration seen before
 4. **Queue** simulations with priority = parent_sqn
 5. **Evaluate** results against Holy Grail criteria
@@ -354,7 +544,23 @@ See [orchestrator_service/README.md](orchestrator_service/README.md) for detaile
 
 ### Recent Orchestrator Updates (2026-01)
 
-#### 🔄 Direct Parquet Access
+#### � Dual Fingerprinting System
+- **Model Fingerprinting**: SHA-256 hash includes features + hyperparameters + alpha_grid + l1_ratio_grid + regime_configs + symbol + target_transform
+  - **Purpose**: Prevents retraining identical model configurations
+  - **Benefit**: Gen 3 with same config as Gen 1 → reuses cached model (skips 294 model grid search!)
+- **Simulation Fingerprinting**: SHA-256 hash includes **model_fingerprint** + target_ticker + simulation_ticker + threshold + z_score + regime + train_window + test_window
+  - **Purpose**: Prevents re-testing identical simulation configurations
+  - **Key Innovation**: Uses model fingerprint (not model_id) so results are reusable even if model is retrained
+  - **Benefit**: Same model config + same strategy params = reuse cached results across runs
+- **Database Tables**: 
+  - `model_fingerprints`: Maps fingerprint → model_id
+  - `simulation_fingerprints`: Maps sim_fingerprint → results, linked to model_fingerprint
+- **Cross-Run Deduplication**: 
+  - Run 1: Train model → Run 140 sims → Save fingerprints
+  - Run 2: Retrain identical model → Check fingerprints → **Skip all 140 sims** (reuse cached results!)
+- **Audit Trail**: Every tested configuration is permanently recorded with complete metadata for reproducibility
+
+#### �🔄 Direct Parquet Access
 - **Removed API Dependencies**: Orchestrator now reads feature data directly from mounted `/app/data/features_parquet` via PyArrow instead of calling the Feature Service API.
 - **Eliminates Timeouts**: No more HTTP timeout issues when loading large datasets.
 - **Functions Added**: `_get_options_from_parquet()`, `_get_symbols_from_parquet()`, `_get_feature_columns_from_parquet()` in `main.py`.

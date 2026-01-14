@@ -6,16 +6,104 @@ from typing import Optional, Dict, Any
 import logging
 import uuid
 import threading
+import asyncio
+import os
 from pathlib import Path
 from collections import deque
+from contextlib import asynccontextmanager
+from concurrent.futures import ProcessPoolExecutor
 
 from .config import settings
-from .db import db
-from .trainer import start_training, train_model_task, ALGORITHMS
+from .pg_db import TrainingDB, ensure_tables, get_pool, close_pool
+from .trainer import train_model_task, ALGORITHMS
 from .data import get_data_options, get_feature_map
 from training_service.models.hybrid import HybridRegressor
 
 settings.ensure_paths()
+
+# Process pool for parallel training (scales with CPU count)
+CPU_COUNT = os.cpu_count() or 4
+_process_pool = ProcessPoolExecutor(
+    max_workers=CPU_COUNT,
+    max_tasks_per_child=10  # Restart workers periodically to prevent memory leaks
+)
+
+
+async def submit_training_task(
+    training_id: str,
+    symbol: str,
+    algorithm: str,
+    target_col: str,
+    params: dict,
+    data_options: Optional[str] = None,
+    timeframe: str = "1m",
+    parent_model_id: Optional[str] = None,
+    feature_whitelist: Optional[list] = None,
+    group_id: Optional[str] = None,
+    target_transform: str = "none",
+    alpha_grid: Optional[list] = None,
+    l1_ratio_grid: Optional[list] = None
+):
+    """Submit training task to process pool and monitor it."""
+    loop = asyncio.get_event_loop()
+    
+    try:
+        # Submit to process pool (runs in separate process for true parallelism)
+        await loop.run_in_executor(
+            _process_pool,
+            train_model_task,
+            training_id, symbol, algorithm, target_col, params,
+            data_options, timeframe, parent_model_id, feature_whitelist,
+            group_id, target_transform, alpha_grid, l1_ratio_grid
+        )
+        log.info(f"Training {training_id} completed successfully")
+    except Exception as e:
+        log.error(f"Training {training_id} failed: {e}")
+        # Update status to failed (task may have already done this, but ensure it)
+        try:
+            await db.update_model_status(training_id, status="failed", error=str(e))
+        except:
+            pass
+
+async def async_start_training(
+    symbol: str,
+    algorithm: str,
+    target_col: str = "close",
+    params: dict = None,
+    data_options: str = None,
+    timeframe: str = "1m",
+    parent_model_id: str = None,
+    group_id: str = None,
+    target_transform: str = "none"
+) -> str:
+    """Create a new training job record in the database."""
+    import json
+    from datetime import datetime
+    
+    if params is None:
+        params = {}
+    
+    training_id = str(uuid.uuid4())
+    
+    # Create initial model record
+    await db.create_model_record({
+        "id": training_id,
+        "name": f"{symbol}-{algorithm}-{target_col}-{timeframe}-{datetime.now().strftime('%Y%m%d%H%M')}",
+        "algorithm": algorithm,
+        "symbol": symbol,
+        "target_col": target_col,
+        "feature_cols": json.dumps([]),
+        "hyperparameters": json.dumps(params),
+        "status": "pending",
+        "metrics": json.dumps({}),
+        "data_options": data_options,
+        "parent_model_id": parent_model_id,
+        "group_id": group_id,
+        "timeframe": timeframe,
+        "target_transform": target_transform
+    })
+    
+    return training_id
 
 # --- Custom Log Handler ---
 log_buffer = deque(maxlen=200)
@@ -44,15 +132,41 @@ log = logging.getLogger("training.api")
 # Ensure templates directory exists
 (Path(__file__).parent / "templates").mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Training Service")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown."""
+    # Startup
+    log.info("Training Service starting...")
+    log.info(f"Process pool configured with {CPU_COUNT} workers")
+    log.info("Initializing PostgreSQL connection pool...")
+    await ensure_tables()
+    log.info("PostgreSQL tables ready")
+    
+    yield
+    
+    # Shutdown
+    log.info("Shutting down process pool...")
+    _process_pool.shutdown(wait=True, cancel_futures=True)
+    log.info("Closing PostgreSQL connection pool...")
+    await close_pool()
+    log.info("Training Service shutdown complete")
+
+app = FastAPI(title="Training Service", lifespan=lifespan)
+
+# Create a global db instance
+db = TrainingDB()
 
 # Mount Static Files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 @app.get("/logs")
 def get_logs():
+    """Get recent training logs from buffer."""
     with log_lock:
-        return list(log_buffer)
+        logs_list = list(log_buffer)
+        if not logs_list:
+            return ["[No training logs yet]"]
+        return logs_list
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -113,19 +227,18 @@ def list_algorithms():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/models")
-def list_models():
-    return db.list_models()
+async def list_models():
+    return await db.list_models()
 
 @app.get("/models/{model_id}")
-def get_model(model_id: str):
-    model = db.get_model(model_id)
+async def get_model(model_id: str):
+    model = await db.get_model(model_id)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
-    # Convert result tuples/rows to dict if necessary (DuckDB fetchone returns tuple)
-    return {"id": model_id, "data": str(model)}
+    return model
 
 @app.delete("/models/all")
-def delete_all_models_endpoint():
+async def delete_all_models_endpoint():
     # 1. Delete all files in models dir
     try:
         # Check if dir exists first
@@ -140,13 +253,13 @@ def delete_all_models_endpoint():
         raise HTTPException(status_code=500, detail=f"Failed to delete files: {e}")
 
     # 2. Clear DB
-    db.delete_all_models()
+    await db.delete_all_models()
     return {"status": "all deleted"}
 
 @app.delete("/models/{model_id}")
-def delete_model(model_id: str):
+async def delete_model(model_id: str):
     # Delete from DB
-    db.delete_model(model_id)
+    await db.delete_model(model_id)
     
     # Delete file
     try:
@@ -161,30 +274,40 @@ def delete_model(model_id: str):
 @app.post("/retrain/{model_id}")
 async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
     import json
-    conn = db.get_connection()
-    try:
-        # Fetch original parameters
-        row = conn.execute("SELECT symbol, algorithm, target_col, hyperparameters, data_options, timeframe, target_transform FROM models WHERE id = ?", [model_id]).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Original model not found")
-        
-        symbol, algo, target, params_json, d_opt, tf, transform = row
-        # Support legacy rows where transform might be null
-        transform = transform or "none"
-        
-        # Parse params
-        params = {}
-        if params_json:
-            try:
-                params = json.loads(params_json)
-            except Exception:
-                log.warning(f"Could not parse hyperparameters for {model_id}, using empty dict")
-                
-        # Start new training job
-        training_id = start_training(symbol, algo, target, params, d_opt, tf, parent_model_id=model_id, target_transform=transform)
     
-        background_tasks.add_task(
-            train_model_task, 
+    # Fetch original parameters
+    model = await db.get_model(model_id)
+    if not model:
+        raise HTTPException(status_code=404, detail="Original model not found")
+    
+    symbol = model.get('symbol')
+    algo = model.get('algorithm')
+    target = model.get('target_col')
+    params_json = model.get('hyperparameters')
+    d_opt = model.get('data_options')
+    tf = model.get('timeframe')
+    transform = model.get('target_transform') or "none"
+    
+    # Parse params
+    params = {}
+    if params_json:
+        try:
+            if isinstance(params_json, str):
+                params = json.loads(params_json)
+            else:
+                params = params_json
+        except Exception:
+            log.warning(f"Could not parse hyperparameters for {model_id}, using empty dict")
+    
+    try:
+        # Start new training job
+        training_id = await async_start_training(
+            symbol, algo, target, params, d_opt, tf, 
+            parent_model_id=model_id, target_transform=transform
+        )
+    
+        # Submit to process pool for parallel execution
+        asyncio.create_task(submit_training_task(
             training_id, 
             symbol, 
             algo, 
@@ -196,14 +319,12 @@ async def retrain_model(model_id: str, background_tasks: BackgroundTasks):
             None,  # features
             None,  # group
             transform
-        )
+        ))
         return {"id": training_id, "status": "started", "retrained_from": model_id}
             
     except Exception as e:
         log.error(f"Retrain failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
 
 @app.post("/train/batch")
 async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks):
@@ -226,7 +347,7 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
     params["p_value_threshold"] = req.p_value_threshold
 
     for cfg in configs:
-        tid = start_training(
+        tid = await async_start_training(
             symbol=req.symbol,
             algorithm=req.algorithm,
             target_col=cfg["target"],
@@ -234,12 +355,13 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
             data_options=req.data_options,
             timeframe=cfg["tf"],
             parent_model_id=req.parent_model_id,
-            group_id=group_id
+            group_id=group_id,
+            target_transform=req.target_transform
         )
         started_ids.append(tid)
         
-        background_tasks.add_task(
-            train_model_task,
+        # Submit to process pool for parallel execution
+        asyncio.create_task(submit_training_task(
             tid,
             req.symbol,
             req.algorithm,
@@ -251,7 +373,7 @@ async def train_batch(req: TrainBatchRequest, background_tasks: BackgroundTasks)
             req.feature_whitelist,
             group_id,  # Pass group_id
             req.target_transform
-        )
+        ))
 
     return {"group_id": group_id, "ids": started_ids, "status": "started batch"}
 
@@ -264,7 +386,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
     
-    training_id = start_training(
+    training_id = await async_start_training(
         req.symbol, 
         req.algorithm, 
         req.target_col, 
@@ -276,8 +398,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         target_transform=req.target_transform
     )
     
-    background_tasks.add_task(
-        train_model_task, 
+    # Submit to process pool for parallel execution
+    asyncio.create_task(submit_training_task(
         training_id, 
         req.symbol, 
         req.algorithm, 
@@ -287,11 +409,11 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.timeframe,
         req.parent_model_id, 
         req.feature_whitelist,
-        req.group_id,  # Pass group_id
+        req.group_id,
         req.target_transform,
-        req.alpha_grid,  # Grid search: L2 penalty values
-        req.l1_ratio_grid  # Grid search: L1/L2 mix values
-    )
+        req.alpha_grid,
+        req.l1_ratio_grid
+    ))
     
     return {"id": training_id, "status": "started"}
 
@@ -301,7 +423,7 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
 # ============================================
 
 @app.get("/api/model/{model_id}/importance")
-def get_model_importance(model_id: str):
+async def get_model_importance(model_id: str):
     """
     Get feature importance scores for a trained model.
     Used by orchestrator to determine which features to prune.
@@ -314,19 +436,14 @@ def get_model_importance(model_id: str):
         }
     """
     import json
-    conn = db.get_connection()
     try:
-        row = conn.execute(
-            "SELECT metrics, feature_cols FROM models WHERE id = ?", 
-            [model_id]
-        ).fetchone()
+        model = await db.get_model(model_id)
         
-        if not row:
+        if not model:
             raise HTTPException(status_code=404, detail="Model not found")
         
-        metrics_json, feature_cols_json = row
-        
         # Parse metrics
+        metrics_json = model.get('metrics')
         if metrics_json:
             try:
                 metrics = json.loads(metrics_json) if isinstance(metrics_json, str) else metrics_json
@@ -371,12 +488,10 @@ def get_model_importance(model_id: str):
     except Exception as e:
         log.error(f"Error getting importance for {model_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
 
 
 @app.get("/api/model/{model_id}/config")
-def get_model_config(model_id: str):
+async def get_model_config(model_id: str):
     """
     Get the full configuration used to train a model.
     Used by orchestrator for fingerprint computation.
@@ -393,32 +508,24 @@ def get_model_config(model_id: str):
         }
     """
     import json
-    conn = db.get_connection()
     try:
-        row = conn.execute(
-            """SELECT symbol, algorithm, target_col, feature_cols, 
-                      hyperparameters, target_transform, data_options, timeframe
-               FROM models WHERE id = ?""",
-            [model_id]
-        ).fetchone()
+        model = await db.get_model(model_id)
         
-        if not row:
+        if not model:
             raise HTTPException(status_code=404, detail="Model not found")
         
-        symbol, algorithm, target_col, feature_cols_json, hyperparams_json, transform, data_opts, tf = row
-        
         # Parse JSON fields
-        features = []
-        if feature_cols_json:
+        features = model.get('feature_cols', [])
+        if isinstance(features, str):
             try:
-                features = json.loads(feature_cols_json) if isinstance(feature_cols_json, str) else feature_cols_json
+                features = json.loads(features)
             except:
                 features = []
         
-        hyperparams = {}
-        if hyperparams_json:
+        hyperparams = model.get('hyperparameters', {})
+        if isinstance(hyperparams, str):
             try:
-                hyperparams = json.loads(hyperparams_json) if isinstance(hyperparams_json, str) else hyperparams_json
+                hyperparams = json.loads(hyperparams)
             except:
                 hyperparams = {}
         
@@ -426,12 +533,12 @@ def get_model_config(model_id: str):
             "model_id": model_id,
             "features": features,
             "hyperparameters": hyperparams,
-            "target_transform": transform or "none",
-            "symbol": symbol,
-            "target_col": target_col,
-            "algorithm": algorithm,
-            "data_options": data_opts,
-            "timeframe": tf
+            "target_transform": model.get('target_transform') or "none",
+            "symbol": model.get('symbol'),
+            "target_col": model.get('target_col'),
+            "algorithm": model.get('algorithm'),
+            "data_options": model.get('data_options'),
+            "timeframe": model.get('timeframe')
         }
         
     except HTTPException:
@@ -439,8 +546,6 @@ def get_model_config(model_id: str):
     except Exception as e:
         log.error(f"Error getting config for {model_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
 
 
 class TrainWithParentRequest(BaseModel):
@@ -476,7 +581,7 @@ async def train_with_parent(req: TrainWithParentRequest, background_tasks: Backg
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
     
-    training_id = start_training(
+    training_id = await async_start_training(
         req.symbol,
         req.algorithm,
         req.target_col,
@@ -488,8 +593,8 @@ async def train_with_parent(req: TrainWithParentRequest, background_tasks: Backg
         target_transform=req.target_transform
     )
     
-    background_tasks.add_task(
-        train_model_task,
+    # Submit to process pool for parallel execution
+    asyncio.create_task(submit_training_task(
         training_id,
         req.symbol,
         req.algorithm,
@@ -501,7 +606,7 @@ async def train_with_parent(req: TrainWithParentRequest, background_tasks: Backg
         req.feature_whitelist,
         None,  # group_id
         req.target_transform
-    )
+    ))
     
     log.info(f"Started training {training_id} with parent {req.parent_model_id}, {len(req.feature_whitelist)} features")
     

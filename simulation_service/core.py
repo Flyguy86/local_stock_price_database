@@ -20,180 +20,66 @@ if not DATA_DIR.exists():
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", str(DATA_DIR / "models")))
 BOTS_DIR = MODELS_DIR / "bots"
 FEATURES_PATH = Path(os.environ.get("FEATURES_PATH", str(DATA_DIR / "features_parquet")))
+
+# Remove DuckDB dependency for simulation history (now in PostgreSQL)
+# Keep for model metadata fallback only
 METADATA_DB_PATH = DATA_DIR / "duckdb/models.db"
 
 log = logging.getLogger("simulation.core")
 
-def ensure_sim_history_table():
-    """Ensures the simulation history table exists in DuckDB."""
-    if not METADATA_DB_PATH.parent.exists():
-        METADATA_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        
-    try:
-        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS simulation_history (
-                    id VARCHAR PRIMARY KEY,
-                    timestamp VARCHAR,
-                    model_id VARCHAR,
-                    ticker VARCHAR,
-                    return_pct DOUBLE,
-                    trades_count INTEGER,
-                    hit_rate DOUBLE,
-                    sqn DOUBLE,
-                    params JSON
-                )
-            """)
-            
-            # Simple migration attempt for older schemas
-            try:
-                conn.execute("ALTER TABLE simulation_history ADD COLUMN hit_rate DOUBLE")
-            except Exception:
-                pass # Already exists or other error
 
-            try:
-                conn.execute("ALTER TABLE simulation_history ADD COLUMN sqn DOUBLE")
-            except Exception:
-                pass 
-                
-            try:
-                conn.execute("ALTER TABLE simulation_history ADD COLUMN params JSON")
-            except Exception:
-                pass 
-                
-    except Exception as e:
-        log.error(f"Failed to ensure sim_history table: {e}")
+def ensure_sim_history_table():
+    """
+    DEPRECATED: Simulation history now stored in PostgreSQL.
+    This function kept for backward compatibility but does nothing.
+    """
+    pass
+
 
 def save_simulation_history(model_id, ticker, stats, params):
-    """Saves a simulation run result to DB."""
+    """
+    Save simulation history to PostgreSQL (async operation run in sync context).
+    
+    Args:
+        model_id: Model UUID
+        ticker: Stock symbol
+        stats: Simulation statistics dict
+        params: Simulation parameters dict
+    """
+    from .sync_wrapper import save_simulation_history_sync
+    
     try:
-        ensure_sim_history_table()
-        
-        record_id = str(uuid.uuid4())
-        ts = datetime.now(timezone.utc).isoformat()
-        
-        # params dict to json string
-        params_json = json.dumps(params)
-        
-        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
-            conn.execute("""
-                INSERT INTO simulation_history 
-                (id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, [
-                record_id, 
-                ts, 
-                model_id, 
-                ticker, 
-                stats.get('strategy_return_pct', 0.0),
-                stats.get('total_trades', 0),
-                stats.get('hit_rate_pct', 0.0),
-                stats.get('sqn', 0.0),
-                params_json
-            ])
-            log.info(f"Saved simulation history: {record_id}")
-            
+        save_simulation_history_sync(model_id, ticker, stats, params)
     except Exception as e:
         log.error(f"Failed to save simulation history: {e}")
 
+
 def get_simulation_history(limit=50):
-    """Retrieves recent simulation history."""
-    try:
-        ensure_sim_history_table()
-        with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
-             # Check if table exists (it might not if valid but empty)
-             tables = conn.execute("SHOW TABLES").fetchall()
-             if not any(t[0] == 'simulation_history' for t in tables):
-                 return []
-                 
-             # Handle schema evolution gracefully
-             columns = "id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params"
-             # If columns missing in old valid DB, this might fail, but ensure_table tries to add them.
-             
-             rows = conn.execute(f"""
-                SELECT {columns}
-                FROM simulation_history 
-                ORDER BY timestamp DESC 
-                LIMIT {limit}
-             """).fetchall()
-             
-             history = []
-             for r in rows:
-                 history.append({
-                     "id": r[0],
-                     "timestamp": r[1],
-                     "model_id": r[2],
-                     "ticker": r[3],
-                     "return_pct": r[4],
-                     "trades_count": r[5],
-                     "hit_rate_pct": r[6],
-                     "sqn": r[7],
-                     "params": json.loads(r[8]) if r[8] else {}
-                 })
-             return history
-    except Exception as e:
-        log.error(f"Failed to get history: {e}")
-        return []
+    """
+    DEPRECATED: Use async endpoint /api/history instead.
+    This function kept for backward compatibility.
+    """
+    log.warning("get_simulation_history() is deprecated, use async endpoint")
+    return []
+
 
 def get_top_strategies(limit=15, offset=0):
-    """Retrieves top strategies sorted by SQN with pagination."""
-    try:
-        ensure_sim_history_table()
-        with duckdb.connect(str(METADATA_DB_PATH), read_only=True) as conn:
-             tables = conn.execute("SHOW TABLES").fetchall()
-             if not any(t[0] == 'simulation_history' for t in tables):
-                 return {"items": [], "total": 0}
-             
-             # Get total count for pagination
-             total_result = conn.execute(
-                 "SELECT COUNT(*) FROM simulation_history WHERE trades_count > 5"
-             ).fetchone()
-             total = total_result[0] if total_result else 0
-             
-             # Fetch paginated results
-             rows = conn.execute("""
-                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params 
-                FROM simulation_history 
-                WHERE trades_count > 5 
-                ORDER BY sqn DESC 
-                LIMIT ? OFFSET ?
-             """, [limit, offset]).fetchall()
-             
-             history = []
-             for r in rows:
-                 params = {}
-                 if r[8]:
-                     try:
-                         params = json.loads(r[8])
-                     except:
-                         pass
-                 history.append({
-                     "id": r[0],
-                     "timestamp": r[1],
-                     "model_id": r[2],
-                     "ticker": r[3],
-                     "return_pct": r[4],
-                     "trades_count": r[5],
-                     "hit_rate_pct": r[6],
-                     "sqn": r[7],
-                     "params": params
-                 })
-             return {"items": history, "total": total}
-    except Exception as e:
-        log.error(f"Failed to get top strategies: {e}")
-        return {"items": [], "total": 0}
+    """
+    DEPRECATED: Use async endpoint /history/top instead.
+    This function kept for backward compatibility.
+    """
+    log.warning("get_top_strategies() is deprecated, use async endpoint")
+    return {"items": [], "total": 0}
+
 
 def delete_all_simulation_history():
-    """Deletes all records from simulation_history."""
-    try:
-        ensure_sim_history_table()
-        with duckdb.connect(str(METADATA_DB_PATH)) as conn:
-            conn.execute("DELETE FROM simulation_history")
-            log.info("Deleted all simulation history.")
-        return True
-    except Exception as e:
-        log.error(f"Failed to delete history: {e}")
-        return False
+    """
+    DEPRECATED: Use async endpoint DELETE /history/all instead.
+    This function kept for backward compatibility.
+    """
+    log.warning("delete_all_simulation_history() is deprecated, use async endpoint")
+    return False
+
 
 def get_available_models():
     """Lists available trained models (.joblib files) with metadata."""
@@ -490,7 +376,8 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
         
         X = X[required_features]
     
-    X = X.fillna(0)
+    # Replace inf/-inf with NaN, then fill with 0
+    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
     
     # -------------------------------------------------------------
     # 1. Z-Score Scaling Checks (Outlier Removal)
@@ -524,6 +411,31 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
     # -------------------------------------------------------------
     if volatility_normalization:
         log.info("Applying Volatility Normalization (StandardScaler) to Simulation Data.")
+        
+        # CRITICAL: Clean up inf/NaN values before scaling
+        # Replace inf with NaN first
+        X = X.replace([np.inf, -np.inf], np.nan)
+        
+        # Check for and log problematic values
+        inf_count = np.isinf(X.values).sum()
+        nan_count = np.isnan(X.values).sum()
+        
+        if inf_count > 0:
+            log.warning(f"Found {inf_count} infinity values in features before scaling - replacing with NaN")
+        
+        if nan_count > 0:
+            log.info(f"Found {nan_count} NaN values in features - filling with column median")
+            # Fill NaN with column median (more robust than mean for financial data)
+            X = X.fillna(X.median())
+            
+            # If column is all NaN, median will be NaN, fill with 0
+            X = X.fillna(0)
+        
+        # Double-check no inf/nan remain
+        if np.isinf(X.values).any() or np.isnan(X.values).any():
+            log.error("Still have inf/NaN after cleanup - replacing with 0")
+            X = X.replace([np.inf, -np.inf], 0).fillna(0)
+        
         scaler = StandardScaler()
         # Keep DataFrame structure
         X_scaled = scaler.fit_transform(X)
@@ -536,6 +448,10 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
         log.error(f"Prediction failed: {e}")
         raise e
 
+    # Diagnostic logging for predictions
+    log.info(f"Prediction statistics: mean={np.mean(preds):.6f}, std={np.std(preds):.6f}, min={np.min(preds):.6f}, max={np.max(preds):.6f}")
+    log.info(f"Prediction unique values: {len(np.unique(preds))} (first 10: {np.unique(preds)[:10]})")
+    
     df_sim = df.copy()
     df_sim["prediction"] = preds
     
@@ -578,6 +494,14 @@ def _prepare_simulation_inputs(model_id: str, ticker: str,
             )
             df_sim["pred_dir"] = (df_sim["prediction"] > df_sim["close"]).astype(int)
 
+    # Diagnostic logging for signals
+    signal_count = df_sim["signal"].sum()
+    total_bars = len(df_sim)
+    signal_pct = (signal_count / total_bars * 100) if total_bars > 0 else 0
+    log.info(f"Generated {signal_count} BUY signals out of {total_bars} bars ({signal_pct:.2f}%)")
+    if signal_count == 0:
+        log.warning(f"⚠️  ZERO SIGNALS GENERATED - Model may have constant predictions or threshold too high (threshold={min_prediction_threshold})")
+    
     df_sim["next_close"] = df_sim["close"].shift(-1)
     df_sim["actual_dir"] = (df_sim["next_close"] > df_sim["close"]).astype(int)
     
@@ -655,335 +579,347 @@ def run_simulation(model_id: str, ticker: str, initial_cash: float, use_bot: boo
         slippage_bars: Number of bars to wait before execution (default 4)
         transaction_fee: Flat fee per trade in dollars (default $0.02)
     """
-    log.info("="*60)
-    log.info(f"Starting Simulation: {ticker} | Model: {model_id[:12]}...")
-    log.info("="*60)
-    
-    # 1. Prepare Data
-    log.info(f"Initial Capital: ${initial_cash:,.2f}")
-    log.info(f"Prediction Threshold: {min_prediction_threshold:.4f} (signals require >{min_prediction_threshold*100:.2f}% confidence)")
-    
-    df_sim, X, base_model, target_transform = _prepare_simulation_inputs(
-        model_id, ticker,
-        min_prediction_threshold=min_prediction_threshold,
-        enable_z_score_check=enable_z_score_check,
-        volatility_normalization=volatility_normalization
-    )
-    
-    log.info(f"Loaded {len(df_sim)} bars for backtesting")
-    log.info(f"Date Range: {df_sim['ts'].min()} to {df_sim['ts'].max()}")
-    
-    # 2. Apply Bot Logic (if enabled)
-    if use_bot:
-        bot_path = BOTS_DIR / f"{model_id}.joblib"
-        if bot_path.exists():
-            log.info("Applying Trading Bot Filter (ML-based signal confirmation)...")
-            bot = joblib.load(bot_path)
-            
-            try:
-                bot_probs = bot.predict_proba(X)[:, 1]
+    try:
+        log.info("="*60)
+        log.info(f"Starting Simulation: {ticker} | Model: {model_id[:12]}...")
+        log.info("="*60)
+        
+        # 1. Prepare Data
+        log.info(f"Initial Capital: ${initial_cash:,.2f}")
+        log.info(f"Prediction Threshold: {min_prediction_threshold:.4f} (signals require >{min_prediction_threshold*100:.2f}% confidence)")
+        
+        df_sim, X, base_model, target_transform = _prepare_simulation_inputs(
+            model_id, ticker,
+            min_prediction_threshold=min_prediction_threshold,
+            enable_z_score_check=enable_z_score_check,
+            volatility_normalization=volatility_normalization
+        )
+        
+        log.info(f"Loaded {len(df_sim)} bars for backtesting")
+        log.info(f"Date Range: {df_sim['ts'].min()} to {df_sim['ts'].max()}")
+        
+        # 2. Apply Bot Logic (if enabled)
+        if use_bot:
+            bot_path = BOTS_DIR / f"{model_id}.joblib"
+            if bot_path.exists():
+                log.info("Applying Trading Bot Filter (ML-based signal confirmation)...")
+                bot = joblib.load(bot_path)
                 
-                new_signals = []
-                orig_signals = df_sim["signal"].values
-                filtered_count = 0
-                for i, prob in enumerate(bot_probs):
-                    base_sig = orig_signals[i]
-                    if prob > 0.55:
-                        new_signals.append(base_sig)
+                try:
+                    bot_probs = bot.predict_proba(X)[:, 1]
+                    
+                    new_signals = []
+                    orig_signals = df_sim["signal"].values
+                    filtered_count = 0
+                    for i, prob in enumerate(bot_probs):
+                        base_sig = orig_signals[i]
+                        if prob > 0.55:
+                            new_signals.append(base_sig)
+                        else:
+                            new_signals.append(-1)
+                            if base_sig == 1:
+                                filtered_count += 1
+                            
+                    df_sim["signal"] = new_signals
+                    log.info(f"Trading Bot filtered out {filtered_count} low-confidence signals")
+                    
+                except Exception as e:
+                    log.warning(f"Bot prediction failed, falling back to base model: {e}")
+            else:
+                log.warning("Bot enabled but no bot model found. Run 'Train Bot' first.")
+        else:
+            log.info("Trading Bot: DISABLED (using raw model predictions)")
+
+        # 3. Regime Filter Logic
+        if regime_col and allowed_regimes is not None:
+            if regime_col in df_sim.columns:
+                log.info(f"Applying Regime Filter: {regime_col} MUST BE in {allowed_regimes}")
+                
+                def apply_regime_gate(row):
+                    current_regime = row[regime_col]
+                    if current_regime in allowed_regimes:
+                        return row["signal"]
                     else:
-                        new_signals.append(-1)
-                        if base_sig == 1:
-                            filtered_count += 1
-                        
-                df_sim["signal"] = new_signals
-                log.info(f"Trading Bot filtered out {filtered_count} low-confidence signals")
+                        return 0
+
+                pre_filter_signals = df_sim["signal"].sum()
+                df_sim["signal"] = df_sim.apply(apply_regime_gate, axis=1)
+                post_filter_signals = df_sim["signal"].sum()
+                blocked_signals = pre_filter_signals - post_filter_signals
                 
-            except Exception as e:
-                log.warning(f"Bot prediction failed, falling back to base model: {e}")
+                log.info(f"Regime Filter blocked {blocked_signals} signals in unfavorable market conditions")
+            else:
+                log.warning(f"Regime column {regime_col} not found in data. Ignoring filter.")
         else:
-             log.warning("Bot enabled but no bot model found. Run 'Train Bot' first.")
-    else:
-        log.info("Trading Bot: DISABLED (using raw model predictions)")
+            log.info("Regime Filter: DISABLED (trading in all market conditions)")
 
-    # 3. Regime Filter Logic
-    if regime_col and allowed_regimes is not None:
-        if regime_col in df_sim.columns:
-            log.info(f"Applying Regime Filter: {regime_col} MUST BE in {allowed_regimes}")
+        # 4. Slippage Simulation (Delayed Execution)
+        if enable_slippage and slippage_bars > 0:
+            log.info(f"SLIPPAGE MODEL: {slippage_bars}-bar execution delay with midpoint pricing")
+            log.info(f"  -> Orders fill at mean(open, close) of bar T+{slippage_bars}")
+            log.info(f"  -> Simulates market impact, order routing delays, and partial fills")
             
-            def apply_regime_gate(row):
-                current_regime = row[regime_col]
-                if current_regime in allowed_regimes:
-                    return row["signal"]
+            # Create delayed execution price column
+            # Price = mean of (open + close) at execution bar
+            df_sim["exec_price"] = ((df_sim["open"] + df_sim["close"]) / 2).shift(-slippage_bars)
+            
+            # Shift signals forward to align with execution
+            df_sim["exec_signal"] = df_sim["signal"].copy()
+            df_sim["signal"] = df_sim["signal"].shift(slippage_bars).fillna(0).astype(int)
+            
+            # Use exec_price for trading, fallback to close if NaN (end of data)
+            df_sim["trade_price"] = df_sim["exec_price"].fillna(df_sim["close"])
+        else:
+            log.info("SLIPPAGE MODEL: DISABLED (instant fills at close price - UNREALISTIC)")
+            # No slippage: use close price immediately
+            df_sim["trade_price"] = df_sim["close"]
+
+        # 5. Transaction Cost Model
+        log.info(f"TRANSACTION COSTS: ${transaction_fee:.2f} per trade (entry + exit = ${transaction_fee*2:.2f} round-trip)")
+        log.info(f"  -> Includes: SEC fees, exchange fees, clearing fees, and rounding")
+
+        # Walk forward simulation with costs
+        log.info("-"*60)
+        log.info("Beginning Walk-Forward Backtest...")
+        log.info("-"*60)
+        
+        cash = initial_cash
+        shares = 0
+        portfolio_values = []
+        trades = []
+        last_buy_price = 0.0
+        total_fees = 0.0
+        
+        # Initialize metrics to defaults to avoid UnboundLocalError if no trades occur
+        winning_trades = []
+        losing_trades = []
+        win_rate = 0.0
+        
+        # Benchmark: Buy and Hold
+        initial_price = df_sim.iloc[0]["close"]
+        benchmark_shares = initial_cash / initial_price
+        
+        log.info(f"Benchmark Strategy: Buy & Hold {benchmark_shares:.2f} shares at ${initial_price:.2f}")
+        
+        for idx, row in df_sim.iterrows():
+            price = row["trade_price"]  # Use slippage-adjusted price
+            ts = row["ts"]
+            signal = row["signal"]
+            
+            action = None
+            
+            if signal == 1 and shares == 0:
+                # BUY: Whole shares only
+                # Account for transaction fee in available cash
+                possible_shares = int((cash - transaction_fee) // price)
+                if possible_shares > 0:
+                    shares = possible_shares
+                    cost = shares * price
+                    cash -= (cost + transaction_fee)
+                    total_fees += transaction_fee
+                    last_buy_price = price
+                    action = "BUY"
+                    log.debug(f"{ts}: BUY {shares} shares @ ${price:.2f} (fee: ${transaction_fee:.2f}, cash remaining: ${cash:.2f})")
+                    trades.append({
+                        "ts": ts,
+                        "type": "BUY",
+                        "price": price,
+                        "shares": shares,
+                        "value": cost,
+                        "fee": transaction_fee,
+                        "pnl": 0.0,
+                        "pnl_pct": 0.0
+                    })
+            elif signal == 0 and shares > 0:
+                # SELL
+                proceeds = shares * price
+                
+                # Calculate PnL (before fees)
+                pnl = proceeds - (shares * last_buy_price)
+                pnl_pct = (price - last_buy_price) / last_buy_price * 100
+                
+                # Net PnL after both entry and exit fees
+                net_pnl = pnl - (2 * transaction_fee) # Entry + Exit fees
+                
+                # Categorize trade
+                if net_pnl > 0:
+                    winning_trades.append(net_pnl)
                 else:
-                    return 0
-
-            pre_filter_signals = df_sim["signal"].sum()
-            df_sim["signal"] = df_sim.apply(apply_regime_gate, axis=1)
-            post_filter_signals = df_sim["signal"].sum()
-            blocked_signals = pre_filter_signals - post_filter_signals
-            
-            log.info(f"Regime Filter blocked {blocked_signals} signals in unfavorable market conditions")
-        else:
-            log.warning(f"Regime column {regime_col} not found in data. Ignoring filter.")
-    else:
-        log.info("Regime Filter: DISABLED (trading in all market conditions)")
-
-    # 4. Slippage Simulation (Delayed Execution)
-    if enable_slippage and slippage_bars > 0:
-        log.info(f"SLIPPAGE MODEL: {slippage_bars}-bar execution delay with midpoint pricing")
-        log.info(f"  -> Orders fill at mean(open, close) of bar T+{slippage_bars}")
-        log.info(f"  -> Simulates market impact, order routing delays, and partial fills")
-        
-        # Create delayed execution price column
-        # Price = mean of (open + close) at execution bar
-        df_sim["exec_price"] = ((df_sim["open"] + df_sim["close"]) / 2).shift(-slippage_bars)
-        
-        # Shift signals forward to align with execution
-        df_sim["exec_signal"] = df_sim["signal"].copy()
-        df_sim["signal"] = df_sim["signal"].shift(slippage_bars).fillna(0).astype(int)
-        
-        # Use exec_price for trading, fallback to close if NaN (end of data)
-        df_sim["trade_price"] = df_sim["exec_price"].fillna(df_sim["close"])
-    else:
-        log.info("SLIPPAGE MODEL: DISABLED (instant fills at close price - UNREALISTIC)")
-        # No slippage: use close price immediately
-        df_sim["trade_price"] = df_sim["close"]
-
-    # 5. Transaction Cost Model
-    log.info(f"TRANSACTION COSTS: ${transaction_fee:.2f} per trade (entry + exit = ${transaction_fee*2:.2f} round-trip)")
-    log.info(f"  -> Includes: SEC fees, exchange fees, clearing fees, and rounding")
-
-    # Walk forward simulation with costs
-    log.info("-"*60)
-    log.info("Beginning Walk-Forward Backtest...")
-    log.info("-"*60)
-    
-    cash = initial_cash
-    shares = 0
-    portfolio_values = []
-    trades = []
-    last_buy_price = 0.0
-    total_fees = 0.0
-    
-    # Initialize metrics to defaults to avoid UnboundLocalError if no trades occur
-    winning_trades = []
-    losing_trades = []
-    win_rate = 0.0
-
-    if len(trades) > 0:
-        winning_trades = [t for t in trades if t['pnl'] > 0]
-        losing_trades = [t for t in trades if t['pnl'] <= 0]
-        win_rate = len(winning_trades) / len(trades)
-
-    log.info(f"Total Round-Trip Trades: {len(trades)}")
-    log.info(f"Win Rate: {win_rate*100:.1f}% ({len(winning_trades)} wins, {len(losing_trades)} losses)")
-    
-    # Benchmark: Buy and Hold
-    initial_price = df_sim.iloc[0]["close"]
-    benchmark_shares = initial_cash / initial_price
-    
-    log.info(f"Benchmark Strategy: Buy & Hold {benchmark_shares:.2f} shares at ${initial_price:.2f}")
-    
-    for idx, row in df_sim.iterrows():
-        price = row["trade_price"]  # Use slippage-adjusted price
-        ts = row["ts"]
-        signal = row["signal"]
-        
-        action = None
-        
-        if signal == 1 and shares == 0:
-            # BUY: Whole shares only
-            # Account for transaction fee in available cash
-            possible_shares = int((cash - transaction_fee) // price)
-            if possible_shares > 0:
-                shares = possible_shares
-                cost = shares * price
-                cash -= (cost + transaction_fee)
+                    losing_trades.append(abs(net_pnl))
+                
+                # Deduct exit fee
+                cash += (proceeds - transaction_fee)
                 total_fees += transaction_fee
-                last_buy_price = price
-                action = "BUY"
-                log.debug(f"{ts}: BUY {shares} shares @ ${price:.2f} (fee: ${transaction_fee:.2f}, cash remaining: ${cash:.2f})")
+                
+                log.debug(f"{ts}: SELL {shares} shares @ ${price:.2f} | Net P&L: ${net_pnl:+.2f} ({pnl_pct:+.2f}%) | Equity: ${cash:.2f}")
+                
+                shares = 0
+                action = "SELL"
                 trades.append({
                     "ts": ts,
-                    "type": "BUY",
+                    "type": "SELL",
                     "price": price,
-                    "shares": shares,
-                    "value": cost,
+                    "shares": 0,
+                    "value": proceeds,
                     "fee": transaction_fee,
-                    "pnl": 0.0,
-                    "pnl_pct": 0.0
+                    "pnl": net_pnl,
+                    "pnl_pct": (net_pnl / (shares * last_buy_price)) * 100 if shares > 0 else 0
                 })
-        elif signal == 0 and shares > 0:
-            # SELL
-            proceeds = shares * price
-            
-            # Calculate PnL (before fees)
-            pnl = proceeds - (shares * last_buy_price)
-            pnl_pct = (price - last_buy_price) / last_buy_price * 100
-            
-            # Net PnL after both entry and exit fees
-            net_pnl = pnl - (2 * transaction_fee) # Entry + Exit fees
-            
-            # Categorize trade
-            if net_pnl > 0:
-                winning_trades.append(net_pnl)
+                
+            current_val = cash + (shares * price)
+            portfolio_values.append(current_val)
+        
+        df_sim["strategy_equity"] = portfolio_values
+        df_sim["benchmark_equity"] = df_sim["close"] * benchmark_shares
+        
+        # Calculate Quant Metrics
+        total_round_trips = len(winning_trades) + len(losing_trades)
+        
+        log.info("-"*60)
+        log.info("Backtest Complete - Calculating Performance Metrics...")
+        log.info("-"*60)
+        
+        # Trade Expectancy
+        if total_round_trips > 0:
+            win_rate = len(winning_trades) / total_round_trips
+            loss_rate = len(losing_trades) / total_round_trips
+            avg_win = np.mean(winning_trades) if winning_trades else 0.0
+            avg_loss = np.mean(losing_trades) if losing_trades else 0.0
+            expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+        else:
+            expectancy = 0.0
+            avg_win = 0.0
+            avg_loss = 0.0
+        
+        # Profit Factor
+        gross_profit = sum(winning_trades) if winning_trades else 0.0
+        gross_loss = sum(losing_trades) if losing_trades else 0.0
+        profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
+        
+        # System Quality Number (SQN)
+        if total_round_trips > 1:
+            all_pnl = [t["pnl"] for t in trades if t["type"] == "SELL"]
+            if len(all_pnl) > 1:
+                avg_pnl = np.mean(all_pnl)
+                std_pnl = np.std(all_pnl, ddof=1)
+                sqn = (avg_pnl / std_pnl) * np.sqrt(len(all_pnl)) if std_pnl > 0 else 0.0
             else:
-                losing_trades.append(abs(net_pnl))
-            
-            # Deduct exit fee
-            cash += (proceeds - transaction_fee)
-            total_fees += transaction_fee
-            
-            log.debug(f"{ts}: SELL {shares} shares @ ${price:.2f} | Net P&L: ${net_pnl:+.2f} ({pnl_pct:+.2f}%) | Equity: ${cash:.2f}")
-            
-            shares = 0
-            action = "SELL"
-            trades.append({
-                "ts": ts,
-                "type": "SELL",
-                "price": price,
-                "shares": 0,
-                "value": proceeds,
-                "fee": transaction_fee,
-                "pnl": net_pnl,
-                "pnl_pct": (net_pnl / (shares * last_buy_price)) * 100 if shares > 0 else 0
-            })
-            
-        current_val = cash + (shares * price)
-        portfolio_values.append(current_val)
-    
-    df_sim["strategy_equity"] = portfolio_values
-    df_sim["benchmark_equity"] = df_sim["close"] * benchmark_shares
-    
-    # Calculate Quant Metrics
-    total_round_trips = len(winning_trades) + len(losing_trades)
-    
-    log.info("-"*60)
-    log.info("Backtest Complete - Calculating Performance Metrics...")
-    log.info("-"*60)
-    
-    # Trade Expectancy
-    if total_round_trips > 0:
-        win_rate = len(winning_trades) / total_round_trips
-        loss_rate = len(losing_trades) / total_round_trips
-        avg_win = np.mean(winning_trades) if winning_trades else 0.0
-        avg_loss = np.mean(losing_trades) if losing_trades else 0.0
-        expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
-    else:
-        expectancy = 0.0
-        avg_win = 0.0
-        avg_loss = 0.0
-    
-    # Profit Factor
-    gross_profit = sum(winning_trades) if winning_trades else 0.0
-    gross_loss = sum(losing_trades) if losing_trades else 0.0
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
-    
-    # System Quality Number (SQN)
-    if total_round_trips > 1:
-        all_pnl = [t["pnl"] for t in trades if t["type"] == "SELL"]
-        if len(all_pnl) > 1:
-            avg_pnl = np.mean(all_pnl)
-            std_pnl = np.std(all_pnl, ddof=1)
-            sqn = (avg_pnl / std_pnl) * np.sqrt(len(all_pnl)) if std_pnl > 0 else 0.0
+                sqn = 0.0
         else:
             sqn = 0.0
-    else:
-        sqn = 0.0
-    
-    # Weekly Trade Consistency (for Holy Grail criteria)
-    trades_per_week = []
-    if total_round_trips > 0:
-        sell_trades = [t for t in trades if t["type"] == "SELL"]
-        if sell_trades:
-            # Group trades by ISO week
-            from collections import defaultdict
-            weekly_counts = defaultdict(int)
-            for t in sell_trades:
-                ts = t["ts"]
-                if hasattr(ts, 'isocalendar'):
-                    year, week, _ = ts.isocalendar()
-                    weekly_counts[(year, week)] += 1
-                elif isinstance(ts, str):
-                    from datetime import datetime as dt
-                    try:
-                        parsed_ts = dt.fromisoformat(ts.replace('Z', '+00:00'))
-                        year, week, _ = parsed_ts.isocalendar()
+        
+        # Weekly Trade Consistency (for Holy Grail criteria)
+        trades_per_week = []
+        if total_round_trips > 0:
+            sell_trades = [t for t in trades if t["type"] == "SELL"]
+            if sell_trades:
+                # Group trades by ISO week
+                from collections import defaultdict
+                weekly_counts = defaultdict(int)
+                for t in sell_trades:
+                    ts = t["ts"]
+                    if hasattr(ts, 'isocalendar'):
+                        year, week, _ = ts.isocalendar()
                         weekly_counts[(year, week)] += 1
-                    except:
-                        pass
-            trades_per_week = list(weekly_counts.values())
-    
-    # Results
-    valid_hits = df_sim["hit"].iloc[:-1]
-    hit_rate_pct = (valid_hits.sum() / len(valid_hits) * 100) if len(valid_hits) > 0 else 0.0
+                    elif isinstance(ts, str):
+                        from datetime import datetime as dt
+                        try:
+                            parsed_ts = dt.fromisoformat(ts.replace('Z', '+00:00'))
+                            year, week, _ = parsed_ts.isocalendar()
+                            weekly_counts[(year, week)] += 1
+                        except:
+                            pass
+                trades_per_week = list(weekly_counts.values())
+        
+        # Results
+        valid_hits = df_sim["hit"].iloc[:-1]
+        hit_rate_pct = (valid_hits.sum() / len(valid_hits) * 100) if len(valid_hits) > 0 else 0.0
 
-    final_equity = df_sim["strategy_equity"].iloc[-1]
-    strategy_return = (final_equity - initial_cash) / initial_cash * 100
-    benchmark_return = (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100
-    
-    log.info(f"Total Round-Trip Trades: {total_round_trips}")
-    log.info(f"Win Rate: {win_rate*100:.1f}% ({len(winning_trades)} wins, {len(losing_trades)} losses)")
-    log.info(f"Average Win: ${avg_win:.2f} | Average Loss: ${avg_loss:.2f}")
-    log.info(f"Expectancy (Avg P&L per trade): ${expectancy:.2f}")
-    log.info(f"Profit Factor (Gross Profit / Gross Loss): {profit_factor:.2f}")
-    log.info(f"System Quality Number (SQN): {sqn:.2f} {'(Excellent)' if sqn > 3 else '(Good)' if sqn > 2 else '(Fair)' if sqn > 1 else '(Poor)'}")
-    log.info(f"Total Fees Paid: ${total_fees:.2f} ({(total_fees/initial_cash)*100:.2f}% of capital)")
-    log.info(f"Hit Rate (Directional Accuracy): {hit_rate_pct:.1f}%")
-    log.info("-"*60)
-    log.info(f"FINAL RESULTS:")
-    log.info(f"  Strategy Return: {strategy_return:+.2f}% (${final_equity:,.2f})")
-    log.info(f"  Benchmark Return: {benchmark_return:+.2f}% (${df_sim['benchmark_equity'].iloc[-1]:,.2f})")
-    log.info(f"  Alpha (Outperformance): {strategy_return - benchmark_return:+.2f}%")
-    log.info("="*60)
+        final_equity = df_sim["strategy_equity"].iloc[-1]
+        strategy_return = (final_equity - initial_cash) / initial_cash * 100
+        benchmark_return = (df_sim["benchmark_equity"].iloc[-1] - initial_cash) / initial_cash * 100
+        
+        log.info(f"Total Round-Trip Trades: {total_round_trips}")
+        log.info(f"Win Rate: {win_rate*100:.1f}% ({len(winning_trades)} wins, {len(losing_trades)} losses)")
+        log.info(f"Average Win: ${avg_win:.2f} | Average Loss: ${avg_loss:.2f}")
+        log.info(f"Expectancy (Avg P&L per trade): ${expectancy:.2f}")
+        log.info(f"Profit Factor (Gross Profit / Gross Loss): {profit_factor:.2f}")
+        log.info(f"System Quality Number (SQN): {sqn:.2f} {'(Excellent)' if sqn > 3 else '(Good)' if sqn > 2 else '(Fair)' if sqn > 1 else '(Poor)'}")
+        log.info(f"Total Fees Paid: ${total_fees:.2f} ({(total_fees/initial_cash)*100:.2f}% of capital)")
+        log.info(f"Hit Rate (Directional Accuracy): {hit_rate_pct:.1f}%")
+        log.info("-"*60)
+        log.info(f"FINAL RESULTS:")
+        log.info(f"  Strategy Return: {strategy_return:+.2f}% (${final_equity:,.2f})")
+        log.info(f"  Benchmark Return: {benchmark_return:+.2f}% (${df_sim['benchmark_equity'].iloc[-1]:,.2f})")
+        log.info(f"  Alpha (Outperformance): {strategy_return - benchmark_return:+.2f}%")
+        log.info("="*60)
 
-    stats = {
-        "start_date": df_sim["ts"].min().isoformat(),
-        "end_date": df_sim["ts"].max().isoformat(),
-        "final_strategy_value": final_equity,
-        "final_benchmark_value": df_sim["benchmark_equity"].iloc[-1],
-        "strategy_return_pct": strategy_return,
-        "benchmark_return_pct": benchmark_return,
-        "total_trades": len(trades),
-        "trade_count": total_round_trips,  # Alias for orchestrator compatibility
-        "total_fees": total_fees,
-        "avg_fee_per_trade": total_fees / len(trades) if len(trades) > 0 else 0,
-        "hit_rate_pct": hit_rate_pct,
-        "bot_active": use_bot,
-        "slippage_enabled": enable_slippage,
-        "slippage_bars": slippage_bars if enable_slippage else 0,
-        # Quant Metrics
-        "expectancy": expectancy,
-        "sqn": sqn,
-        "avg_win": avg_win,
-        "avg_loss": avg_loss,
-        "win_rate": (len(winning_trades) / total_round_trips * 100) if total_round_trips > 0 else 0.0,
-        "profit_factor": profit_factor,
-        # Weekly Consistency (for Holy Grail criteria)
-        "trades_per_week": trades_per_week,
-        "weeks_traded": len(trades_per_week)
-    }
+        stats = {
+            "start_date": df_sim["ts"].min().isoformat(),
+            "end_date": df_sim["ts"].max().isoformat(),
+            "final_strategy_value": final_equity,
+            "final_benchmark_value": df_sim["benchmark_equity"].iloc[-1],
+            "strategy_return_pct": strategy_return,
+            "benchmark_return_pct": benchmark_return,
+            "total_trades": len(trades),
+            "trade_count": total_round_trips,  # Alias for orchestrator compatibility
+            "total_fees": total_fees,
+            "avg_fee_per_trade": total_fees / len(trades) if len(trades) > 0 else 0,
+            "hit_rate_pct": hit_rate_pct,
+            "bot_active": use_bot,
+            "slippage_enabled": enable_slippage,
+            "slippage_bars": slippage_bars if enable_slippage else 0,
+            # Quant Metrics
+            "expectancy": expectancy,
+            "sqn": sqn,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "win_rate": (len(winning_trades) / total_round_trips * 100) if total_round_trips > 0 else 0.0,
+            "profit_factor": profit_factor,
+            # Weekly Consistency (for Holy Grail criteria)
+            "trades_per_week": trades_per_week,
+            "weeks_traded": len(trades_per_week)
+        }
 
-    # Chart Data
-    chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity", "rolling_hit_rate"]].fillna(0).copy()
-    chart_data["ts"] = chart_data["ts"].dt.strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Save History
-    run_params = {
-        "initial_cash": initial_cash,
-        "use_bot": use_bot,
-        "min_prediction_threshold": min_prediction_threshold,
-        "enable_z_score_check": enable_z_score_check,
-        "volatility_normalization": volatility_normalization,
-        "slippage_bars": slippage_bars if enable_slippage else 0,
-        "transaction_fee": transaction_fee
-    }
-    
-    if save_to_history:
-        save_simulation_history(model_id, ticker, stats, run_params)
+        # Chart Data
+        chart_data = df_sim[["ts", "strategy_equity", "benchmark_equity", "rolling_hit_rate"]].fillna(0).copy()
+        chart_data["ts"] = chart_data["ts"].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Save History
+        run_params = {
+            "initial_cash": initial_cash,
+            "use_bot": use_bot,
+            "min_prediction_threshold": min_prediction_threshold,
+            "enable_z_score_check": enable_z_score_check,
+            "volatility_normalization": volatility_normalization,
+            "slippage_bars": slippage_bars if enable_slippage else 0,
+            "transaction_fee": transaction_fee
+        }
+        
+        if save_to_history:
+            save_simulation_history(model_id, ticker, stats, run_params)
 
-    return {
-        "stats": stats,
-        "trades": trades,
-        "chart_data": chart_data.to_dict(orient="records")
-    }
+        return {
+            "stats": stats,
+            "trades": trades,
+            "chart_data": chart_data.to_dict(orient="records")
+        }
+    
+    except Exception as e:
+        log.error(f"Simulation FAILED for {ticker} | {model_id[:12]}: {e}", exc_info=True)
+        # Return minimal error result instead of crashing
+        return {
+            "stats": {
+                "strategy_return_pct": 0.0,
+                "total_trades": 0,
+                "hit_rate_pct": 0.0,
+                "final_strategy_value": initial_cash,
+                "total_fees": 0.0,
+                "sqn": 0.0,
+                "expectancy": 0.0,
+                "profit_factor": 0.0,
+                "error": str(e)
+            },
+            "trades": [],
+            "chart_data": []
+        }
