@@ -230,7 +230,8 @@ class TrainingDB:
         
         if metrics:
             updates.append(f"metrics = ${param_idx}")
-            params.append(json.loads(metrics) if isinstance(metrics, str) else metrics)
+            # Keep as JSON string for asyncpg JSONB column
+            params.append(metrics if isinstance(metrics, str) else json.dumps(metrics))
             param_idx += 1
         
         if artifact_path:
@@ -245,7 +246,8 @@ class TrainingDB:
         
         if feature_cols:
             updates.append(f"feature_cols = ${param_idx}")
-            params.append(json.loads(feature_cols) if isinstance(feature_cols, str) else feature_cols)
+            # Keep as JSON string for asyncpg JSONB column
+            params.append(feature_cols if isinstance(feature_cols, str) else json.dumps(feature_cols))
             param_idx += 1
         
         if target_transform:

@@ -576,3 +576,180 @@ class TestJSONBSerialization:
         assert model['hyperparameters']['alpha'] == 50.0
         assert model['alpha_grid'] == [1.0, 10.0, 50.0, 100.0]
         assert model['context_symbols'] == ['MSFT', 'AAPL', 'GOOGL']
+    
+    async def test_update_model_status_with_json_string_metrics(self, training_db):
+        """
+        Test updating model with metrics as JSON string.
+        
+        Regression test for bug where update_model_status did json.loads() on metrics
+        before passing to asyncpg, causing TypeError similar to create_model_record bug.
+        
+        Error: invalid input for query argument $2: {'tuned_params': {...}} (expected str, got dict)
+        """
+        model_id = str(uuid.uuid4())
+        
+        # Create initial model
+        model_data = {
+            'id': model_id,
+            'name': 'test-update-metrics',
+            'algorithm': 'Ridge',
+            'symbol': 'GOOGL',
+            'target_col': 'close',
+            'feature_cols': json.dumps(['rsi', 'macd']),
+            'hyperparameters': json.dumps({'alpha': 1.0}),
+            'metrics': json.dumps({}),
+            'status': 'pending',
+            'timeframe': '1m',
+            'fingerprint': 'test_update_fp'
+        }
+        await training_db.create_model_record(model_data)
+        
+        # Update with complex metrics (as JSON string)
+        complex_metrics = {
+            'tuned_params': {
+                'model__alpha': 0.0001,
+                'model__l1_ratio': 0.5
+            },
+            'cv_detail': [
+                {'fold': 0, 'mse': 0.001, 'r2': 0.95},
+                {'fold': 1, 'mse': 0.002, 'r2': 0.93}
+            ],
+            'feature_importance': {
+                'rsi': 0.6,
+                'macd': 0.4
+            },
+            'accuracy': 0.94
+        }
+        
+        # Should not raise TypeError
+        await training_db.update_model_status(
+            model_id,
+            status='completed',
+            metrics=json.dumps(complex_metrics)
+        )
+        
+        # Verify metrics stored correctly
+        model = await training_db.get_model(model_id)
+        assert model['status'] == 'completed'
+        assert model['metrics']['tuned_params']['model__alpha'] == 0.0001
+        assert len(model['metrics']['cv_detail']) == 2
+        assert model['metrics']['accuracy'] == 0.94
+    
+    async def test_update_model_status_with_python_dict_metrics(self, training_db):
+        """
+        Test updating model with metrics as Python dict.
+        
+        The function should handle both JSON strings and Python dicts.
+        """
+        model_id = str(uuid.uuid4())
+        
+        # Create initial model
+        model_data = {
+            'id': model_id,
+            'algorithm': 'ElasticNet',
+            'symbol': 'MSFT',
+            'feature_cols': json.dumps([]),
+            'hyperparameters': json.dumps({}),
+            'metrics': json.dumps({}),
+            'status': 'training',
+            'fingerprint': 'test_dict_metrics_fp'
+        }
+        await training_db.create_model_record(model_data)
+        
+        # Update with Python dict (not JSON string)
+        metrics_dict = {
+            'mse': 0.003,
+            'r2': 0.92,
+            'features_count': 15
+        }
+        
+        # Should handle Python dict and convert to JSON string
+        await training_db.update_model_status(
+            model_id,
+            status='completed',
+            metrics=metrics_dict  # Pass as dict, not JSON string
+        )
+        
+        # Verify stored correctly
+        model = await training_db.get_model(model_id)
+        assert model['metrics']['mse'] == 0.003
+        assert model['metrics']['r2'] == 0.92
+        assert model['metrics']['features_count'] == 15
+    
+    async def test_update_feature_cols_with_json_string(self, training_db):
+        """
+        Test updating feature_cols as JSON string.
+        
+        Regression test for the same json.loads() bug in feature_cols parameter.
+        """
+        model_id = str(uuid.uuid4())
+        
+        # Create with empty features
+        model_data = {
+            'id': model_id,
+            'algorithm': 'Lasso',
+            'symbol': 'AAPL',
+            'feature_cols': json.dumps([]),
+            'hyperparameters': json.dumps({}),
+            'metrics': json.dumps({}),
+            'status': 'preprocessing',
+            'fingerprint': 'test_feature_cols_fp'
+        }
+        await training_db.create_model_record(model_data)
+        
+        # Update with feature list (as JSON string)
+        features = ['sma_20', 'ema_50', 'rsi_14', 'macd', 'bb_upper', 'bb_lower']
+        
+        # Should not raise TypeError
+        await training_db.update_model_status(
+            model_id,
+            status='completed',
+            feature_cols=json.dumps(features)
+        )
+        
+        # Verify features stored correctly
+        model = await training_db.get_model(model_id)
+        assert model['feature_cols'] == features
+        assert len(model['feature_cols']) == 6
+    
+    async def test_update_with_mixed_jsonb_types(self, training_db):
+        """
+        Test updating model with mixed JSONB field types (strings and dicts).
+        
+        Real-world scenario where some fields come as JSON strings from trainer
+        and need to handle both correctly.
+        """
+        model_id = str(uuid.uuid4())
+        
+        # Create model
+        model_data = {
+            'id': model_id,
+            'algorithm': 'RandomForest',
+            'symbol': 'QQQ',
+            'feature_cols': json.dumps(['f1', 'f2']),
+            'hyperparameters': json.dumps({'n_estimators': 100}),
+            'metrics': json.dumps({}),
+            'status': 'training',
+            'fingerprint': 'test_mixed_update_fp'
+        }
+        await training_db.create_model_record(model_data)
+        
+        # Update with JSON string metrics and feature_cols
+        await training_db.update_model_status(
+            model_id,
+            status='completed',
+            metrics=json.dumps({
+                'accuracy': 0.97,
+                'dropped_cols': ['f3'],
+                'tuned_params': {'max_depth': 10}
+            }),
+            feature_cols=json.dumps(['f1', 'f2'])  # Same as initial
+        )
+        
+        # Verify all updates applied correctly
+        model = await training_db.get_model(model_id)
+        assert model['status'] == 'completed'
+        assert model['metrics']['accuracy'] == 0.97
+        assert model['metrics']['dropped_cols'] == ['f3']
+        assert model['feature_cols'] == ['f1', 'f2']
+

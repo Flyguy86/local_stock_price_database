@@ -101,7 +101,8 @@ class SyncDBWrapper:
             
             if metrics:
                 updates.append(f"metrics = ${param_idx}")
-                params.append(json.loads(metrics) if isinstance(metrics, str) else metrics)
+                # Keep as JSON string for asyncpg JSONB column
+                params.append(metrics if isinstance(metrics, str) else json.dumps(metrics))
                 param_idx += 1
             
             if artifact_path:
@@ -116,7 +117,8 @@ class SyncDBWrapper:
             
             if feature_cols:
                 updates.append(f"feature_cols = ${param_idx}")
-                params.append(json.loads(feature_cols) if isinstance(feature_cols, str) else feature_cols)
+                # Keep as JSON string for asyncpg JSONB column
+                params.append(feature_cols if isinstance(feature_cols, str) else json.dumps(feature_cols))
                 param_idx += 1
             
             if target_transform:
@@ -152,11 +154,14 @@ class SyncDBWrapper:
         async def _create():
             pool = await self._get_or_create_pool()
             
-            # Convert JSON fields to proper format
+            # Ensure JSONB fields are kept as JSON strings for asyncpg
+            # asyncpg expects JSON strings for JSONB columns, not Python objects
             for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options',
                               'alpha_grid', 'l1_ratio_grid', 'regime_configs', 'context_symbols']:
-                if json_field in data and isinstance(data[json_field], str):
-                    data[json_field] = json.loads(data[json_field])
+                if json_field in data:
+                    # If it's a Python object (dict/list), convert to JSON string
+                    if not isinstance(data[json_field], str) and data[json_field] is not None:
+                        data[json_field] = json.dumps(data[json_field])
             
             columns = list(data.keys())
             values = list(data.values())
