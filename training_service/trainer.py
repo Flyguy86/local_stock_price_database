@@ -584,7 +584,7 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 if np.count_nonzero(coefs) == 0:
                     log.warning("ElasticNet grid search produced ALL ZERO coefficients. This indicates VERY WEAK SIGNAL (features have almost no correlation with target).")
                     log.warning("Attempting fallback to LinearRegression (OLS with no regularization) to get baseline...")
-                    from sklearn.linear_model import LinearRegression
+                    # LinearRegression already imported at top of file
                     
                     # Create OLS pipeline
                     ols_model = Pipeline([
