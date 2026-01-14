@@ -175,6 +175,15 @@ async def dashboard():
     """)
 
 
+@app.get("/models", response_class=HTMLResponse)
+async def models_browser():
+    """Serve the model browser and simulation launcher UI."""
+    template_path = TEMPLATES_DIR / "models.html"
+    if template_path.exists():
+        return HTMLResponse(content=template_path.read_text())
+    return HTMLResponse(content="<html><body><h1>Model Browser</h1><p>Template not found</p></body></html>")
+
+
 @app.get("/api/info")
 async def api_info():
     """API information endpoint (JSON)."""
@@ -846,6 +855,249 @@ async def get_pending_jobs(run_id: Optional[str] = None):
             count = row["cnt"]
     
     return {"pending": count}
+
+
+# ============================================
+# Train-Only Mode (Evolution without Simulations)
+# ============================================
+
+class TrainOnlyRequest(BaseModel):
+    """Request to train and evolve models without running simulations."""
+    seed_model_id: Optional[str] = None
+    seed_features: Optional[List[str]] = None
+    symbol: str
+    reference_symbols: Optional[List[str]] = None
+    algorithm: str = "elasticnet_regression"
+    target_col: str = "close"
+    hyperparameters: Dict[str, Any] = {}
+    target_transform: str = "log_return"
+    max_generations: int = 4
+    prune_fraction: float = 0.25
+    min_features: int = 5
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    alpha_grid: Optional[List[float]] = None
+    l1_ratio_grid: Optional[List[float]] = None
+
+
+@app.post("/train-only")
+async def train_only(req: TrainOnlyRequest, background_tasks: BackgroundTasks):
+    """
+    Train and evolve models for X generations WITHOUT running simulations.
+    
+    Use this when you want to explore different model configurations
+    and manually select which ones to run grid search simulations on later.
+    """
+    seed_features = req.seed_features
+    
+    # Auto-fetch features if not provided
+    if not req.seed_model_id and not seed_features:
+        log.info(f"Fetching seed features for {req.symbol} from parquet")
+        seed_features = _get_feature_columns_from_parquet(req.symbol)
+        
+        if seed_features:
+            log.info(f"Auto-fetched {len(seed_features)} features for {req.symbol}")
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No feature data found for symbol {req.symbol}"
+            )
+    
+    # Build data_options
+    data_options = req.data_options
+    if req.reference_symbols and len(req.reference_symbols) > 0:
+        import json
+        opts = json.loads(data_options) if data_options else {}
+        opts['reference_symbols'] = req.reference_symbols
+        data_options = json.dumps(opts)
+    
+    config = EvolutionConfig(
+        seed_model_id=req.seed_model_id,
+        seed_features=seed_features,
+        symbol=req.symbol,
+        simulation_tickers=[],  # Empty - no simulations
+        algorithm=req.algorithm,
+        target_col=req.target_col,
+        hyperparameters=req.hyperparameters,
+        target_transform=req.target_transform,
+        max_generations=req.max_generations,
+        prune_fraction=req.prune_fraction,
+        min_features=req.min_features,
+        data_options=data_options,
+        timeframe=req.timeframe,
+        thresholds=[],  # No simulation grid
+        z_score_thresholds=[],
+        regime_configs=[],
+        alpha_grid=req.alpha_grid,
+        l1_ratio_grid=req.l1_ratio_grid
+    )
+    
+    # Run in background
+    async def run_in_background():
+        try:
+            result = await engine.run_evolution(config)
+            log.info(f"Train-only evolution completed: {result}")
+        except Exception as e:
+            log.error(f"Train-only evolution failed: {e}")
+    
+    background_tasks.add_task(run_in_background)
+    
+    return {
+        "status": "started",
+        "mode": "train-only",
+        "message": f"Training {req.max_generations} generations for {req.symbol} (no simulations)",
+        "max_generations": req.max_generations
+    }
+
+
+# ============================================
+# Model Browser with Fingerprints & Metrics
+# ============================================
+
+@app.get("/models/browse")
+async def browse_models(
+    symbol: Optional[str] = None,
+    algorithm: Optional[str] = None,
+    status: Optional[str] = None,
+    min_accuracy: Optional[float] = None,
+    limit: int = 100
+):
+    """
+    Browse all models with full details: fingerprint, metrics, feature importance.
+    
+    Use this to explore trained models and select which ones to run simulations with.
+    """
+    import httpx
+    
+    # Get models from training service
+    params = {}
+    if symbol:
+        params["symbol"] = symbol
+    if algorithm:
+        params["algorithm"] = algorithm
+    if status:
+        params["status"] = status
+    params["limit"] = limit
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            "http://training_service:8200/models",
+            params=params
+        )
+        resp.raise_for_status()
+        models = resp.json()
+    
+    # Filter by accuracy if requested
+    if min_accuracy is not None:
+        models = [
+            m for m in models 
+            if m.get("metrics", {}).get("accuracy", 0) >= min_accuracy
+        ]
+    
+    # Enrich with feature importance for each model
+    enriched_models = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for model in models:
+            try:
+                # Get feature importance
+                imp_resp = await client.get(
+                    f"http://training_service:8200/api/model/{model['id']}/importance"
+                )
+                if imp_resp.status_code == 200:
+                    model["importance"] = imp_resp.json()
+            except:
+                model["importance"] = None
+            
+            enriched_models.append(model)
+    
+    return {
+        "models": enriched_models,
+        "count": len(enriched_models),
+        "filtered_by": {
+            "symbol": symbol,
+            "algorithm": algorithm,
+            "status": status,
+            "min_accuracy": min_accuracy
+        }
+    }
+
+
+# ============================================
+# Manual Simulation Launcher
+# ============================================
+
+class ManualSimulationRequest(BaseModel):
+    """Request to run grid search simulations for specific models."""
+    model_ids: List[str]
+    simulation_tickers: List[str]
+    thresholds: List[float] = [0.0001, 0.0003, 0.0005, 0.0007]
+    z_score_thresholds: List[float] = [0, 2.0, 2.5, 3.0, 3.5]
+    regime_configs: List[Dict[str, Any]] = [
+        {"regime_vix": [3]},  # Bull Quiet (Best)
+        {"regime_gmm": [0]},  # Low volatility
+    ]
+    sqn_min: float = 1.9
+    profit_factor_min: float = 1.3
+    trade_count_min: int = 20
+
+
+@app.post("/simulations/manual")
+async def run_manual_simulations(req: ManualSimulationRequest):
+    """
+    Run grid search simulations for manually selected models.
+    
+    After training and reviewing model metrics/fingerprints,
+    use this to run full simulation grid searches on the best candidates.
+    """
+    if not req.model_ids:
+        raise HTTPException(status_code=400, detail="No model IDs provided")
+    
+    if not req.simulation_tickers:
+        raise HTTPException(status_code=400, detail="No simulation tickers provided")
+    
+    # Calculate total simulations
+    total_per_model = (
+        len(req.simulation_tickers) *
+        len(req.thresholds) *
+        len(req.z_score_thresholds) *
+        len(req.regime_configs)
+    )
+    total_sims = total_per_model * len(req.model_ids)
+    
+    log.info(f"Manual simulation request: {len(req.model_ids)} models × {total_per_model} sims/model = {total_sims} total")
+    
+    # Create simulation jobs for each model
+    job_ids = []
+    for model_id in req.model_ids:
+        for ticker in req.simulation_tickers:
+            for threshold in req.thresholds:
+                for z_score in req.z_score_thresholds:
+                    for regime_cfg in req.regime_configs:
+                        job_id = await db.create_priority_job(
+                            job_type="SIMULATION",
+                            model_id=model_id,
+                            ticker=ticker,
+                            config={
+                                "threshold": threshold,
+                                "z_score_threshold": z_score,
+                                "regime_config": regime_cfg,
+                                "sqn_min": req.sqn_min,
+                                "profit_factor_min": req.profit_factor_min,
+                                "trade_count_min": req.trade_count_min
+                            },
+                            priority=5  # Normal priority
+                        )
+                        job_ids.append(job_id)
+    
+    return {
+        "status": "queued",
+        "model_count": len(req.model_ids),
+        "ticker_count": len(req.simulation_tickers),
+        "simulations_per_model": total_per_model,
+        "total_simulations": total_sims,
+        "job_ids": job_ids[:10],  # Return first 10 job IDs
+        "total_jobs": len(job_ids)
+    }
 
 
 # ============================================

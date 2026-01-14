@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <link rel="icon" href="data:,">
+  <title>Model Browser - Orchestrator</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    :root {
+      --bg-dark: #0f0f0f;
+      --bg-card: #1a1a1a;
+      --bg-hover: #242424;
+      --border: #333;
+      --text: #e0e0e0;
+      --text-muted: #888;
+      --primary: #3b82f6;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --error: #ef4444;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-dark);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 1rem;
+    }
+    
+    header {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
+    h2 { font-size: 1.3rem; margin-bottom: 1rem; color: var(--primary); }
+    
+    .filters {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    
+    .filters label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+    
+    .filters input, .filters select {
+      width: 100%;
+      padding: 0.5rem;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    
+    button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    
+    button:hover { opacity: 0.9; transform: translateY(-1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #374151; }
+    button.success { background: var(--success); }
+    
+    .model-grid {
+      display: grid;
+      gap: 1rem;
+    }
+    
+    .model-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem;
+      transition: all 0.2s;
+      position: relative;
+    }
+    
+    .model-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
+    }
+    
+    .model-card.selected {
+      border-color: var(--success);
+      background: rgba(16, 185, 129, 0.05);
+    }
+    
+    .model-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }
+    
+    .model-title {
+      flex: 1;
+    }
+    
+    .model-id {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+    
+    .model-name {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin: 0.3rem 0;
+    }
+    
+    .model-checkbox {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    
+    .model-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    
+    .metric {
+      background: var(--bg-dark);
+      padding: 0.6rem;
+      border-radius: 4px;
+    }
+    
+    .metric-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 0.2rem;
+    }
+    
+    .metric-value {
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+    
+    .fingerprint {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 4px;
+      padding: 0.6rem;
+      margin-bottom: 0.75rem;
+      font-family: monospace;
+      font-size: 0.75rem;
+      word-break: break-all;
+      color: #60a5fa;
+    }
+    
+    .features {
+      background: var(--bg-dark);
+      padding: 0.6rem;
+      border-radius: 4px;
+      max-height: 100px;
+      overflow-y: auto;
+      font-size: 0.8rem;
+    }
+    
+    .features-count {
+      font-weight: 600;
+      color: var(--primary);
+      margin-bottom: 0.3rem;
+    }
+    
+    .feature-importance {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.2rem;
+    }
+    
+    .feature-name {
+      flex: 1;
+      color: var(--text-muted);
+    }
+    
+    .importance-bar {
+      flex: 2;
+      height: 8px;
+      background: var(--bg-card);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    
+    .importance-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--success));
+      transition: width 0.3s;
+    }
+    
+    .importance-value {
+      min-width: 45px;
+      text-align: right;
+      font-size: 0.8rem;
+    }
+    
+    .status-badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    
+    .status-completed { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+    .status-failed { background: rgba(239, 68, 68, 0.2); color: var(--error); }
+    .status-training { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
+    
+    .selection-panel {
+      position: sticky;
+      top: 1rem;
+      background: var(--bg-card);
+      border: 2px solid var(--success);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    
+    .selection-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    
+    .selection-count {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--success);
+    }
+    
+    #simulation-config {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--bg-dark);
+      border-radius: 6px;
+    }
+    
+    .config-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-muted);
+    }
+    
+    .spinner {
+      border: 3px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔍 Model Browser & Simulation Launcher</h1>
+    <p style="color: var(--text-muted); margin-top: 0.5rem;">
+      Explore trained models, view fingerprints & metrics, then launch grid search simulations
+    </p>
+    <div style="margin-top: 1rem;">
+      <a href="/" style="color: var(--primary); text-decoration: none;">← Back to Dashboard</a>
+    </div>
+  </header>
+
+  <div class="filters">
+    <div>
+      <label>Symbol</label>
+      <input type="text" id="filter-symbol" placeholder="e.g., GOOGL">
+    </div>
+    <div>
+      <label>Algorithm</label>
+      <select id="filter-algorithm">
+        <option value="">All</option>
+        <option value="elasticnet_regression">ElasticNet</option>
+        <option value="xgboost_regressor">XGBoost</option>
+        <option value="random_forest_regressor">Random Forest</option>
+        <option value="lightgbm_regressor">LightGBM</option>
+      </select>
+    </div>
+    <div>
+      <label>Status</label>
+      <select id="filter-status">
+        <option value="">All</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="training">Training</option>
+      </select>
+    </div>
+    <div>
+      <label>Min Accuracy (%)</label>
+      <input type="number" id="filter-accuracy" min="0" max="100" step="1" placeholder="e.g., 85">
+    </div>
+    <div>
+      <label>Max Results</label>
+      <input type="number" id="filter-limit" value="50" min="10" max="500" step="10">
+    </div>
+    <div style="display: flex; align-items: flex-end;">
+      <button onclick="loadModels()" style="width: 100%;">🔍 Search Models</button>
+    </div>
+  </div>
+
+  <div id="selection-panel" class="selection-panel" style="display: none;">
+    <div class="selection-header">
+      <div>
+        <h2 style="margin: 0;">Selected Models</h2>
+        <div class="selection-count"><span id="selection-count">0</span> models</div>
+      </div>
+      <div>
+        <button onclick="clearSelection()" class="secondary">Clear</button>
+        <button onclick="toggleSimConfig()" class="success" id="sim-config-toggle">Configure Simulations</button>
+      </div>
+    </div>
+    
+    <div id="simulation-config" style="display: none;">
+      <h3 style="margin-bottom: 0.75rem;">Simulation Grid Configuration</h3>
+      
+      <div class="config-row">
+        <div>
+          <label>Tickers (comma-separated)</label>
+          <input type="text" id="sim-tickers" value="GOOGL, MSFT, AAPL" placeholder="SYMBOL1, SYMBOL2...">
+        </div>
+      </div>
+      
+      <div class="config-row">
+        <div>
+          <label>Thresholds (comma-separated)</label>
+          <input type="text" id="sim-thresholds" value="0.0001, 0.0003, 0.0005, 0.0007">
+        </div>
+        <div>
+          <label>Z-Score Filters (comma-separated)</label>
+          <input type="text" id="sim-z-scores" value="0, 2.0, 2.5, 3.0, 3.5">
+        </div>
+      </div>
+      
+      <div class="config-row">
+        <div>
+          <label>Min SQN</label>
+          <input type="number" id="sim-sqn-min" value="1.9" step="0.1">
+        </div>
+        <div>
+          <label>Min Profit Factor</label>
+          <input type="number" id="sim-pf-min" value="1.3" step="0.1">
+        </div>
+        <div>
+          <label>Min Trades</label>
+          <input type="number" id="sim-trades-min" value="20" step="1">
+        </div>
+      </div>
+      
+      <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px;">
+        <strong>Estimated Simulations:</strong> <span id="sim-estimate">-</span>
+      </div>
+      
+      <button onclick="launchSimulations()" class="success" style="width: 100%; margin-top: 1rem; padding: 0.8rem;">
+        🚀 Launch Grid Search Simulations
+      </button>
+    </div>
+  </div>
+
+  <div id="models-container" class="loading">
+    <div class="spinner"></div>
+    <p>Click "Search Models" to load models...</p>
+  </div>
+
+  <script>
+    let selectedModels = new Set();
+    let allModels = [];
+
+    function parseCSV(str) {
+      return str.split(',').map(s => s.trim()).filter(s => s);
+    }
+
+    function updateSelectionPanel() {
+      const panel = document.getElementById('selection-panel');
+      const count = document.getElementById('selection-count');
+      
+      count.textContent = selectedModels.size;
+      panel.style.display = selectedModels.size > 0 ? 'block' : 'none';
+      
+      updateSimEstimate();
+    }
+
+    function updateSimEstimate() {
+      const tickers = parseCSV(document.getElementById('sim-tickers').value);
+      const thresholds = parseCSV(document.getElementById('sim-thresholds').value);
+      const zScores = parseCSV(document.getElementById('sim-z-scores').value);
+      const regimes = 2; // Hardcoded for now
+      
+      const perModel = tickers.length * thresholds.length * zScores.length * regimes;
+      const total = perModel * selectedModels.size;
+      
+      document.getElementById('sim-estimate').textContent = 
+        `${selectedModels.size} models × ${perModel} sims/model = ${total.toLocaleString()} total`;
+    }
+
+    function toggleModel(modelId) {
+      if (selectedModels.has(modelId)) {
+        selectedModels.delete(modelId);
+      } else {
+        selectedModels.add(modelId);
+      }
+      
+      const card = document.querySelector(`[data-model-id="${modelId}"]`);
+      if (card) {
+        card.classList.toggle('selected');
+      }
+      
+      updateSelectionPanel();
+    }
+
+    function clearSelection() {
+      selectedModels.clear();
+      document.querySelectorAll('.model-card').forEach(card => {
+        card.classList.remove('selected');
+      });
+      document.querySelectorAll('.model-checkbox').forEach(cb => {
+        cb.checked = false;
+      });
+      updateSelectionPanel();
+    }
+
+    function toggleSimConfig() {
+      const config = document.getElementById('simulation-config');
+      const btn = document.getElementById('sim-config-toggle');
+      const isHidden = config.style.display === 'none';
+      
+      config.style.display = isHidden ? 'block' : 'none';
+      btn.textContent = isHidden ? 'Hide Config' : 'Configure Simulations';
+    }
+
+    async function loadModels() {
+      const container = document.getElementById('models-container');
+      container.innerHTML = '<div class="spinner"></div><p>Loading models...</p>';
+      
+      const params = new URLSearchParams();
+      const symbol = document.getElementById('filter-symbol').value;
+      const algorithm = document.getElementById('filter-algorithm').value;
+      const status = document.getElementById('filter-status').value;
+      const minAccuracy = document.getElementById('filter-accuracy').value;
+      const limit = document.getElementById('filter-limit').value;
+      
+      if (symbol) params.append('symbol', symbol);
+      if (algorithm) params.append('algorithm', algorithm);
+      if (status) params.append('status', status);
+      if (minAccuracy) params.append('min_accuracy', parseFloat(minAccuracy) / 100);
+      params.append('limit', limit);
+      
+      try {
+        const resp = await fetch(`/models/browse?${params}`);
+        const data = await resp.json();
+        allModels = data.models;
+        
+        renderModels(allModels);
+      } catch (err) {
+        container.innerHTML = `<p style="color: var(--error);">Error loading models: ${err.message}</p>`;
+      }
+    }
+
+    function renderModels(models) {
+      const container = document.getElementById('models-container');
+      
+      if (models.length === 0) {
+        container.innerHTML = '<p style="text-align: center; color: var(--text-muted); padding: 3rem;">No models found matching filters</p>';
+        return;
+      }
+      
+      container.innerHTML = '';
+      const grid = document.createElement('div');
+      grid.className = 'model-grid';
+      
+      models.forEach(model => {
+        const card = document.createElement('div');
+        card.className = 'model-card';
+        card.setAttribute('data-model-id', model.id);
+        if (selectedModels.has(model.id)) {
+          card.classList.add('selected');
+        }
+        
+        const metrics = model.metrics || {};
+        const importance = model.importance?.importance || {};
+        const features = model.feature_cols || [];
+        
+        const statusClass = `status-${model.status || 'unknown'}`;
+        
+        // Top features by importance
+        const topFeatures = Object.entries(importance)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10);
+        
+        card.innerHTML = `
+          <div class="model-header">
+            <div class="model-title">
+              <div class="model-id">${model.id}</div>
+              <div class="model-name">${model.name || 'Unnamed Model'}</div>
+              <span class="status-badge ${statusClass}">${model.status || 'unknown'}</span>
+            </div>
+            <input type="checkbox" class="model-checkbox" ${selectedModels.has(model.id) ? 'checked' : ''} 
+                   onchange="toggleModel('${model.id}')">
+          </div>
+          
+          <div class="fingerprint">
+            🔑 ${model.fingerprint || 'No fingerprint'}
+          </div>
+          
+          <div class="model-metrics">
+            <div class="metric">
+              <div class="metric-label">Algorithm</div>
+              <div class="metric-value" style="font-size: 0.9rem;">${model.algorithm || 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Symbol</div>
+              <div class="metric-value">${model.symbol || 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Accuracy</div>
+              <div class="metric-value">${metrics.accuracy ? (metrics.accuracy * 100).toFixed(1) + '%' : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">R²</div>
+              <div class="metric-value">${metrics.r2 ? metrics.r2.toFixed(3) : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">MSE</div>
+              <div class="metric-value">${metrics.mse ? metrics.mse.toFixed(6) : 'N/A'}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Features</div>
+              <div class="metric-value">${features.length || 0}</div>
+            </div>
+          </div>
+          
+          ${topFeatures.length > 0 ? `
+            <div class="features">
+              <div class="features-count">Top Features (by importance)</div>
+              ${topFeatures.map(([name, value]) => `
+                <div class="feature-importance">
+                  <div class="feature-name">${name}</div>
+                  <div class="importance-bar">
+                    <div class="importance-fill" style="width: ${value * 100}%"></div>
+                  </div>
+                  <div class="importance-value">${value.toFixed(3)}</div>
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+        `;
+        
+        grid.appendChild(card);
+      });
+      
+      container.appendChild(grid);
+    }
+
+    async function launchSimulations() {
+      if (selectedModels.size === 0) {
+        alert('Please select at least one model');
+        return;
+      }
+      
+      const tickers = parseCSV(document.getElementById('sim-tickers').value);
+      const thresholds = parseCSV(document.getElementById('sim-thresholds').value).map(parseFloat);
+      const zScores = parseCSV(document.getElementById('sim-z-scores').value).map(parseFloat);
+      
+      if (tickers.length === 0) {
+        alert('Please enter at least one ticker');
+        return;
+      }
+      
+      const payload = {
+        model_ids: Array.from(selectedModels),
+        simulation_tickers: tickers,
+        thresholds: thresholds,
+        z_score_thresholds: zScores,
+        regime_configs: [
+          {"regime_vix": [3]},
+          {"regime_gmm": [0]}
+        ],
+        sqn_min: parseFloat(document.getElementById('sim-sqn-min').value),
+        profit_factor_min: parseFloat(document.getElementById('sim-pf-min').value),
+        trade_count_min: parseInt(document.getElementById('sim-trades-min').value)
+      };
+      
+      try {
+        const resp = await fetch('/simulations/manual', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        
+        const result = await resp.json();
+        
+        alert(`✅ Launched ${result.total_simulations.toLocaleString()} simulations for ${result.model_count} models!\n\nTotal jobs: ${result.total_jobs}`);
+        
+      } catch (err) {
+        alert(`❌ Error launching simulations: ${err.message}`);
+      }
+    }
+
+    // Update sim estimate when inputs change
+    document.querySelectorAll('#sim-tickers, #sim-thresholds, #sim-z-scores').forEach(input => {
+      input.addEventListener('input', updateSimEstimate);
+    });
+  </script>
+</body>
+</html>
