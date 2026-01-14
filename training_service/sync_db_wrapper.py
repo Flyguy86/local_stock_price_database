@@ -41,7 +41,8 @@ class SyncDBWrapper:
                         POSTGRES_URL,
                         min_size=1,
                         max_size=3,
-                        command_timeout=30
+                        command_timeout=30,
+                        statement_cache_size=0  # Disable statement caching to prevent collisions
                     )
         return self._pool
     

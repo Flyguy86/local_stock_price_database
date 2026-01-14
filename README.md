@@ -23,7 +23,16 @@ The project includes a comprehensive test suite with **208+ tests** across 7 cat
 
 ### Running Tests
 ```bash
-# Run all tests
+# Run all tests via Docker Compose (runs on startup)
+docker-compose up  # test_runner container runs unit tests automatically
+
+# Run full test suite (including slow integration tests)
+docker-compose run tests-full
+
+# Run with coverage report
+docker-compose run tests-coverage
+
+# Run locally
 ./run_unit_tests.sh
 
 # Run by category
@@ -41,6 +50,13 @@ pytest tests/error_handling/ -v
 # With coverage
 ./run_unit_tests.sh --coverage
 ```
+
+### Docker Test Infrastructure
+The `test_runner` service runs automatically on `docker-compose up`:
+- Runs all unit tests including database integration tests
+- Skips only tests marked `@pytest.mark.slow`
+- Connects to PostgreSQL at `postgres:5432` (Docker network)
+- Uses `statement_cache_size=0` to prevent asyncpg prepared statement collisions
 
 ### CI/CD Pipeline
 Tests run automatically on GitHub Actions for:

@@ -12,13 +12,13 @@ import asyncio
 import json
 import numpy as np
 import pandas as pd
+import uuid
 from pathlib import Path
 from httpx import AsyncClient
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from training_service.main import app, db
 from training_service.trainer import train_model_task
-from training_service.sync_db_wrapper import sync_get_model_by_id
 
 
 class TestGridSearchWorkflow:
@@ -327,9 +327,6 @@ class TestGridSearchWorkflow:
             # Should have standard regression metrics
             assert "mse" in metrics or "test_mse" in metrics, "Missing MSE metric"
             assert "r2" in metrics or "test_r2" in metrics, "Missing R2 metric"
-
-
-import uuid
 
 
 @pytest.fixture

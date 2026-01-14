@@ -30,6 +30,11 @@ def cpu_intensive_task(task_id, duration=1):
     }
 
 
+def failing_task(task_id):
+    """Module-level function that raises an error (can be pickled)."""
+    raise ValueError(f"Task {task_id} failed intentionally")
+
+
 def task_with_db_access(task_id):
     """Simulate training task that accesses database."""
     import os
@@ -45,7 +50,7 @@ def task_with_db_access(task_id):
     # Set test database
     os.environ['POSTGRES_URL'] = os.environ.get(
         'TEST_POSTGRES_URL',
-        'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
     )
     
     from training_service.sync_db_wrapper import db
@@ -177,9 +182,8 @@ class TestProcessPoolExecutor:
     
     def test_task_errors_handled(self):
         """Test that task errors are properly captured."""
-        def failing_task(task_id):
-            raise ValueError(f"Task {task_id} failed intentionally")
-        
+        # Note: Can't use locally defined function - must use module-level function
+        # that can be pickled for multiprocessing
         with ProcessPoolExecutor(max_workers=2) as pool:
             future = pool.submit(failing_task, 1)
             
@@ -225,6 +229,7 @@ class TestProcessPoolExecutor:
         assert cancelled_count >= 0  # Some might already be running
     
     @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_process_pool_with_db_access(self):
         """Test that process pool workers can access database independently."""
         import os
@@ -232,7 +237,7 @@ class TestProcessPoolExecutor:
         # Set test database URL
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
         
@@ -255,6 +260,7 @@ class TestProcessPoolExecutor:
         pids = [r['pid'] for r in results]
         assert len(set(pids)) >= 2, "Should use multiple processes"
     
+    @pytest.mark.integration
     def test_max_tasks_per_child(self):
         """Test that workers are recycled after max_tasks_per_child."""
         max_tasks_per_child = 3
@@ -293,13 +299,14 @@ class TestProcessPoolIntegration:
         # Skipped here as it requires full service setup
         pytest.skip("Requires full training service setup")
     
+    @pytest.mark.integration
     def test_concurrent_model_training(self):
         """Test multiple models training concurrently."""
         import os
         
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
         
@@ -324,10 +331,7 @@ class TestProcessPoolIntegration:
         assert unique_pids >= 2, f"Should use multiple processes, got {unique_pids}"
 
 
-@pytest.mark.skipif(
-    not pytest.config.getoption("--run-slow", default=False),
-    reason="Slow test, use --run-slow to run"
-)
+@pytest.mark.slow
 class TestProcessPoolPerformance:
     """Performance benchmarks for process pool (slow tests)."""
     

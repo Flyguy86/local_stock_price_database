@@ -29,7 +29,8 @@ async def get_pool() -> asyncpg.Pool:
             POSTGRES_URL,
             min_size=2,
             max_size=10,
-            command_timeout=60
+            command_timeout=60,
+            statement_cache_size=0  # Disable statement caching to prevent collisions
         )
         log.info("PostgreSQL pool created for simulation service")
     return _pool

@@ -15,7 +15,12 @@ async def get_pool():
     """Get or create the connection pool."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(POSTGRES_URL, min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(
+            POSTGRES_URL, 
+            min_size=2, 
+            max_size=10,
+            statement_cache_size=0  # Disable statement caching to prevent collisions
+        )
     return _pool
 
 async def close_pool():

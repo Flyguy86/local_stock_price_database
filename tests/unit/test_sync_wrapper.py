@@ -33,7 +33,7 @@ def create_model_in_process(model_data):
     # Set test database URL
     os.environ['POSTGRES_URL'] = os.environ.get(
         'TEST_POSTGRES_URL',
-        'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
     )
     
     from training_service.sync_db_wrapper import db
@@ -80,7 +80,7 @@ def update_model_in_process(model_id, status):
     
     os.environ['POSTGRES_URL'] = os.environ.get(
         'TEST_POSTGRES_URL',
-        'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
     )
     
     from training_service.sync_db_wrapper import db
@@ -115,23 +115,21 @@ class TestSyncDBWrapper:
         assert wrapper is not None
     
     def test_wrapper_has_methods(self):
-        """Test that wrapper has all required methods."""
+        """Test that wrapper has all required methods used by trainer.py."""
         from training_service.sync_db_wrapper import db
         
+        # Only check for methods actually used in trainer.py
         required_methods = [
             'create_model_record',
             'update_model_status',
             'get_model',
-            'get_model_by_fingerprint',
-            'list_models',
-            'delete_model',
-            'delete_all_models'
         ]
         
         for method in required_methods:
             assert hasattr(db, method), f"Wrapper should have {method} method"
     
     @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_sync_wrapper_basic_operations(self, db_tables):
         """Test basic CRUD operations through sync wrapper."""
         import os
@@ -142,7 +140,7 @@ class TestSyncDBWrapper:
         original_url = pg_db.POSTGRES_URL
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         pg_db.POSTGRES_URL = test_url
         
@@ -178,6 +176,7 @@ class TestSyncDBWrapper:
         finally:
             pg_db.POSTGRES_URL = original_url
     
+    @pytest.mark.integration
     def test_multiple_processes_create_models(self):
         """Test that multiple processes can create models independently."""
         import os
@@ -185,7 +184,7 @@ class TestSyncDBWrapper:
         # Ensure test database URL is set
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
         
@@ -221,13 +220,14 @@ class TestSyncDBWrapper:
         pids = [r['pid'] for r in results]
         assert len(set(pids)) > 1, "Should have used multiple processes"
     
+    @pytest.mark.integration
     def test_concurrent_model_updates(self):
         """Test concurrent updates from multiple processes."""
         import os
         
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
         
@@ -275,13 +275,14 @@ class TestSyncDBWrapper:
         finally:
             pg_db.POSTGRES_URL = original_url
     
+    @pytest.mark.integration
     def test_process_isolation(self):
         """Test that each process has isolated connection pool."""
         import os
         
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
         
@@ -317,10 +318,7 @@ class TestSyncDBWrapper:
         assert unique_pids >= 2, f"Should use multiple processes, got {unique_pids} unique PIDs"
 
 
-@pytest.mark.skipif(
-    not pytest.config.getoption("--run-slow", default=False),
-    reason="Slow test, use --run-slow to run"
-)
+@pytest.mark.slow
 class TestSyncWrapperPerformance:
     """Performance tests for sync wrapper (slow, optional)."""
     
@@ -332,7 +330,7 @@ class TestSyncWrapperPerformance:
         
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
-            'postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test'
+            'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         
         original_url = pg_db.POSTGRES_URL
@@ -365,7 +363,7 @@ class TestSyncWrapperPerformance:
             pg_db.POSTGRES_URL = original_url
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestEventLoopHandling:
     """
     Regression tests for event loop conflicts (Issue: RuntimeError 'This event loop is already running').

@@ -32,7 +32,8 @@ class Database:
                 POSTGRES_URL,
                 min_size=2,
                 max_size=10,
-                command_timeout=60
+                command_timeout=60,
+                statement_cache_size=0  # Disable statement caching to prevent collisions
             )
             log.info("PostgreSQL connection pool established")
     

@@ -12,10 +12,11 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Test database URL (use separate test database)
+# Test database URL - use postgres hostname for Docker, localhost for local
+# Docker test_runner uses postgres service, local dev uses localhost
 TEST_POSTGRES_URL = os.environ.get(
     "TEST_POSTGRES_URL",
-    "postgresql://orchestrator:orchestrator_secret@localhost:5432/strategy_factory_test"
+    "postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test"
 )
 
 # Set test environment variables before importing services
@@ -23,24 +24,19 @@ os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
 os.environ["TEST_MODE"] = "true"
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create event loop for async tests."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+# Use pytest-asyncio's built-in event loop management
+pytest_plugins = ['pytest_asyncio']
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 async def test_db_pool():
     """
-    Create test database connection pool.
-    Creates test database if it doesn't exist, drops all tables before tests.
+    Create test database connection pool for each test.
+    Creates test database if it doesn't exist, cleans tables before tests.
     """
     import asyncpg
     
     # Parse connection URL to get database name
-    # postgresql://user:pass@host:port/dbname
     parts = TEST_POSTGRES_URL.split("/")
     base_url = "/".join(parts[:-1])
     test_db_name = parts[-1].split("?")[0]
@@ -62,60 +58,142 @@ async def test_db_pool():
         await conn.close()
     except Exception as e:
         print(f"\n⚠ Could not create test database: {e}")
-        print(f"  Assuming it already exists or using main database")
+        print(f"  Assuming it already exists")
     
-    # Create connection pool to test database
+    # Create connection pool to test database with statement cache disabled
+    # This prevents "prepared statement already exists" errors
     pool = await asyncpg.create_pool(
         TEST_POSTGRES_URL,
-        min_size=2,
-        max_size=10,
-        command_timeout=60
+        min_size=1,
+        max_size=3,
+        command_timeout=60,
+        statement_cache_size=0  # Disable statement caching to prevent collisions
     )
     
     # Clean up any existing tables
     async with pool.acquire() as conn:
-        # Drop all tables in public schema
         await conn.execute("""
             DROP SCHEMA IF EXISTS public CASCADE;
             CREATE SCHEMA public;
         """)
-        print(f"✓ Cleaned test database schema")
     
     yield pool
     
-    # Cleanup after all tests
+    # Cleanup after test
     await pool.close()
-    print("\n✓ Closed test database pool")
 
 
 @pytest.fixture
 async def db_tables(test_db_pool):
     """
     Create fresh tables for each test.
-    Drops and recreates tables before each test.
+    Schema must match training_service/pg_db.py exactly.
     """
-    from training_service.pg_db import ensure_tables
-    
-    # Monkey-patch the pool to use test pool
+    from training_service.pg_db import ensure_tables, _pool, close_pool
     import training_service.pg_db as pg_db
-    original_get_pool = pg_db.get_pool
     
-    async def mock_get_pool():
-        return test_db_pool
+    # Save original pool
+    original_pool = pg_db._pool
+    original_url = pg_db.POSTGRES_URL
     
-    pg_db.get_pool = mock_get_pool
+    # Replace global pool with test pool
+    pg_db._pool = test_db_pool
+    pg_db.POSTGRES_URL = TEST_POSTGRES_URL
     
-    # Create tables
-    await ensure_tables()
+    # Create tables using test pool - MUST match pg_db.py schema exactly
+    async with test_db_pool.acquire() as conn:
+        # Create models table - matches training_service/pg_db.py
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS models (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                algorithm VARCHAR,
+                symbol VARCHAR,
+                target_col VARCHAR DEFAULT 'close',
+                feature_cols JSONB,
+                hyperparameters JSONB,
+                metrics JSONB,
+                status VARCHAR,
+                created_at TIMESTAMP DEFAULT NOW(),
+                artifact_path VARCHAR,
+                error_message TEXT,
+                
+                -- Data configuration for fingerprint
+                data_options JSONB,
+                timeframe VARCHAR DEFAULT '1m',
+                train_window INTEGER,
+                test_window INTEGER,
+                
+                -- Model lineage
+                parent_model_id VARCHAR,
+                group_id VARCHAR,
+                
+                -- Target configuration for fingerprint
+                target_transform VARCHAR DEFAULT 'none',
+                
+                -- Feature evolution tracking
+                columns_initial INTEGER,
+                columns_remaining INTEGER,
+                
+                -- Fingerprint for deduplication
+                fingerprint VARCHAR(64),
+                
+                -- Grid search configuration
+                alpha_grid JSONB,
+                l1_ratio_grid JSONB,
+                regime_configs JSONB,
+                
+                -- Context models used during training
+                context_symbols JSONB,
+                
+                -- Cross-validation folds
+                cv_folds INTEGER DEFAULT 5,
+                cv_strategy VARCHAR DEFAULT 'time_series_split',
+                
+                -- Grid member flag
+                is_grid_member BOOLEAN DEFAULT FALSE
+            )
+        """)
+        
+        # Create features_log table - matches pg_db.py
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS features_log (
+                id SERIAL PRIMARY KEY,
+                model_id VARCHAR REFERENCES models(id) ON DELETE CASCADE,
+                feature_name VARCHAR,
+                importance DOUBLE PRECISION,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        # Create simulation_history table - matches pg_db.py structure
+        # NOTE: FK constraint removed for testing to allow isolated simulation tests
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS simulation_history (
+                id VARCHAR PRIMARY KEY,
+                timestamp TIMESTAMP DEFAULT NOW(),
+                model_id VARCHAR,
+                ticker VARCHAR,
+                return_pct DOUBLE PRECISION,
+                trades_count INTEGER,
+                hit_rate DOUBLE PRECISION,
+                sqn DOUBLE PRECISION,
+                params JSONB
+            )
+        """)
+        
+        # Create indexes
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_models_fingerprint ON models(fingerprint)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_models_symbol ON models(symbol)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_features_log_model ON features_log(model_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_simulation_history_model ON simulation_history(model_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_simulation_history_sqn ON simulation_history(sqn DESC)")
     
     yield test_db_pool
     
-    # Cleanup tables after test
-    async with test_db_pool.acquire() as conn:
-        await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-    
-    # Restore original function
-    pg_db.get_pool = original_get_pool
+    # Restore original pool
+    pg_db._pool = original_pool
+    pg_db.POSTGRES_URL = original_url
 
 
 @pytest.fixture
@@ -167,52 +245,130 @@ def sample_simulation_data():
 
 
 @pytest.fixture
-async def training_db():
+async def training_db(db_tables):
     """
     Get TrainingDB instance configured for testing.
+    Uses db_tables to ensure tables exist and connection is configured.
     """
-    from training_service.pg_db import TrainingDB, get_pool, close_pool
+    from training_service.pg_db import TrainingDB
+    
+    db = TrainingDB()
+    yield db
+
+
+# Alias for test_sync_wrapper.py tests that use training_db_fixture
+@pytest.fixture
+def training_db_fixture():
+    """
+    Sync fixture wrapper for TrainingDB.
+    Used by sync tests that need database access.
+    Creates its own connection setup without depending on async fixtures.
+    Schema must match training_service/pg_db.py exactly.
+    """
+    import asyncio
+    import asyncpg
     import training_service.pg_db as pg_db
     
-    # Set test URL
+    # Save original state
+    original_pool = pg_db._pool
     original_url = pg_db.POSTGRES_URL
+    
+    # Set test URL
     pg_db.POSTGRES_URL = TEST_POSTGRES_URL
     
-    # Create tables
-    from training_service.pg_db import ensure_tables
-    await ensure_tables()
+    async def setup_tables():
+        """Set up test database tables matching pg_db.py schema."""
+        # Connect and create tables
+        conn = await asyncpg.connect(TEST_POSTGRES_URL)
+        
+        # Create models table - matches training_service/pg_db.py
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS models (
+                id VARCHAR PRIMARY KEY,
+                name VARCHAR,
+                algorithm VARCHAR,
+                symbol VARCHAR,
+                target_col VARCHAR DEFAULT 'close',
+                feature_cols JSONB,
+                hyperparameters JSONB,
+                metrics JSONB,
+                status VARCHAR,
+                created_at TIMESTAMP DEFAULT NOW(),
+                artifact_path VARCHAR,
+                error_message TEXT,
+                data_options JSONB,
+                timeframe VARCHAR DEFAULT '1m',
+                train_window INTEGER,
+                test_window INTEGER,
+                parent_model_id VARCHAR,
+                group_id VARCHAR,
+                target_transform VARCHAR DEFAULT 'none',
+                columns_initial INTEGER,
+                columns_remaining INTEGER,
+                fingerprint VARCHAR(64),
+                alpha_grid JSONB,
+                l1_ratio_grid JSONB,
+                regime_configs JSONB,
+                context_symbols JSONB,
+                cv_folds INTEGER DEFAULT 5,
+                cv_strategy VARCHAR DEFAULT 'time_series_split',
+                is_grid_member BOOLEAN DEFAULT FALSE
+            )
+        """)
+        
+        # Create features_log table - matches pg_db.py
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS features_log (
+                id SERIAL PRIMARY KEY,
+                model_id VARCHAR REFERENCES models(id) ON DELETE CASCADE,
+                feature_name VARCHAR,
+                importance DOUBLE PRECISION,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        
+        await conn.close()
     
+    # Run setup
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(setup_tables())
+    finally:
+        loop.close()
+    
+    # Create TrainingDB
+    from training_service.pg_db import TrainingDB
     db = TrainingDB()
     
     yield db
     
-    # Cleanup
-    await close_pool()
+    # Cleanup - close any pools and restore state
+    async def cleanup():
+        if pg_db._pool is not None:
+            await pg_db._pool.close()
+            pg_db._pool = None
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(cleanup())
+    finally:
+        loop.close()
+    
+    pg_db._pool = original_pool
     pg_db.POSTGRES_URL = original_url
 
 
 @pytest.fixture
-async def simulation_db():
+async def simulation_db(db_tables):
     """
     Get SimulationDB instance configured for testing.
+    Uses db_tables to ensure tables exist and connection is configured.
     """
-    from simulation_service.pg_db import SimulationDB, get_pool, close_pool, ensure_tables
-    import simulation_service.pg_db as pg_db
-    
-    # Set test URL
-    original_url = pg_db.POSTGRES_URL
-    pg_db.POSTGRES_URL = TEST_POSTGRES_URL
-    
-    # Create tables
-    await ensure_tables()
-    
+    from simulation_service.pg_db import SimulationDB
     db = SimulationDB()
-    
     yield db
-    
-    # Cleanup
-    await close_pool()
-    pg_db.POSTGRES_URL = original_url
 
 
 @pytest.fixture

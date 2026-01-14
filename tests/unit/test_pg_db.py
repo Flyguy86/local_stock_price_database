@@ -9,6 +9,7 @@ from datetime import datetime
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 class TestPostgreSQLDatabaseLayer:
     """Test suite for PostgreSQL database operations."""
     
@@ -424,7 +425,7 @@ class TestPostgreSQLDatabaseLayer:
 
 
 @pytest.mark.asyncio
-@pytest.mark.unit
+@pytest.mark.integration
 class TestJSONBSerialization:
     """Regression tests for JSONB field serialization (Issue: asyncpg TypeError)."""
     
