@@ -89,14 +89,13 @@ async def db_tables(test_db_pool):
     Create fresh tables for each test.
     Schema must match training_service/pg_db.py exactly.
     """
-    from training_service.pg_db import ensure_tables, _pool, close_pool
     import training_service.pg_db as pg_db
     
-    # Save original pool
+    # Save original pool (for cleanup)
     original_pool = pg_db._pool
     original_url = pg_db.POSTGRES_URL
     
-    # Replace global pool with test pool
+    # Set global pool for any code that still uses get_pool() directly
     pg_db._pool = test_db_pool
     pg_db.POSTGRES_URL = TEST_POSTGRES_URL
     
@@ -248,11 +247,13 @@ def sample_simulation_data():
 async def training_db(db_tables):
     """
     Get TrainingDB instance configured for testing.
-    Uses db_tables to ensure tables exist and connection is configured.
+    Uses db_tables to ensure tables exist and passes the test pool directly.
     """
-    from training_service.pg_db import TrainingDB
+    import training_service.pg_db as pg_db
     
-    db = TrainingDB()
+    # db_tables is the test_db_pool that was yielded
+    # Pass it directly to TrainingDB so it doesn't need to use global _pool
+    db = pg_db.TrainingDB(pool=db_tables)
     yield db
 
 
@@ -276,58 +277,86 @@ def training_db_fixture():
     # Set test URL
     pg_db.POSTGRES_URL = TEST_POSTGRES_URL
     
+    pool = None  # Will be set in setup
+    
     async def setup_tables():
-        """Set up test database tables matching pg_db.py schema."""
-        # Connect and create tables
-        conn = await asyncpg.connect(TEST_POSTGRES_URL)
+        """Set up test database tables and create pool."""
+        nonlocal pool
         
-        # Create models table - matches training_service/pg_db.py
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS models (
-                id VARCHAR PRIMARY KEY,
-                name VARCHAR,
-                algorithm VARCHAR,
-                symbol VARCHAR,
-                target_col VARCHAR DEFAULT 'close',
-                feature_cols JSONB,
-                hyperparameters JSONB,
-                metrics JSONB,
-                status VARCHAR,
-                created_at TIMESTAMP DEFAULT NOW(),
-                artifact_path VARCHAR,
-                error_message TEXT,
-                data_options JSONB,
-                timeframe VARCHAR DEFAULT '1m',
-                train_window INTEGER,
-                test_window INTEGER,
-                parent_model_id VARCHAR,
-                group_id VARCHAR,
-                target_transform VARCHAR DEFAULT 'none',
-                columns_initial INTEGER,
-                columns_remaining INTEGER,
-                fingerprint VARCHAR(64),
-                alpha_grid JSONB,
-                l1_ratio_grid JSONB,
-                regime_configs JSONB,
-                context_symbols JSONB,
-                cv_folds INTEGER DEFAULT 5,
-                cv_strategy VARCHAR DEFAULT 'time_series_split',
-                is_grid_member BOOLEAN DEFAULT FALSE
+        # First, connect to create/clean the test database
+        try:
+            conn = await asyncpg.connect(TEST_POSTGRES_URL.replace('/strategy_factory_test', '/postgres'))
+            # Check if test database exists
+            exists = await conn.fetchval(
+                "SELECT 1 FROM pg_database WHERE datname = $1", 'strategy_factory_test'
             )
-        """)
+            if not exists:
+                await conn.execute('CREATE DATABASE "strategy_factory_test"')
+            await conn.close()
+        except Exception:
+            pass  # Database might already exist
         
-        # Create features_log table - matches pg_db.py
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS features_log (
-                id SERIAL PRIMARY KEY,
-                model_id VARCHAR REFERENCES models(id) ON DELETE CASCADE,
-                feature_name VARCHAR,
-                importance DOUBLE PRECISION,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
+        # Create the pool with statement caching disabled
+        pool = await asyncpg.create_pool(
+            TEST_POSTGRES_URL,
+            min_size=1,
+            max_size=3,
+            command_timeout=60,
+            statement_cache_size=0
+        )
         
-        await conn.close()
+        # Set the global pool so get_pool() uses it
+        pg_db._pool = pool
+        
+        # Clean and create tables
+        async with pool.acquire() as conn:
+            await conn.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
+            
+            # Create models table - matches training_service/pg_db.py
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS models (
+                    id VARCHAR PRIMARY KEY,
+                    name VARCHAR,
+                    algorithm VARCHAR,
+                    symbol VARCHAR,
+                    target_col VARCHAR DEFAULT 'close',
+                    feature_cols JSONB,
+                    hyperparameters JSONB,
+                    metrics JSONB,
+                    status VARCHAR,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    artifact_path VARCHAR,
+                    error_message TEXT,
+                    data_options JSONB,
+                    timeframe VARCHAR DEFAULT '1m',
+                    train_window INTEGER,
+                    test_window INTEGER,
+                    parent_model_id VARCHAR,
+                    group_id VARCHAR,
+                    target_transform VARCHAR DEFAULT 'none',
+                    columns_initial INTEGER,
+                    columns_remaining INTEGER,
+                    fingerprint VARCHAR(64),
+                    alpha_grid JSONB,
+                    l1_ratio_grid JSONB,
+                    regime_configs JSONB,
+                    context_symbols JSONB,
+                    cv_folds INTEGER DEFAULT 5,
+                    cv_strategy VARCHAR DEFAULT 'time_series_split',
+                    is_grid_member BOOLEAN DEFAULT FALSE
+                )
+            """)
+            
+            # Create features_log table - matches pg_db.py
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS features_log (
+                    id SERIAL PRIMARY KEY,
+                    model_id VARCHAR REFERENCES models(id) ON DELETE CASCADE,
+                    feature_name VARCHAR,
+                    importance DOUBLE PRECISION,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
     
     # Run setup
     loop = asyncio.new_event_loop()
@@ -335,22 +364,20 @@ def training_db_fixture():
     try:
         loop.run_until_complete(setup_tables())
     finally:
-        loop.close()
+        pass  # Don't close the loop yet
     
-    # Create TrainingDB
-    from training_service.pg_db import TrainingDB
-    db = TrainingDB()
+    # Create TrainingDB using the same module
+    db = pg_db.TrainingDB()
     
     yield db
     
-    # Cleanup - close any pools and restore state
+    # Cleanup - close pool and restore state
     async def cleanup():
-        if pg_db._pool is not None:
-            await pg_db._pool.close()
-            pg_db._pool = None
+        nonlocal pool
+        if pool is not None:
+            await pool.close()
+        pg_db._pool = None
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(cleanup())
     finally:
@@ -364,11 +391,25 @@ def training_db_fixture():
 async def simulation_db(db_tables):
     """
     Get SimulationDB instance configured for testing.
-    Uses db_tables to ensure tables exist and connection is configured.
+    Uses db_tables to ensure tables exist and passes the test pool directly.
     """
-    from simulation_service.pg_db import SimulationDB
-    db = SimulationDB()
+    import simulation_service.pg_db as sim_pg_db
+    
+    # Save original pool state (for cleanup)
+    original_sim_pool = sim_pg_db._pool
+    original_sim_url = sim_pg_db.POSTGRES_URL
+    
+    # Set global pool for any code that still uses get_pool() directly
+    sim_pg_db._pool = db_tables
+    sim_pg_db.POSTGRES_URL = TEST_POSTGRES_URL
+    
+    # Pass pool directly to SimulationDB
+    db = sim_pg_db.SimulationDB(pool=db_tables)
     yield db
+    
+    # Restore original pool
+    sim_pg_db._pool = original_sim_pool
+    sim_pg_db.POSTGRES_URL = original_sim_url
 
 
 @pytest.fixture

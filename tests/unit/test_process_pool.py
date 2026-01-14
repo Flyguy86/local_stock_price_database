@@ -230,16 +230,17 @@ class TestProcessPoolExecutor:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_process_pool_with_db_access(self):
+    async def test_process_pool_with_db_access(self, db_tables):
         """Test that process pool workers can access database independently."""
         import os
         
-        # Set test database URL
+        # Set test database URL - the db_tables fixture has already created the tables
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
             'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url  # Also set for child processes
         
         num_tasks = 4
         
@@ -299,8 +300,9 @@ class TestProcessPoolIntegration:
         # Skipped here as it requires full service setup
         pytest.skip("Requires full training service setup")
     
+    @pytest.mark.asyncio
     @pytest.mark.integration
-    def test_concurrent_model_training(self):
+    async def test_concurrent_model_training(self, db_tables):
         """Test multiple models training concurrently."""
         import os
         
@@ -309,6 +311,7 @@ class TestProcessPoolIntegration:
             'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
         os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url  # Also set for child processes
         
         num_models = 6
         

@@ -163,7 +163,7 @@ class MetadataDB:
         with self.get_connection() as conn:
             conn.execute(query, values)
             
-    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error: str | None = None, feature_cols: str | None = None, target_transform: str | None = None, columns_initial: int | None = None, columns_remaining: int | None = None):
+    def update_model_status(self, model_id: str, status: str, metrics: str | None = None, artifact_path: str | None = None, error_message: str | None = None, feature_cols: str | None = None, target_transform: str | None = None, columns_initial: int | None = None, columns_remaining: int | None = None):
         updates = ["status = ?"]
         params = [status]
         
@@ -173,9 +173,9 @@ class MetadataDB:
         if artifact_path:
             updates.append("artifact_path = ?")
             params.append(artifact_path)
-        if error:
+        if error_message:
             updates.append("error_message = ?")
-            params.append(error)
+            params.append(error_message)
         if feature_cols:
             updates.append("feature_cols = ?")
             params.append(feature_cols)

@@ -87,6 +87,146 @@ class TestPostgreSQLDatabaseLayer:
             assert any('symbol' in idx for idx in index_names), \
                 "Symbol index should exist"
     
+    # ========================================
+    # DIAGNOSTIC TESTS - Step by step validation
+    # These tests isolate each step leading to create_model_record
+    # ========================================
+    
+    async def test_step1_pool_is_valid(self, training_db):
+        """Step 1: Verify the injected pool is valid and not None."""
+        # Access the internal pool
+        pool = training_db._injected_pool
+        assert pool is not None, "Injected pool should not be None"
+        print(f"✓ Pool type: {type(pool)}")
+    
+    async def test_step2_pool_can_acquire_connection(self, training_db):
+        """Step 2: Verify we can acquire a connection from the pool."""
+        pool = await training_db._get_pool()
+        assert pool is not None, "Pool from _get_pool() should not be None"
+        
+        async with pool.acquire() as conn:
+            assert conn is not None, "Connection should not be None"
+            print(f"✓ Connection acquired: {type(conn)}")
+    
+    async def test_step3_can_execute_simple_query(self, training_db):
+        """Step 3: Verify we can execute a simple query."""
+        pool = await training_db._get_pool()
+        
+        async with pool.acquire() as conn:
+            result = await conn.fetchval("SELECT 1")
+            assert result == 1, f"Expected 1, got {result}"
+            print("✓ Simple query executed successfully")
+    
+    async def test_step4_models_table_exists(self, training_db):
+        """Step 4: Verify models table exists."""
+        pool = await training_db._get_pool()
+        
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'models'
+                )
+            """)
+            assert exists, "models table should exist"
+            print("✓ models table exists")
+    
+    async def test_step5_can_insert_minimal_row(self, training_db):
+        """Step 5: Verify we can insert a minimal row into models."""
+        import uuid
+        pool = await training_db._get_pool()
+        model_id = str(uuid.uuid4())
+        
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO models (id, algorithm, symbol, status)
+                VALUES ($1, $2, $3, $4)
+            """, model_id, 'TestAlgo', 'TEST', 'testing')
+            
+            # Verify it was inserted
+            row = await conn.fetchrow("SELECT * FROM models WHERE id = $1", model_id)
+            assert row is not None, "Inserted row should be found"
+            print(f"✓ Minimal row inserted: {model_id}")
+    
+    async def test_step6_can_insert_with_jsonb(self, training_db):
+        """Step 6: Verify JSONB fields work correctly."""
+        import uuid
+        pool = await training_db._get_pool()
+        model_id = str(uuid.uuid4())
+        
+        # Test with Python objects (what asyncpg expects)
+        feature_cols = ["sma_20", "rsi_14"]
+        hyperparameters = {"n_estimators": 100}
+        
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO models (id, algorithm, symbol, status, feature_cols, hyperparameters)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, model_id, 'TestAlgo', 'TEST', 'testing', feature_cols, hyperparameters)
+            
+            row = await conn.fetchrow("SELECT * FROM models WHERE id = $1", model_id)
+            assert row is not None, "Row with JSONB should be found"
+            assert row['feature_cols'] == feature_cols, f"feature_cols mismatch: {row['feature_cols']}"
+            print(f"✓ JSONB insert worked: {model_id}")
+    
+    async def test_step7_sample_model_data_structure(self, sample_model_data):
+        """Step 7: Verify sample_model_data has expected structure."""
+        import json
+        
+        required_fields = ['id', 'algorithm', 'symbol', 'status']
+        for field in required_fields:
+            assert field in sample_model_data, f"Missing required field: {field}"
+        
+        # Check JSONB fields are strings (as fixture provides them)
+        jsonb_fields = ['feature_cols', 'hyperparameters', 'metrics', 'data_options']
+        for field in jsonb_fields:
+            if field in sample_model_data:
+                value = sample_model_data[field]
+                print(f"  {field}: type={type(value).__name__}, value={value[:50] if isinstance(value, str) else value}...")
+                # Try to parse if string
+                if isinstance(value, str):
+                    try:
+                        parsed = json.loads(value)
+                        print(f"    → Parses to: {type(parsed).__name__}")
+                    except json.JSONDecodeError as e:
+                        print(f"    → PARSE ERROR: {e}")
+        
+        print(f"✓ sample_model_data structure is valid")
+    
+    async def test_step8_create_model_record_directly(self, training_db, sample_model_data):
+        """Step 8: Call create_model_record and catch any exception."""
+        import traceback
+        
+        model_id = sample_model_data['id']
+        print(f"\nAttempting to create model: {model_id}")
+        print(f"Data keys: {list(sample_model_data.keys())}")
+        
+        try:
+            await training_db.create_model_record(sample_model_data)
+            print("✓ create_model_record succeeded")
+        except Exception as e:
+            print(f"✗ create_model_record FAILED: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            raise  # Re-raise to fail the test
+        
+        # Now try to get the model back
+        try:
+            model = await training_db.get_model(model_id)
+            if model:
+                print(f"✓ Model retrieved successfully")
+                print(f"  id: {model.get('id')}")
+                print(f"  algorithm: {model.get('algorithm')}")
+            else:
+                print(f"✗ Model not found after creation!")
+                assert False, "Model should exist after creation"
+        except Exception as e:
+            print(f"✗ get_model FAILED: {type(e).__name__}: {e}")
+            raise
+    
+    # ========================================
+    # END DIAGNOSTIC TESTS
+    # ========================================
+    
     async def test_create_model_record(self, training_db, sample_model_data):
         """Test creating a model record with all fields."""
         model_id = sample_model_data['id']

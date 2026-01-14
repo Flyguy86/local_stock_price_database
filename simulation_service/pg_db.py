@@ -5,6 +5,7 @@ Handles simulation_history table and model metadata queries.
 import asyncpg
 import json
 import logging
+import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import os
@@ -122,7 +123,7 @@ async def save_simulation_history(
             stats.get('total_trades', 0),
             stats.get('hit_rate_pct', 0.0),
             stats.get('sqn', 0.0),
-            json.dumps(params)
+            params  # asyncpg accepts Python dicts for JSONB columns
         )
         
     log.info(f"Saved simulation history: {record_id} (model={model_id}, ticker={ticker})")
@@ -152,6 +153,14 @@ async def get_simulation_history(limit: int = 50) -> List[Dict[str, Any]]:
         
         history = []
         for r in rows:
+            # asyncpg returns JSONB columns as Python objects directly
+            params = r['params'] if r['params'] else {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except json.JSONDecodeError:
+                    params = {}
+            
             history.append({
                 "id": r['id'],
                 "timestamp": r['timestamp'].isoformat() if r['timestamp'] else None,
@@ -161,7 +170,7 @@ async def get_simulation_history(limit: int = 50) -> List[Dict[str, Any]]:
                 "trades_count": r['trades_count'],
                 "hit_rate_pct": r['hit_rate'],
                 "sqn": r['sqn'],
-                "params": json.loads(r['params']) if r['params'] else {}
+                "params": params
             })
         
         return history
@@ -199,6 +208,14 @@ async def get_top_strategies(limit: int = 15, offset: int = 0) -> Dict[str, Any]
         
         items = []
         for r in rows:
+            # asyncpg returns JSONB columns as Python objects directly
+            params = r['params'] if r['params'] else {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except json.JSONDecodeError:
+                    params = {}
+            
             items.append({
                 "id": r['id'],
                 "timestamp": r['timestamp'].isoformat() if r['timestamp'] else None,
@@ -208,7 +225,7 @@ async def get_top_strategies(limit: int = 15, offset: int = 0) -> Dict[str, Any]
                 "trades_count": r['trades_count'],
                 "hit_rate_pct": r['hit_rate'],
                 "sqn": r['sqn'],
-                "params": json.loads(r['params']) if r['params'] else {}
+                "params": params
             })
         
         return {"items": items, "total": total}
@@ -278,21 +295,93 @@ async def get_models_metadata() -> List[Dict[str, Any]]:
 class SimulationDB:
     """Async PostgreSQL database interface for simulation service."""
     
+    def __init__(self, pool: Optional[asyncpg.Pool] = None):
+        """
+        Initialize SimulationDB.
+        
+        Args:
+            pool: Optional connection pool. If not provided, uses global pool via get_pool().
+        """
+        self._injected_pool = pool
+    
+    async def _get_pool(self) -> asyncpg.Pool:
+        """Get connection pool - either injected or global."""
+        if self._injected_pool is not None:
+            return self._injected_pool
+        return await get_pool()
+    
     async def save_history(self, model_id: str, ticker: str, stats: Dict, params: Dict) -> str:
         """Save simulation result."""
-        return await save_simulation_history(model_id, ticker, stats, params)
+        pool = await self._get_pool()
+        record_id = str(uuid.uuid4())
+        
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO simulation_history 
+                (id, model_id, ticker, return_pct, trades_count, hit_rate, sqn, params)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """, 
+                record_id,
+                model_id,
+                ticker,
+                stats.get('strategy_return_pct', 0.0),
+                stats.get('total_trades', 0),
+                stats.get('hit_rate_pct', 0.0),
+                stats.get('sqn', 0.0),
+                params  # asyncpg accepts Python dicts for JSONB columns
+            )
+        
+        log.info(f"Saved simulation history: {record_id} (model={model_id}, ticker={ticker})")
+        return record_id
     
     async def get_history(self, limit: int = 50) -> List[Dict]:
         """Get recent simulation history."""
-        return await get_simulation_history(limit)
+        pool = await self._get_pool()
+        
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, 
+                       hit_rate, sqn, params
+                FROM simulation_history
+                ORDER BY timestamp DESC
+                LIMIT $1
+            """, limit)
+            
+            return [dict(row) for row in rows]
     
     async def get_top_strategies(self, limit: int = 15, offset: int = 0) -> Dict:
         """Get top strategies by SQN."""
-        return await get_top_strategies(limit, offset)
+        pool = await self._get_pool()
+        
+        async with pool.acquire() as conn:
+            # Get total count
+            total = await conn.fetchval("SELECT COUNT(*) FROM simulation_history")
+            
+            # Get paginated results
+            rows = await conn.fetch("""
+                SELECT id, timestamp, model_id, ticker, return_pct, trades_count, 
+                       hit_rate, sqn, params
+                FROM simulation_history
+                ORDER BY sqn DESC NULLS LAST
+                LIMIT $1 OFFSET $2
+            """, limit, offset)
+            
+            return {
+                'items': [dict(row) for row in rows],
+                'total': total or 0,
+                'limit': limit,
+                'offset': offset
+            }
     
     async def delete_all_history(self) -> bool:
         """Delete all simulation history."""
-        return await delete_all_simulation_history()
+        pool = await self._get_pool()
+        
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM simulation_history")
+        
+        log.info("Deleted all simulation history")
+        return True
     
     async def get_models_metadata(self) -> List[Dict]:
         """Get model metadata."""

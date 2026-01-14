@@ -167,11 +167,26 @@ async def ensure_tables():
 class TrainingDB:
     """Async PostgreSQL database interface for training service."""
     
-    async def list_models(self) -> List[Dict[str, Any]]:
+    def __init__(self, pool: Optional[asyncpg.Pool] = None):
+        """
+        Initialize TrainingDB.
+        
+        Args:
+            pool: Optional connection pool. If not provided, uses global pool via get_pool().
+        """
+        self._injected_pool = pool
+    
+    async def _get_pool(self) -> asyncpg.Pool:
+        """Get connection pool - either injected or global."""
+        if self._injected_pool is not None:
+            return self._injected_pool
+        return await get_pool()
+    
+    async def list_models(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """List all models with metadata."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("""
+            query = """
                 SELECT 
                     id, name, algorithm, symbol, status, metrics, created_at,
                     error_message, data_options, timeframe, target_col,
@@ -180,12 +195,16 @@ class TrainingDB:
                     context_symbols, cv_folds, cv_strategy
                 FROM models
                 ORDER BY created_at DESC
-            """)
+            """
+            if limit is not None:
+                rows = await conn.fetch(query + " LIMIT $1", limit)
+            else:
+                rows = await conn.fetch(query)
             return [dict(row) for row in rows]
     
     async def get_model(self, model_id: str) -> Optional[Dict[str, Any]]:
         """Get a single model by ID."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM models WHERE id = $1",
@@ -195,16 +214,19 @@ class TrainingDB:
     
     async def create_model_record(self, data: Dict[str, Any]) -> None:
         """Create a new model record."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         
-        # Ensure JSONB fields are kept as JSON strings for asyncpg
-        # asyncpg expects JSON strings for JSONB columns, not Python objects
+        # Handle JSONB fields - asyncpg accepts Python objects for JSONB columns
+        # If already a string, parse it to Python object first
         for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options', 
                           'alpha_grid', 'l1_ratio_grid', 'regime_configs', 'context_symbols']:
-            if json_field in data:
-                # If it's a Python object (dict/list), convert to JSON string
-                if not isinstance(data[json_field], str) and data[json_field] is not None:
-                    data[json_field] = json.dumps(data[json_field])
+            if json_field in data and data[json_field] is not None:
+                # If it's a JSON string, parse it to Python object
+                if isinstance(data[json_field], str):
+                    try:
+                        data[json_field] = json.loads(data[json_field])
+                    except json.JSONDecodeError:
+                        pass  # Keep as string if not valid JSON
         
         async with pool.acquire() as conn:
             # Build dynamic insert
@@ -223,7 +245,7 @@ class TrainingDB:
         status: str,
         metrics: Optional[str] = None,
         artifact_path: Optional[str] = None,
-        error: Optional[str] = None,
+        error_message: Optional[str] = None,
         feature_cols: Optional[str] = None,
         target_transform: Optional[str] = None,
         columns_initial: Optional[int] = None,
@@ -231,7 +253,7 @@ class TrainingDB:
         fingerprint: Optional[str] = None
     ) -> None:
         """Update model status and metadata."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         
         updates = ["status = $1"]
         params = [status]
@@ -239,8 +261,14 @@ class TrainingDB:
         
         if metrics:
             updates.append(f"metrics = ${param_idx}")
-            # Keep as JSON string for asyncpg JSONB column
-            params.append(metrics if isinstance(metrics, str) else json.dumps(metrics))
+            # asyncpg accepts Python objects for JSONB, parse strings to objects
+            if isinstance(metrics, str):
+                try:
+                    params.append(json.loads(metrics))
+                except json.JSONDecodeError:
+                    params.append(metrics)
+            else:
+                params.append(metrics)
             param_idx += 1
         
         if artifact_path:
@@ -248,15 +276,21 @@ class TrainingDB:
             params.append(artifact_path)
             param_idx += 1
         
-        if error:
+        if error_message:
             updates.append(f"error_message = ${param_idx}")
-            params.append(error)
+            params.append(error_message)
             param_idx += 1
         
         if feature_cols:
             updates.append(f"feature_cols = ${param_idx}")
-            # Keep as JSON string for asyncpg JSONB column
-            params.append(feature_cols if isinstance(feature_cols, str) else json.dumps(feature_cols))
+            # asyncpg accepts Python objects for JSONB, parse strings to objects
+            if isinstance(feature_cols, str):
+                try:
+                    params.append(json.loads(feature_cols))
+                except json.JSONDecodeError:
+                    params.append(feature_cols)
+            else:
+                params.append(feature_cols)
             param_idx += 1
         
         if target_transform:
@@ -292,7 +326,7 @@ class TrainingDB:
         importance: float
     ) -> None:
         """Save feature importance to features_log."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO features_log (model_id, feature_name, importance)
@@ -301,7 +335,7 @@ class TrainingDB:
     
     async def get_feature_importance(self, model_id: str) -> List[Dict[str, Any]]:
         """Get feature importance for a model."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT feature_name, importance
@@ -311,20 +345,20 @@ class TrainingDB:
             """, model_id)
             return [{"feature": row['feature_name'], "importance": row['importance']} for row in rows]
     
-    async def get_model_by_fingerprint(self, fingerprint: str) -> Optional[str]:
-        """Find model ID with matching fingerprint."""
-        pool = await get_pool()
+    async def get_model_by_fingerprint(self, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Find model with matching fingerprint."""
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow("""
-                SELECT id FROM models
+                SELECT * FROM models
                 WHERE fingerprint = $1
                 LIMIT 1
             """, fingerprint)
-            return row['id'] if row else None
+            return dict(row) if row else None
     
     async def delete_model(self, model_id: str) -> None:
         """Delete a model and its associated data."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             # Foreign key cascade will delete features_log and simulation_history
             await conn.execute("DELETE FROM models WHERE id = $1", model_id)
@@ -332,7 +366,7 @@ class TrainingDB:
     
     async def delete_all_models(self) -> None:
         """Delete all models and associated data."""
-        pool = await get_pool()
+        pool = await self._get_pool()
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM models")
             log.info("Deleted all models from database")

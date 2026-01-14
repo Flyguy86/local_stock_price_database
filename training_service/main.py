@@ -70,7 +70,7 @@ async def submit_training_task(
         log.error(f"Training {training_id} failed: {e}")
         # Update status to failed (task may have already done this, but ensure it)
         try:
-            await db.update_model_status(training_id, status="failed", error=str(e))
+            await db.update_model_status(training_id, status="failed", error_message=str(e))
         except:
             pass
 

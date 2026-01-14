@@ -133,19 +133,23 @@ class TestSyncDBWrapper:
     async def test_sync_wrapper_basic_operations(self, db_tables):
         """Test basic CRUD operations through sync wrapper."""
         import os
-        from training_service.sync_db_wrapper import SyncDBWrapper
+        import training_service.sync_db_wrapper as sync_wrapper
         import training_service.pg_db as pg_db
         
-        # Set test URL
-        original_url = pg_db.POSTGRES_URL
+        # Set test URL for BOTH modules
         test_url = os.environ.get(
             'TEST_POSTGRES_URL',
             'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
         )
+        
+        original_pg_url = pg_db.POSTGRES_URL
+        original_sync_url = sync_wrapper.POSTGRES_URL
+        
         pg_db.POSTGRES_URL = test_url
+        sync_wrapper.POSTGRES_URL = test_url
         
         try:
-            wrapper = SyncDBWrapper()
+            wrapper = sync_wrapper.SyncDBWrapper()
             
             # Create model
             model_id = str(uuid.uuid4())
@@ -174,7 +178,8 @@ class TestSyncDBWrapper:
             assert model['status'] == 'completed'
             
         finally:
-            pg_db.POSTGRES_URL = original_url
+            pg_db.POSTGRES_URL = original_pg_url
+            sync_wrapper.POSTGRES_URL = original_sync_url
     
     @pytest.mark.integration
     def test_multiple_processes_create_models(self):
