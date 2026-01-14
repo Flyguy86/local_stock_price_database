@@ -421,3 +421,158 @@ class TestPostgreSQLDatabaseLayer:
         # Verify deleted
         history = await simulation_db.get_history(limit=10)
         assert len(history) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestJSONBSerialization:
+    """Regression tests for JSONB field serialization (Issue: asyncpg TypeError)."""
+    
+    async def test_create_model_with_json_string_fields(self, training_db):
+        """
+        Test creating a model with JSONB fields as JSON strings.
+        
+        Regression test for bug where json.loads() was called on JSON strings
+        before passing to asyncpg, causing TypeError: expected str, got list.
+        
+        JSONB fields should accept JSON strings and convert them properly.
+        """
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'name': 'test-jsonb-serialization',
+            'algorithm': 'RandomForest',
+            'symbol': 'GOOGL',
+            'target_col': 'close',
+            'feature_cols': json.dumps([]),  # Empty list as JSON string
+            'hyperparameters': json.dumps({'n_estimators': 100}),  # Dict as JSON string
+            'metrics': json.dumps({'accuracy': 0.95}),  # Dict as JSON string
+            'status': 'pending',
+            'data_options': json.dumps({'train_window': 1000}),  # JSONB field as string
+            'timeframe': '1m',
+            'target_transform': 'log_return',
+            'fingerprint': 'test_jsonb_fp'
+        }
+        
+        # Should not raise TypeError
+        await training_db.create_model_record(model_data)
+        
+        # Verify created correctly
+        model = await training_db.get_model(model_id)
+        assert model is not None
+        assert model['id'] == model_id
+        
+        # Verify JSONB fields were stored and can be retrieved
+        # asyncpg returns JSONB as Python objects
+        assert model['feature_cols'] == []
+        assert model['hyperparameters']['n_estimators'] == 100
+        assert model['metrics']['accuracy'] == 0.95
+        assert model['data_options']['train_window'] == 1000
+    
+    async def test_create_model_with_python_objects(self, training_db):
+        """
+        Test creating a model with JSONB fields as Python objects.
+        
+        The create_model_record function should handle both JSON strings
+        AND Python dicts/lists, converting Python objects to JSON strings.
+        """
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'name': 'test-python-objects',
+            'algorithm': 'ElasticNet',
+            'symbol': 'AAPL',
+            'target_col': 'close',
+            'feature_cols': ['rsi_14', 'macd', 'bb_upper'],  # Python list
+            'hyperparameters': {'alpha': 0.1, 'l1_ratio': 0.5},  # Python dict
+            'metrics': {},  # Empty Python dict
+            'status': 'pending',
+            'data_options': {'train_window': 2000, 'test_window': 500},  # Python dict
+            'alpha_grid': [0.001, 0.01, 0.1, 1.0],  # Python list
+            'l1_ratio_grid': [0.1, 0.5, 0.9],  # Python list
+            'timeframe': '5m',
+            'target_transform': 'pct_change',
+            'fingerprint': 'test_python_fp'
+        }
+        
+        # Should not raise TypeError
+        await training_db.create_model_record(model_data)
+        
+        # Verify created correctly
+        model = await training_db.get_model(model_id)
+        assert model is not None
+        assert model['feature_cols'] == ['rsi_14', 'macd', 'bb_upper']
+        assert model['hyperparameters']['alpha'] == 0.1
+        assert model['alpha_grid'] == [0.001, 0.01, 0.1, 1.0]
+        assert model['l1_ratio_grid'] == [0.1, 0.5, 0.9]
+    
+    async def test_create_model_with_none_jsonb_fields(self, training_db):
+        """
+        Test creating a model with None values for optional JSONB fields.
+        
+        asyncpg should handle None values for JSONB columns (stored as NULL).
+        """
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'name': 'test-none-fields',
+            'algorithm': 'Lasso',
+            'symbol': 'MSFT',
+            'target_col': 'close',
+            'feature_cols': json.dumps([]),
+            'hyperparameters': json.dumps({}),
+            'metrics': json.dumps({}),
+            'status': 'pending',
+            'data_options': None,  # None for optional JSONB field
+            'alpha_grid': None,
+            'l1_ratio_grid': None,
+            'context_symbols': None,
+            'timeframe': '1m',
+            'fingerprint': 'test_none_fp'
+        }
+        
+        # Should not raise error
+        await training_db.create_model_record(model_data)
+        
+        # Verify created correctly with NULL values
+        model = await training_db.get_model(model_id)
+        assert model is not None
+        assert model['data_options'] is None
+        assert model['alpha_grid'] is None
+        assert model['l1_ratio_grid'] is None
+    
+    async def test_create_model_mixed_serialization(self, training_db):
+        """
+        Test creating a model with mixed JSON strings and Python objects.
+        
+        Real-world scenario where some fields come as JSON strings (from API)
+        and others as Python objects (from code).
+        """
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'name': 'test-mixed-types',
+            'algorithm': 'Ridge',
+            'symbol': 'QQQ',
+            'target_col': 'close',
+            'feature_cols': json.dumps(['feature_1', 'feature_2']),  # JSON string
+            'hyperparameters': {'alpha': 50.0},  # Python dict
+            'metrics': json.dumps({}),  # JSON string
+            'status': 'pending',
+            'data_options': None,  # None
+            'alpha_grid': [1.0, 10.0, 50.0, 100.0],  # Python list
+            'context_symbols': json.dumps(['MSFT', 'AAPL', 'GOOGL']),  # JSON string
+            'timeframe': '15m',
+            'fingerprint': 'test_mixed_fp'
+        }
+        
+        # Should handle all types correctly
+        await training_db.create_model_record(model_data)
+        
+        # Verify all fields stored correctly
+        model = await training_db.get_model(model_id)
+        assert model is not None
+        assert model['feature_cols'] == ['feature_1', 'feature_2']
+        assert model['hyperparameters']['alpha'] == 50.0
+        assert model['alpha_grid'] == [1.0, 10.0, 50.0, 100.0]
+        assert model['context_symbols'] == ['MSFT', 'AAPL', 'GOOGL']

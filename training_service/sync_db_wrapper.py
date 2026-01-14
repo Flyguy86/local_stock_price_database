@@ -8,6 +8,8 @@ import logging
 from typing import Optional, Dict, Any, List
 import httpx
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("training.sync_db")
 
@@ -26,38 +28,56 @@ class SyncDBWrapper:
     
     def __init__(self):
         self._pool = None
+        self._pool_lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db_async")
     
-    def _get_pool(self):
-        """Get or create connection pool for this process."""
+    async def _get_or_create_pool(self):
+        """Get or create connection pool (async version)."""
         if self._pool is None:
-            import asyncpg
-            # Create a new event loop for this process
+            with self._pool_lock:
+                if self._pool is None:  # Double-check locking
+                    import asyncpg
+                    self._pool = await asyncpg.create_pool(
+                        POSTGRES_URL,
+                        min_size=1,
+                        max_size=3,
+                        command_timeout=30
+                    )
+        return self._pool
+    
+    def _execute_async(self, coro):
+        """
+        Execute async operation safely, handling running event loops.
+        
+        If an event loop is already running in this thread, we run the
+        coroutine in a separate thread with its own event loop.
+        """
+        try:
+            # Check if there's a running event loop
+            loop = asyncio.get_running_loop()
+            # Event loop is running - execute in separate thread
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(coro)
+                finally:
+                    new_loop.close()
+            
+            future = self._executor.submit(run_in_thread)
+            return future.result()
+        except RuntimeError:
+            # No running event loop - safe to run directly
             try:
                 loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
             except RuntimeError:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
             
-            # Create connection pool
-            self._pool = loop.run_until_complete(
-                asyncpg.create_pool(
-                    POSTGRES_URL,
-                    min_size=1,
-                    max_size=3,
-                    command_timeout=30
-                )
-            )
-        return self._pool
-    
-    def _execute_async(self, coro):
-        """Execute async operation in process's event loop."""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(coro)
+            return loop.run_until_complete(coro)
     
     def update_model_status(
         self,
@@ -74,7 +94,7 @@ class SyncDBWrapper:
     ):
         """Update model status."""
         async def _update():
-            pool = self._get_pool()
+            pool = await self._get_or_create_pool()
             updates = ["status = $1"]
             params = [status]
             param_idx = 2
@@ -130,7 +150,7 @@ class SyncDBWrapper:
     def create_model_record(self, data: Dict[str, Any]):
         """Create model record."""
         async def _create():
-            pool = self._get_pool()
+            pool = await self._get_or_create_pool()
             
             # Convert JSON fields to proper format
             for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options',
@@ -153,7 +173,7 @@ class SyncDBWrapper:
     def save_feature_importance(self, model_id: str, feature_name: str, importance: float):
         """Save feature importance."""
         async def _save():
-            pool = self._get_pool()
+            pool = await self._get_or_create_pool()
             async with pool.acquire() as conn:
                 await conn.execute("""
                     INSERT INTO features_log (model_id, feature_name, importance)
@@ -165,7 +185,7 @@ class SyncDBWrapper:
     def get_model(self, model_id: str) -> Optional[Dict[str, Any]]:
         """Get model."""
         async def _get():
-            pool = self._get_pool()
+            pool = await self._get_or_create_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT * FROM models WHERE id = $1",
@@ -175,20 +195,29 @@ class SyncDBWrapper:
         
         return self._execute_async(_get())
     
-    def __del__(self):
-        """Cleanup connection pool when process exits."""
+    def close(self):
+        """Cleanup connection pool."""
         if self._pool:
+            async def _close():
+                await self._pool.close()
+            
             try:
-                loop = asyncio.get_event_loop()
-                loop.run_until_complete(self._pool.close())
+                self._execute_async(_close())
+            except Exception as e:
+                log.warning(f"Error closing pool: {e}")
+        
+        if self._executor:
+            try:
+                self._executor.shutdown(wait=False)
             except:
                 pass
-        class DummyContext:
-            def __enter__(self):
-                raise NotImplementedError("Direct connection access not supported with PostgreSQL")
-            def __exit__(self, *args):
-                pass
-        return DummyContext()
+    
+    def __del__(self):
+        """Cleanup on deletion."""
+        try:
+            self.close()
+        except:
+            pass
 
 
 # Global instance for trainer.py to import (created per-process)
