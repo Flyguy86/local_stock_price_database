@@ -241,4 +241,9 @@ def delete_all_history_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    import logging
+    
+    # Suppress noisy logs
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    
+    uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")

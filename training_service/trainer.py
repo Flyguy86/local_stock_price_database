@@ -102,18 +102,22 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
             "timeframe": timeframe,
             "feature_cols": feature_cols_used,
             "parent_model_id": parent_model_id,
-            "status": "TRAINED",
-            "cv_score": float(all_scores[idx]),  # CV score from grid search
-            "test_mse": float(test_mse),
-            "test_mae": float(test_mae),
-            "test_r2": float(test_r2),
+            "status": "completed",
+            "metrics": json.dumps({
+                "cv_score": float(all_scores[idx]),
+                "test_mse": float(test_mse),
+                "test_mae": float(test_mae),
+                "test_r2": float(test_r2),
+                "grid_search_rank": idx + 1
+            }),
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "grid_search_rank": idx + 1,  # 1 = best, 2 = second best, etc.
-            "is_grid_member": True  # Flag to identify grid search models
+            "is_grid_member": True,  # Flag to identify grid search models
+            "artifact_path": grid_model_path,
+            "name": f"{symbol}-{algorithm}-grid{idx+1}-{datetime.now().strftime('%Y%m%d%H%M')}"
         }
         
-        # Insert into database
-        db.insert_model(grid_record)
+        # Insert into database using correct method name
+        db.create_model_record(grid_record)
         log.info(f"Inserted grid model {grid_model_id} into database (rank {idx+1}, CV score: {all_scores[idx]:.6f})")
     
     log.info(f"Saved all {len(all_params)} grid search models successfully")

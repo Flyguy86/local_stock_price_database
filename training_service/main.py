@@ -14,6 +14,9 @@ from collections import deque
 from contextlib import asynccontextmanager
 from concurrent.futures import ProcessPoolExecutor
 
+# Suppress noisy HTTP access logs
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 from .config import settings
 from .pg_db import TrainingDB, ensure_tables, get_pool, close_pool
 from .trainer import train_model_task, ALGORITHMS
@@ -43,7 +46,8 @@ async def submit_training_task(
     group_id: Optional[str] = None,
     target_transform: str = "none",
     alpha_grid: Optional[list] = None,
-    l1_ratio_grid: Optional[list] = None
+    l1_ratio_grid: Optional[list] = None,
+    save_all_grid_models: bool = False
 ):
     """Submit training task to process pool and monitor it."""
     loop = asyncio.get_event_loop()
@@ -55,7 +59,11 @@ async def submit_training_task(
             train_model_task,
             training_id, symbol, algorithm, target_col, params,
             data_options, timeframe, parent_model_id, feature_whitelist,
-            group_id, target_transform, alpha_grid, l1_ratio_grid
+            group_id, target_transform, alpha_grid, l1_ratio_grid,
+            None, None, None, None, None,  # XGBoost grids
+            None, None, None, None, None,  # LightGBM grids
+            None, None, None, None, None,  # RandomForest grids
+            save_all_grid_models  # Save all grid models flag
         )
         log.info(f"Training {training_id} completed successfully")
     except Exception as e:
@@ -211,6 +219,7 @@ class TrainRequest(BaseModel):
     # Grid search parameters for regularization
     alpha_grid: Optional[list[float]] = None  # L2 penalty values (Ridge/ElasticNet alpha)
     l1_ratio_grid: Optional[list[float]] = None  # L1/L2 mix for ElasticNet (0=Ridge, 1=Lasso)
+    save_all_grid_models: bool = False  # Save each grid search model as separate DB record
 
 # Validating batch request schema
 class TrainBatchRequest(BaseModel):
@@ -422,7 +431,8 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
         req.group_id,
         req.target_transform,
         req.alpha_grid,
-        req.l1_ratio_grid
+        req.l1_ratio_grid,
+        req.save_all_grid_models
     ))
     
     return {"id": training_id, "status": "started"}

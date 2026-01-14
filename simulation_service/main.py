@@ -37,6 +37,10 @@ class BufferHandler(logging.Handler):
 
 # Configure logging with buffer handler BEFORE app creation
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s [%(name)s] %(message)s')
+
+# Suppress noisy HTTP access logs
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 _handler = BufferHandler()
 _handler.setLevel(logging.INFO)
 _handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [%(name)s] %(message)s'))

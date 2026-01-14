@@ -1216,10 +1216,10 @@ async def grid_search_elasticnet(req: GridSearchElasticNetRequest, background_ta
         await conn.execute(
             """
             INSERT INTO evolution_runs 
-            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features)
-            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, 'elasticnet_regression', $4, $5, $6, $7::jsonb)
+            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features, models_total)
+            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, 'elasticnet_regression', $4, $5, $6, $7::jsonb, $8)
             """,
-            run_id, req.symbol, grid_size, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features)
+            run_id, req.symbol, grid_size, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features), grid_size
         )
     
     log.info(f"Created grid search run {run_id}: ElasticNet {grid_size} models for {req.symbol}")
@@ -1277,11 +1277,36 @@ async def grid_search_elasticnet(req: GridSearchElasticNetRequest, background_ta
                             
                             if training_status == "completed":
                                 log.info(f"[{run_id}] Training completed successfully!")
-                                async with db.acquire() as conn:
-                                    await conn.execute(
-                                        "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
-                                        run_id
-                                    )
+                                
+                                # Count how many grid models were created
+                                try:
+                                    models_resp = await client.get("http://training_service:8200/models")
+                                    if models_resp.status_code == 200:
+                                        all_models = models_resp.json()
+                                        # Filter models by parent_model_id
+                                        grid_models = [m for m in all_models if m.get("parent_model_id") == model_id and m.get("is_grid_member")]
+                                        models_count = len(grid_models)
+                                        log.info(f"[{run_id}] Found {models_count} grid search models")
+                                        
+                                        async with db.acquire() as conn:
+                                            await conn.execute(
+                                                "UPDATE evolution_runs SET status = 'COMPLETED', models_trained = $1 WHERE id = $2",
+                                                models_count, run_id
+                                            )
+                                    else:
+                                        log.warning(f"[{run_id}] Could not fetch models list, marking complete without count")
+                                        async with db.acquire() as conn:
+                                            await conn.execute(
+                                                "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
+                                                run_id
+                                            )
+                                except Exception as e:
+                                    log.error(f"[{run_id}] Error counting models: {e}")
+                                    async with db.acquire() as conn:
+                                        await conn.execute(
+                                            "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
+                                            run_id
+                                        )
                                 return
                             elif training_status == "failed":
                                 log.error(f"[{run_id}] Training failed")
@@ -1860,4 +1885,9 @@ async def check_fingerprint(req: FingerprintCheckRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8400)
+    
+    # Suppress noisy logs
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    uvicorn.run(app, host="0.0.0.0", port=8400, log_level="info")
