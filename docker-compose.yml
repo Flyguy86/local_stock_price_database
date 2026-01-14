@@ -103,7 +103,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      - "8200:8200"
 
   simulation_service:
     build:
