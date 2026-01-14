@@ -11,12 +11,13 @@ import pytest
 import asyncio
 import json
 import numpy as np
+import pandas as pd
 from pathlib import Path
 from httpx import AsyncClient
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from training_service.main import app, db
-from training_service.trainer import train_elasticnet_grid
+from training_service.trainer import train_model_task
 from training_service.sync_db_wrapper import sync_get_model_by_id
 
 
@@ -25,43 +26,41 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_grid_models_have_correct_parent_id(self, db_tables, mock_training_data):
+    async def test_grid_models_have_correct_parent_id(self, db_tables, mock_features):
         """
         Verify grid models are saved with parent_model_id = training_id.
         
         This is the core bug we fixed - models were being saved with parent_model_id=None
         instead of parent_model_id=training_id, causing orchestrator to find 0 models.
         """
-        training_id = "test-grid-parent-123"
+        training_id = str(uuid.uuid4())
         
-        # Mock data with minimal but valid features
-        X_train, X_test, y_train, y_test = mock_training_data
-        
-        # Call train_elasticnet_grid with save_all_grid_models=True
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="AAPL",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=[0.01, 0.1],
-            l1_ratio_grid=[0.3, 0.7],
-            max_iter=100,
-            parent_model_id=None,  # Grid search doesn't have a parent
-            save_all_grid_models=True
-        )
+        # Mock feature loading to return synthetic data
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            # Call train_model_task with grid search parameters
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="AAPL",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=[0.01, 0.1],
+                l1_ratio_grid=[0.3, 0.7],
+                save_all_grid_models=True
+            )
         
         # Verify parent model was created
         parent = await db.get_model_by_id(training_id)
         assert parent is not None
         assert parent["id"] == training_id
-        assert parent["algorithm"] == "elasticnet_grid"
-        assert parent["is_grid_member"] is False  # Parent is not a grid member
+        assert parent["algorithm"] == "elasticnet"
+        assert parent.get("is_grid_member", False) is False  # Parent is not a grid member
         
         # Query all models from database
         all_models = await db.list_models()
@@ -97,35 +96,34 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_is_grid_member_flag_set_correctly(self, db_tables, mock_training_data):
+    async def test_is_grid_member_flag_set_correctly(self, db_tables, mock_features):
         """
         Verify is_grid_member flag is True for grid models, False for parent.
         """
-        training_id = "test-grid-flag-456"
-        X_train, X_test, y_train, y_test = mock_training_data
+        training_id = str(uuid.uuid4())
         
-        # Train with small grid
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="MSFT",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=[0.1],
-            l1_ratio_grid=[0.5],
-            max_iter=100,
-            parent_model_id=None,
-            save_all_grid_models=True
-        )
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            # Train with small grid
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="MSFT",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=[0.1],
+                l1_ratio_grid=[0.5],
+                save_all_grid_models=True
+            )
         
         # Get parent model
         parent = await db.get_model_by_id(training_id)
-        assert parent["is_grid_member"] is False, "Parent model should have is_grid_member=False"
+        assert parent.get("is_grid_member", False) is False, "Parent model should have is_grid_member=False"
         
         # Get grid models
         all_models = await db.list_models()
@@ -139,7 +137,7 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_orchestrator_can_count_grid_models(self, db_tables, mock_training_data):
+    async def test_orchestrator_can_count_grid_models(self, db_tables, mock_features):
         """
         Test the exact query logic used by orchestrator to count grid models.
         
@@ -148,32 +146,31 @@ class TestGridSearchWorkflow:
         2. Orchestrator queries: WHERE parent_model_id=model_id AND is_grid_member=True
         3. Count should match grid size
         """
-        training_id = "test-orchestrator-count-789"
-        X_train, X_test, y_train, y_test = mock_training_data
+        training_id = str(uuid.uuid4())
         
         # Define grid parameters
         alpha_grid = [0.001, 0.01, 0.1]
         l1_ratio_grid = [0.3, 0.5]
         expected_count = len(alpha_grid) * len(l1_ratio_grid)  # 3 × 2 = 6
         
-        # Train grid
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="NVDA",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=alpha_grid,
-            l1_ratio_grid=l1_ratio_grid,
-            max_iter=100,
-            parent_model_id=None,
-            save_all_grid_models=True
-        )
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            # Train grid
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="NVDA",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=alpha_grid,
+                l1_ratio_grid=l1_ratio_grid,
+                save_all_grid_models=True
+            )
         
         # Simulate orchestrator's query (from main.py line 1280-1303)
         all_models = await db.list_models()
@@ -190,34 +187,33 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_save_all_grid_models_parameter_flow(self, db_tables, mock_training_data):
+    async def test_save_all_grid_models_parameter_flow(self, db_tables, mock_features):
         """
         Verify save_all_grid_models=False skips individual model saving.
         
         When save_all_grid_models=False, only parent grid model should be saved,
         not individual parameter combinations.
         """
-        training_id = "test-save-param-999"
-        X_train, X_test, y_train, y_test = mock_training_data
+        training_id = str(uuid.uuid4())
         
-        # Train with save_all_grid_models=False
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="QQQ",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=[0.01, 0.1],
-            l1_ratio_grid=[0.3, 0.7],
-            max_iter=100,
-            parent_model_id=None,
-            save_all_grid_models=False  # Don't save individual models
-        )
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            # Train with save_all_grid_models=False
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="QQQ",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=[0.01, 0.1],
+                l1_ratio_grid=[0.3, 0.7],
+                save_all_grid_models=False  # Don't save individual models
+            )
         
         # Parent should exist
         parent = await db.get_model_by_id(training_id)
@@ -236,33 +232,32 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_grid_models_have_unique_hyperparameters(self, db_tables, mock_training_data):
+    async def test_grid_models_have_unique_hyperparameters(self, db_tables, mock_features):
         """
         Verify each grid model has unique hyperparameter combinations.
         """
-        training_id = "test-unique-params-111"
-        X_train, X_test, y_train, y_test = mock_training_data
+        training_id = str(uuid.uuid4())
         
         alpha_grid = [0.01, 0.1, 1.0]
         l1_ratio_grid = [0.3, 0.7]
         
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="GOOGL",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=alpha_grid,
-            l1_ratio_grid=l1_ratio_grid,
-            max_iter=100,
-            parent_model_id=None,
-            save_all_grid_models=True
-        )
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="GOOGL",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=alpha_grid,
+                l1_ratio_grid=l1_ratio_grid,
+                save_all_grid_models=True
+            )
         
         # Get all grid models
         all_models = await db.list_models()
@@ -292,30 +287,29 @@ class TestGridSearchWorkflow:
     
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_grid_models_have_metrics(self, db_tables, mock_training_data):
+    async def test_grid_models_have_metrics(self, db_tables, mock_features):
         """
         Verify grid models have valid metrics (MSE, R2, etc).
         """
-        training_id = "test-metrics-222"
-        X_train, X_test, y_train, y_test = mock_training_data
+        training_id = str(uuid.uuid4())
         
-        result = await asyncio.to_thread(
-            train_elasticnet_grid,
-            training_id=training_id,
-            symbol="XOM",
-            X_train=X_train,
-            X_test=X_test,
-            y_train=y_train,
-            y_test=y_test,
-            target_col="close",
-            timeframe="1m",
-            target_transform="log_return",
-            alpha_grid=[0.1],
-            l1_ratio_grid=[0.5],
-            max_iter=100,
-            parent_model_id=None,
-            save_all_grid_models=True
-        )
+        with patch('training_service.data.load_training_data', return_value=mock_features):
+            result = await asyncio.to_thread(
+                train_model_task,
+                training_id=training_id,
+                symbol="XOM",
+                algorithm="elasticnet",
+                target_col="close",
+                timeframe="1m",
+                target_transform="log_return",
+                params=None,
+                data_options=None,
+                parent_model_id=None,
+                grid_search=True,
+                alpha_grid=[0.1],
+                l1_ratio_grid=[0.5],
+                save_all_grid_models=True
+            )
         
         # Get grid models
         all_models = await db.list_models()
@@ -335,13 +329,16 @@ class TestGridSearchWorkflow:
             assert "r2" in metrics or "test_r2" in metrics, "Missing R2 metric"
 
 
+import uuid
+
+
 @pytest.fixture
-def mock_training_data():
+def mock_features():
     """
-    Generate minimal mock training data for tests.
+    Generate minimal mock feature data for tests.
     
     Returns:
-        Tuple of (X_train, X_test, y_train, y_test)
+        DataFrame with synthetic features and target column
     """
     np.random.seed(42)
     
@@ -349,14 +346,11 @@ def mock_training_data():
     n_samples = 200
     n_features = 10
     
-    X = np.random.randn(n_samples, n_features)
-    y = np.random.randn(n_samples)
+    # Create feature columns
+    feature_data = {f"feature_{i}": np.random.randn(n_samples) for i in range(n_features)}
+    feature_data["close"] = np.random.randn(n_samples)  # Target column
+    feature_data["ts"] = pd.date_range("2024-01-01", periods=n_samples, freq="1min")
     
-    # Split into train/test
-    split_idx = int(0.8 * n_samples)
-    X_train = X[:split_idx]
-    X_test = X[split_idx:]
-    y_train = y[:split_idx]
-    y_test = y[split_idx:]
+    df = pd.DataFrame(feature_data)
     
-    return X_train, X_test, y_train, y_test
+    return df
