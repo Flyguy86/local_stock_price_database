@@ -87,6 +87,31 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_column THEN NULL;
 END $$;
 
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS algorithm VARCHAR(64);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS target_col VARCHAR(32);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS target_transform VARCHAR(32);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS timeframe VARCHAR(16);
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    ALTER TABLE evolution_runs ADD COLUMN IF NOT EXISTS seed_features JSONB;
+EXCEPTION WHEN duplicate_column THEN NULL;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_runs_status ON evolution_runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_symbol ON evolution_runs(symbol);
 

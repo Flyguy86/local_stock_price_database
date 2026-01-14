@@ -167,7 +167,29 @@ This project follows a "Manual Pipeline" architecture with two distinct phases o
     *   **ElasticNet Grid Search**:
         *   **Auto-Tuning**: When `elasticnet_regression` is selected without custom parameters, the system triggers a **Multi-threaded Grid Search** (`n_jobs=-1`).
         *   **Optimization**: It tests varying combinations of `alpha` (0.0001 to 1.0) and `l1_ratio` (0.1 to 0.99) to find the perfect balance between Lasso (feature selection) and Ridge (stability), preventing models where all features are zeroed out.
-    *   **Stationarity & Target Selection**: 
+    *   **Comprehensive Hyperparameter Grid Search**:
+        *   **All Algorithms**: Grid search now supports ElasticNet, XGBoost, LightGBM, and RandomForest with algorithm-specific hyperparameters.
+        *   **Exhaustive Model Saving**: When `save_all_grid_models=True`, the training service saves **ALL models** from the grid search (not just the best one). Each hyperparameter combination becomes a separate database record with its own CV score, test metrics, and fingerprint.
+        *   **Algorithm-Specific Endpoints**: Clean, focused API endpoints for each algorithm:
+            - `POST /grid-search/elasticnet` - Train all alpha × l1_ratio combinations (e.g., 5×3=15 models)
+            - `POST /grid-search/xgboost` - Train all depth × weight × L1 × L2 × LR combinations (e.g., 3×3×4×3×3=324 models)
+            - `POST /grid-search/lightgbm` - Train all leaves × min_data × L1 × L2 × LR combinations (e.g., 3×3×4×3×3=324 models)
+            - `POST /grid-search/randomforest` - Train all depth × split × leaf × estimators × max_features combinations (e.g., 3×3×3×3×4=324 models)
+        *   **No Feature Pruning**: Unlike the evolution loop, pure grid search trains all models with the **SAME feature set**—perfect for creating diverse models for ensemble/stacking workflows.
+        *   **L1/L2 Regularization for Noise Reduction**:
+            - **L1 (Lasso)**: Drives feature coefficients to **exactly zero** → automatic feature selection, eliminates duplicate/noisy columns
+            - **L2 (Ridge)**: Shrinks coefficients but keeps all features → reduces overfitting to noise
+            - **ElasticNet**: `alpha` (overall strength), `l1_ratio` (L1 vs L2 balance: 0=pure Ridge, 1=pure Lasso, 0.5=balanced)
+            - **XGBoost**: `reg_alpha` (L1: 0.0-1.0 for feature selection), `reg_lambda` (L2: 1-50 for weight smoothing)
+            - **LightGBM**: `lambda_l1` (L1: 0.0-1.0 for pruning), `lambda_l2` (L2: 0.0-50 for shrinkage)
+            - **RandomForest**: `max_features` (feature sampling: "sqrt"/"log2" for strong regularization, 0.5-1.0 for % of features)
+        *   **Grid Size Examples**: ElasticNet (15 models), XGBoost/LightGBM/RandomForest (324 models each with L1+L2 grids)
+        *   **XGBoost**: `max_depth` (tree depth: 3-9), `min_child_weight` (leaf node samples: 1-5), `reg_alpha` (L1: 0.0-1.0), `reg_lambda` (L2: 0.01-10.0), `learning_rate` (0.01-0.3)
+        *   **LightGBM**: `num_leaves` (tree complexity: 15-127), `min_data_in_leaf` (10-50), `lambda_l1` (L1: 0.0-1.0), `lambda_l2` (L2: 0.0-1.0), `learning_rate` (0.01-0.3)
+        *   **RandomForest**: `max_depth` (5-20+None), `min_samples_split` (2-10), `min_samples_leaf` (1-4), `n_estimators` (50-200), `max_features` (sqrt/log2/0.5/1.0)
+        *   **UI Support**: Dashboard includes dedicated "Pure Grid Search" panel with 4 color-coded buttons (ElasticNet=blue, XGBoost=yellow, LightGBM=green, RandomForest=purple).
+        *   **Workflow**: Grid Search → Browse All Models → Select Best Performers → Run Simulations → Build Ensemble
+    *   **Stationarity & Target Selection**:  
         *   **Prediction Type**: System defaults to **Log Return** (`ln(Future/Current)`) or **Percent Change** to ensure the target variable is **stationary**. Predicting Raw Prices is flagged with a warning to prevent high-coefficient/low-value models.
         *   **Flexibility**: Users can still select "Raw Price" for specific research needs, but "Log Return" is enforced for Batch jobs.
         *   **Target Column**: Predict any column (Close, Open, High, etc.) `N` steps into the future.

@@ -25,11 +25,11 @@ try:
 except ImportError:
     shap = None
 
-from sklearn.metrics import mean_squared_error, accuracy_score
+from sklearn.metrics import mean_squared_error, accuracy_score, mean_absolute_error, r2_score
 import joblib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from .config import settings
@@ -53,7 +53,108 @@ if LGBMRegressor:
     ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
     ALGORITHMS["lightgbm_classifier"] = LGBMClassifier
 
-def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: str, params: dict, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, feature_whitelist: list[str] = None, group_id: str = None, target_transform: str = "none", alpha_grid: list[float] = None, l1_ratio_grid: list[float] = None):
+
+def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_test, feature_cols_used,
+                          symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings):
+    """
+    Helper function to save ALL models from a GridSearchCV run.
+    Each hyperparameter combination is saved as a separate model in the database.
+    """
+    all_params = grid_search.cv_results_['params']
+    all_scores = grid_search.cv_results_['mean_test_score']
+    
+    from sklearn.base import clone
+    
+    for idx, param_set in enumerate(all_params):
+        log.info(f"Refitting model {idx+1}/{len(all_params)} with params: {param_set}")
+        
+        # Clone the pipeline and set hyperparameters
+        individual_model = clone(base_model)
+        
+        # Set the hyperparameters on the cloned pipeline
+        for param_name, param_value in param_set.items():
+            individual_model.set_params(**{param_name: param_value})
+        
+        # Fit the model
+        individual_model.fit(X_train, y_train)
+        
+        # Evaluate on test set
+        test_preds = individual_model.predict(X_test)
+        test_mse = mean_squared_error(y_test, test_preds)
+        test_mae = mean_absolute_error(y_test, test_preds)
+        test_r2 = r2_score(y_test, test_preds)
+        
+        # Save this model to database as separate record
+        grid_model_id = str(uuid.uuid4())
+        grid_model_path = str(settings.models_dir / f"{grid_model_id}.joblib")
+        
+        joblib.dump(individual_model, grid_model_path)
+        log.info(f"Saved grid model {idx+1} to {grid_model_path}")
+        
+        # Create database record for this grid model
+        grid_record = {
+            "id": grid_model_id,
+            "symbol": symbol,
+            "algorithm": algorithm,
+            "target_col": target_col,
+            "hyperparameters": param_set,  # Specific params for this model
+            "target_transform": target_transform,
+            "timeframe": timeframe,
+            "feature_cols": feature_cols_used,
+            "parent_model_id": parent_model_id,
+            "status": "TRAINED",
+            "cv_score": float(all_scores[idx]),  # CV score from grid search
+            "test_mse": float(test_mse),
+            "test_mae": float(test_mae),
+            "test_r2": float(test_r2),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "grid_search_rank": idx + 1,  # 1 = best, 2 = second best, etc.
+            "is_grid_member": True  # Flag to identify grid search models
+        }
+        
+        # Insert into database
+        db.insert_model(grid_record)
+        log.info(f"Inserted grid model {grid_model_id} into database (rank {idx+1}, CV score: {all_scores[idx]:.6f})")
+    
+    log.info(f"Saved all {len(all_params)} grid search models successfully")
+
+
+def train_model_task(
+    training_id: str, 
+    symbol: str, 
+    algorithm: str, 
+    target_col: str, 
+    params: dict, 
+    data_options: str = None, 
+    timeframe: str = "1m", 
+    parent_model_id: str = None, 
+    feature_whitelist: list[str] = None, 
+    group_id: str = None, 
+    target_transform: str = "none", 
+    # ElasticNet grids
+    alpha_grid: list[float] = None, 
+    l1_ratio_grid: list[float] = None,
+    # XGBoost grids
+    max_depth_grid: list[int] = None,
+    min_child_weight_grid: list[int] = None,
+    reg_alpha_grid: list[float] = None,  # L1 regularization
+    reg_lambda_grid: list[float] = None,  # L2 regularization
+    learning_rate_grid: list[float] = None,
+    # LightGBM grids
+    num_leaves_grid: list[int] = None,
+    min_data_in_leaf_grid: list[int] = None,
+    lambda_l1_grid: list[float] = None,  # L1 regularization
+    lambda_l2_grid: list[float] = None,  # L2 regularization
+    lgbm_learning_rate_grid: list[float] = None,
+    # RandomForest grids
+    rf_max_depth_grid: list = None,
+    min_samples_split_grid: list[int] = None,
+    min_samples_leaf_grid: list[int] = None,
+    n_estimators_grid: list[int] = None,
+    max_features_grid: list = None,  # Feature sampling for regularization
+    # Control flag
+    save_all_grid_models: bool = False
+):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
     
     try:
@@ -510,8 +611,8 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             # Alpha (L2 penalty): higher = more regularization
             # L1 ratio: 0 = pure L2 (Ridge), 1 = pure L1 (Lasso), 0.5 = balanced
             # CRITICAL: Use LOW alphas to avoid over-regularization that zeros coefficients
-            default_alphas = [0.0001, 0.001, 0.01, 0.1, 0.5, 1.0, 5.0]
-            default_l1_ratios = [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
+            default_alphas = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+            default_l1_ratios = [0.1, 0.3, 0.5, 0.7, 0.85, 0.95, 0.99]
             
             grid_params = {
                 'model__alpha': alpha_grid if alpha_grid else default_alphas,
@@ -579,6 +680,12 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
             
             grid_search.fit(X_train, y_train)
             
+            # --- SAVE ALL GRID MODELS (if requested) ---
+            if save_all_grid_models:
+                log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} models from grid search")
+                _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
+                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+            
             best_model = grid_search.best_estimator_
             best_params = grid_search.best_params_
             log.info(f"Grid Search Best Params: {best_params} | Best Score: {grid_search.best_score_}")
@@ -623,6 +730,195 @@ def train_model_task(training_id: str, symbol: str, algorithm: str, target_col: 
                 tuned_params = best_params
             
             # Replace model with the tuned one (or OLS fallback)
+            model = best_model
+        
+        # --- GRID SEARCH FOR XGBOOST ---
+        elif algorithm in ["xgboost_regressor", "xgboost_classifier"] and XGBRegressor and \
+             (max_depth_grid or min_child_weight_grid or reg_alpha_grid or reg_lambda_grid or learning_rate_grid):
+            log.info("Starting Grid Search for XGBoost...")
+            
+            default_max_depth = [3, 4, 5, 6, 7, 8, 9]
+            default_min_child_weight = [1, 3, 5, 10, 15, 20, 30]
+            default_reg_alpha = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]  # L1
+            default_reg_lambda = [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0]  # L2
+            default_learning_rate = [0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3]
+            
+            grid_params = {}
+            if max_depth_grid:
+                grid_params['model__max_depth'] = max_depth_grid
+            else:
+                grid_params['model__max_depth'] = default_max_depth
+            
+            if min_child_weight_grid:
+                grid_params['model__min_child_weight'] = min_child_weight_grid
+            else:
+                grid_params['model__min_child_weight'] = default_min_child_weight
+                
+            if reg_alpha_grid:
+                grid_params['model__reg_alpha'] = reg_alpha_grid
+            else:
+                grid_params['model__reg_alpha'] = default_reg_alpha
+                
+            if reg_lambda_grid:
+                grid_params['model__reg_lambda'] = reg_lambda_grid
+            else:
+                grid_params['model__reg_lambda'] = default_reg_lambda
+                
+            if learning_rate_grid:
+                grid_params['model__learning_rate'] = learning_rate_grid
+            else:
+                grid_params['model__learning_rate'] = default_learning_rate
+            
+            grid_size = len(grid_params['model__max_depth']) * len(grid_params['model__min_child_weight']) * \
+                       len(grid_params['model__reg_alpha']) * len(grid_params['model__reg_lambda']) * len(grid_params['model__learning_rate'])
+            log.info(f"XGBoost grid: {len(grid_params['model__max_depth'])} depths × {len(grid_params['model__min_child_weight'])} weights × {len(grid_params['model__reg_alpha'])} alphas(L1) × {len(grid_params['model__reg_lambda'])} lambdas(L2) × {len(grid_params['model__learning_rate'])} LRs = {grid_size} combinations")
+            
+            grid_search = GridSearchCV(
+                model,
+                grid_params,
+                cv=5,
+                scoring='neg_mean_squared_error' if "regressor" in algorithm else 'accuracy',
+                n_jobs=-1,
+                verbose=1
+            )
+            
+            grid_search.fit(X_train, y_train)
+            
+            # Save all models if requested
+            if save_all_grid_models:
+                log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} XGBoost models from grid search")
+                _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used, 
+                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+            
+            best_model = grid_search.best_estimator_
+            tuned_params = grid_search.best_params_
+            log.info(f"XGBoost Grid Search Best Params: {tuned_params} | Best Score: {grid_search.best_score_}")
+            model = best_model
+        
+        # --- GRID SEARCH FOR LIGHTGBM ---
+        elif algorithm in ["lightgbm_regressor", "lightgbm_classifier"] and LGBMRegressor and \
+             (num_leaves_grid or min_data_in_leaf_grid or lambda_l1_grid or lambda_l2_grid or lgbm_learning_rate_grid):
+            log.info("Starting Grid Search for LightGBM...")
+            
+            default_num_leaves = [7, 15, 31, 63, 95, 127, 191]
+            default_min_data_in_leaf = [5, 10, 20, 40, 60, 80, 100]
+            default_lambda_l1 = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]  # L1
+            default_lambda_l2 = [0.0, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0]  # L2
+            default_learning_rate = [0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3]
+            
+            grid_params = {}
+            if num_leaves_grid:
+                grid_params['model__num_leaves'] = num_leaves_grid
+            else:
+                grid_params['model__num_leaves'] = default_num_leaves
+            
+            if min_data_in_leaf_grid:
+                grid_params['model__min_data_in_leaf'] = min_data_in_leaf_grid
+            else:
+                grid_params['model__min_data_in_leaf'] = default_min_data_in_leaf
+                
+            if lambda_l1_grid:
+                grid_params['model__lambda_l1'] = lambda_l1_grid
+            else:
+                grid_params['model__lambda_l1'] = default_lambda_l1
+                
+            if lambda_l2_grid:
+                grid_params['model__lambda_l2'] = lambda_l2_grid
+            else:
+                grid_params['model__lambda_l2'] = default_lambda_l2
+                
+            if lgbm_learning_rate_grid:
+                grid_params['model__learning_rate'] = lgbm_learning_rate_grid
+            else:
+                grid_params['model__learning_rate'] = default_learning_rate
+            
+            grid_size = len(grid_params['model__num_leaves']) * len(grid_params['model__min_data_in_leaf']) * \
+                       len(grid_params['model__lambda_l1']) * len(grid_params['model__lambda_l2']) * len(grid_params['model__learning_rate'])
+            log.info(f"LightGBM grid: {len(grid_params['model__num_leaves'])} leaves × {len(grid_params['model__min_data_in_leaf'])} min_data × {len(grid_params['model__lambda_l1'])} l1 × {len(grid_params['model__lambda_l2'])} l2 × {len(grid_params['model__learning_rate'])} LRs = {grid_size} combinations")
+            
+            grid_search = GridSearchCV(
+                model,
+                grid_params,
+                cv=5,
+                scoring='neg_mean_squared_error' if "regressor" in algorithm else 'accuracy',
+                n_jobs=-1,
+                verbose=1
+            )
+            
+            grid_search.fit(X_train, y_train)
+            
+            # Save all models if requested
+            if save_all_grid_models:
+                log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} LightGBM models from grid search")
+                _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
+                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+            
+            best_model = grid_search.best_estimator_
+            tuned_params = grid_search.best_params_
+            log.info(f"LightGBM Grid Search Best Params: {tuned_params} | Best Score: {grid_search.best_score_}")
+            model = best_model
+        
+        # --- GRID SEARCH FOR RANDOMFOREST ---
+        elif algorithm in ["random_forest_regressor", "random_forest_classifier"] and \
+             (rf_max_depth_grid or min_samples_split_grid or min_samples_leaf_grid or n_estimators_grid or max_features_grid):
+            log.info("Starting Grid Search for RandomForest...")
+            
+            default_max_depth = [5, 10, 15, 20, 30, 50, None]
+            default_min_samples_split = [2, 5, 10, 20, 30, 50, 100]
+            default_min_samples_leaf = [1, 2, 4, 8, 12, 16, 20]
+            default_n_estimators = [25, 50, 75, 100, 150, 200, 300]
+            default_max_features = ["sqrt", "log2", 0.3, 0.5, 0.7, 0.9, 1.0]  # Feature sampling
+            
+            grid_params = {}
+            if rf_max_depth_grid is not None:
+                grid_params['model__max_depth'] = rf_max_depth_grid
+            else:
+                grid_params['model__max_depth'] = default_max_depth
+            
+            if min_samples_split_grid:
+                grid_params['model__min_samples_split'] = min_samples_split_grid
+            else:
+                grid_params['model__min_samples_split'] = default_min_samples_split
+                
+            if min_samples_leaf_grid:
+                grid_params['model__min_samples_leaf'] = min_samples_leaf_grid
+            else:
+                grid_params['model__min_samples_leaf'] = default_min_samples_leaf
+                
+            if n_estimators_grid:
+                grid_params['model__n_estimators'] = n_estimators_grid
+            else:
+                grid_params['model__n_estimators'] = default_n_estimators
+                
+            if max_features_grid:
+                grid_params['model__max_features'] = max_features_grid
+            else:
+                grid_params['model__max_features'] = default_max_features
+            
+            grid_size = len(grid_params['model__max_depth']) * len(grid_params['model__min_samples_split']) * \
+                       len(grid_params['model__min_samples_leaf']) * len(grid_params['model__n_estimators']) * len(grid_params['model__max_features'])
+            log.info(f"RandomForest grid: {len(grid_params['model__max_depth'])} depths × {len(grid_params['model__min_samples_split'])} splits × {len(grid_params['model__min_samples_leaf'])} leafs × {len(grid_params['model__n_estimators'])} estimators × {len(grid_params['model__max_features'])} max_features = {grid_size} combinations")
+            
+            grid_search = GridSearchCV(
+                model,
+                grid_params,
+                cv=5,
+                scoring='neg_mean_squared_error' if "regressor" in algorithm else 'accuracy',
+                n_jobs=-1,
+                verbose=1
+            )
+            
+            grid_search.fit(X_train, y_train)
+            
+            # Save all models if requested
+            if save_all_grid_models:
+                log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} RandomForest models from grid search")
+                _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
+                                     symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings)
+            
+            best_model = grid_search.best_estimator_
+            tuned_params = grid_search.best_params_
+            log.info(f"RandomForest Grid Search Best Params: {tuned_params} | Best Score: {grid_search.best_score_}")
             model = best_model
 
         else:

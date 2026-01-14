@@ -34,6 +34,24 @@ class EvolutionConfig(BaseModel):
     alpha_grid: Optional[List[float]] = None    # L2 penalty: [0.001, 0.01, 0.1, 1.0, 10.0, 50.0, 100.0]
     l1_ratio_grid: Optional[List[float]] = None # L1/L2 mix: [0.1, 0.3, 0.5, 0.7, 0.9, 0.95]
     
+    # Grid search for XGBoost
+    max_depth_grid: Optional[List[int]] = None
+    min_child_weight_grid: Optional[List[int]] = None
+    reg_lambda_grid: Optional[List[float]] = None
+    learning_rate_grid: Optional[List[float]] = None
+    
+    # Grid search for LightGBM
+    num_leaves_grid: Optional[List[int]] = None
+    min_data_in_leaf_grid: Optional[List[int]] = None
+    lambda_l2_grid: Optional[List[float]] = None
+    lgbm_learning_rate_grid: Optional[List[float]] = None
+    
+    # Grid search for RandomForest
+    rf_max_depth_grid: Optional[List[Any]] = None  # Can include None
+    min_samples_split_grid: Optional[List[int]] = None
+    min_samples_leaf_grid: Optional[List[int]] = None
+    n_estimators_grid: Optional[List[int]] = None
+    
     # Pruning strategy: prune bottom X% of features each generation
     prune_fraction: float = 0.25                # Prune bottom 25% each gen
     min_features: int = 5                       # Never go below this many features
@@ -308,13 +326,46 @@ class EvolutionEngine:
                 # Check if we can continue pruning
                 if not pruned:
                     log.info("Step B: No features to prune (at min_features limit or all equal importance)")
-                    log.info("Step B: Cannot create child generation, stopping training phase")
+                    log.info("Step B: Current model is valid but cannot create child generation")
+                    log.info(f"Step B: Saving current model {state.current_model_id} as final model")
+                    
+                    # The current model is already trained and valid - just can't be pruned further
+                    # Make sure it's in the trained_models list if not already there
+                    current_model_exists = any(
+                        m["model_id"] == state.current_model_id 
+                        for m in state.trained_models
+                    )
+                    
+                    if not current_model_exists:
+                        log.info(f"Step B: Adding current model to trained_models list")
+                        state.trained_models.append({
+                            "model_id": state.current_model_id,
+                            "generation": state.current_generation,
+                            "features_count": len(state.current_features)
+                        })
+                    
                     state.stopped_reason = "no_features_to_prune"
                     break
                 
                 if not remaining or len(remaining) < config.min_features:
                     log.warning(f"Step B: Would go below min_features ({config.min_features})")
                     log.info("Step B: Stopping at feature limit")
+                    log.info(f"Step B: Saving current model {state.current_model_id} as final model")
+                    
+                    # The current model is already trained and valid
+                    current_model_exists = any(
+                        m["model_id"] == state.current_model_id 
+                        for m in state.trained_models
+                    )
+                    
+                    if not current_model_exists:
+                        log.info(f"Step B: Adding current model to trained_models list")
+                        state.trained_models.append({
+                            "model_id": state.current_model_id,
+                            "generation": state.current_generation,
+                            "features_count": len(state.current_features)
+                        })
+                    
                     state.stopped_reason = "min_features_reached"
                     break
                 
@@ -472,6 +523,31 @@ class EvolutionEngine:
             # ================================================================
             # PHASE 2: SIMULATE ALL MODELS
             # ================================================================
+            
+            # Check if this is train-only mode (no simulations requested)
+            if not config.simulation_tickers or len(config.simulation_tickers) == 0:
+                log.info("=" * 60)
+                log.info("TRAIN-ONLY MODE: Skipping simulations")
+                log.info("=" * 60)
+                log.info(f"Successfully trained {len(state.trained_models)} models")
+                
+                # Mark as COMPLETED for train-only mode
+                final_reason = state.stopped_reason or "train_only_complete"
+                await db.update_evolution_run(
+                    run_id,
+                    status="COMPLETED",
+                    step_status=f"Train-only complete: {len(state.trained_models)} models trained, 0 simulations run. Reason: {final_reason}"
+                )
+                
+                return {
+                    "run_id": run_id,
+                    "generations_completed": len(state.trained_models) - 1,
+                    "models_trained": len(state.trained_models),
+                    "final_model_id": state.current_model_id,
+                    "promoted": False,  # No promotions in train-only mode
+                    "best_sqn": 0.0,
+                    "stopped_reason": final_reason
+                }
             
             # Safety check: Don't proceed to simulation if no valid models were trained
             if len(state.trained_models) == 0:
@@ -776,8 +852,26 @@ class EvolutionEngine:
             "timeframe": config.timeframe,
             "parent_model_id": parent_model_id,
             "feature_whitelist": features,
-            "alpha_grid": config.alpha_grid,       # Grid search: L2 penalty values
-            "l1_ratio_grid": config.l1_ratio_grid  # Grid search: L1/L2 mix values
+            # ElasticNet grids
+            "alpha_grid": config.alpha_grid,
+            "l1_ratio_grid": config.l1_ratio_grid,
+            # XGBoost grids
+            "max_depth_grid": config.max_depth_grid,
+            "min_child_weight_grid": config.min_child_weight_grid,
+            "reg_lambda_grid": config.reg_lambda_grid,
+            "learning_rate_grid": config.learning_rate_grid,
+            # LightGBM grids
+            "num_leaves_grid": config.num_leaves_grid,
+            "min_data_in_leaf_grid": config.min_data_in_leaf_grid,
+            "lambda_l2_grid": config.lambda_l2_grid,
+            "lgbm_learning_rate_grid": config.lgbm_learning_rate_grid,
+            # RandomForest grids
+            "rf_max_depth_grid": config.rf_max_depth_grid,
+            "min_samples_split_grid": config.min_samples_split_grid,
+            "min_samples_leaf_grid": config.min_samples_leaf_grid,
+            "n_estimators_grid": config.n_estimators_grid,
+            # Control flag to save ALL models from grid
+            "save_all_grid_models": True
         }
         
         log.info(f"Training model with {len(features or [])} features...")

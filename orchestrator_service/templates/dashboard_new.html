@@ -193,7 +193,7 @@
             </div>
             
             <!-- Regularization Grid (shown for ElasticNet/Ridge/Lasso) -->
-            <div id="regularization-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px;">
+            <div id="regularization-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px; display: none;">
               <div class="group">
                 <label>Alpha Grid (L2 penalty, comma-separated)</label>
                 <input type="text" id="alpha-grid" value="0.0001, 0.001, 0.01, 0.1" title="Regularization strength. Lower alpha = less penalty on coefficients. Start with 0.0001 (near-zero regularization), then fine-tune upward. Higher alpha = more penalty on large coefficients. Suggested: 0.0001, 0.001, 0.01, 0.1 for most cases. Increase (0.5, 1.0) for high multicollinearity. Note: alpha=0 is not supported (use LinearRegression instead).">
@@ -202,6 +202,127 @@
                 <label>L1 Ratio Grid (Lasso/Ridge mix)</label>
                 <input type="text" id="l1-ratio-grid" value="0.1, 0.5, 0.9" title="L1/L2 penalty mix (only applies when alpha > 0). 0 = pure Ridge (L2 - keeps all features), 1 = pure Lasso (L1 - sparse, zeros some features), 0.5 = balanced ElasticNet. Suggested: 0.1, 0.5, 0.9 to test Ridge-like, balanced, and Lasso-like behavior.">
               </div>
+            </div>
+            
+            <!-- XGBoost Hyperparameter Grid -->
+            <div id="xgboost-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(251, 191, 36, 0.1); border-radius: 4px; display: none;">
+              <div class="group">
+                <label>Max Depth Grid (tree depth, comma-separated)</label>
+                <input type="text" id="max-depth-grid" value="3, 4, 5, 6, 7, 8, 9" title="Maximum tree depth. 3-4 for shallow trees (prevents memorizing specific minutes), 5-7 for more complex patterns. Lower = less overfitting.">
+              </div>
+              <div class="group">
+                <label>Min Child Weight Grid (min samples per leaf)</label>
+                <input type="text" id="min-child-weight-grid" value="1, 3, 5, 10, 15, 20, 30" title="Minimum sum of instance weight needed in a child. 15-30 requires more data for a signal (prevents trading on single outliers). Higher = more conservative.">
+              </div>
+              <div class="group">
+                <label>Reg Alpha Grid (L1 regularization - feature selection)</label>
+                <input type="text" id="reg-alpha-grid" value="0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0" title="L1 regularization drives feature weights to zero (automatic feature selection). 0.01-0.1 for light pruning, 1.0+ for aggressive. Higher = fewer features used.">
+              </div>
+              <div class="group">
+                <label>Reg Lambda Grid (L2 regularization - coefficient shrinkage)</label>
+                <input type="text" id="reg-lambda-grid" value="0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0" title="L2 regularization on weights. 10-100 smooths out weights (reduces high variance in signals). Higher = stronger regularization.">
+              </div>
+              <div class="group">
+                <label>Learning Rate Grid</label>
+                <input type="text" id="learning-rate-grid" value="0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3" title="Step size shrinkage. 0.01 for slower, more robust learning (less aggressive). Lower = more stable but slower training.">
+              </div>
+            </div>
+            
+            <!-- LightGBM Hyperparameter Grid -->
+            <div id="lightgbm-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(16, 185, 129, 0.1); border-radius: 4px; display: none;">
+              <div class="group">
+                <label>Num Leaves Grid (tree complexity)</label>
+                <input type="text" id="num-leaves-grid" value="7, 15, 31, 63, 95, 127, 191" title="Maximum number of leaves in one tree. 15-31 for conservative (prevents overfitting), 31-127 for complex patterns. Lower = simpler trees.">
+              </div>
+              <div class="group">
+                <label>Min Data in Leaf Grid</label>
+                <input type="text" id="min-data-in-leaf-grid" value="5, 10, 20, 40, 60, 80, 100" title="Minimum number of data in one leaf. Higher values prevent overfitting to outliers.">
+              </div>
+              <div class="group">
+                <label>Lambda L1 Grid (L1 regularization - feature selection)</label>
+                <input type="text" id="lambda-l1-grid" value="0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0" title="L1 regularization for automatic feature selection. 0.01-0.1 for mild pruning, 1.0+ for aggressive. Higher = fewer features.">
+              </div>
+              <div class="group">
+                <label>Lambda L2 Grid (L2 regularization - coefficient shrinkage)</label>
+                <input type="text" id="lambda-l2-grid" value="0.0, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0" title="L2 regularization. 10-100 for high variance signals. Higher = stronger regularization.">
+              </div>
+              <div class="group">
+                <label>Learning Rate Grid</label>
+                <input type="text" id="lgbm-learning-rate-grid" value="0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3" title="Boosting learning rate. 0.01 for robust learning, 0.1 for faster training.">
+              </div>
+            </div>
+            
+            <!-- Random Forest Hyperparameter Grid -->
+            <div id="randomforest-grid" class="row" style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(139, 92, 246, 0.1); border-radius: 4px; display: none;">
+              <div class="group">
+                <label>Max Depth Grid (tree depth)</label>
+                <input type="text" id="rf-max-depth-grid" value="5, 10, 15, 20, 30, 50, None" title="Maximum tree depth. 3-5 for shallow (prevents overfitting), 10+ for complex, None for unlimited. Use 'None' as text for no limit.">
+              </div>
+              <div class="group">
+                <label>Min Samples Split Grid</label>
+                <input type="text" id="min-samples-split-grid" value="2, 5, 10, 20, 30, 50, 100" title="Minimum samples required to split an internal node. Higher = more conservative splits.">
+              </div>
+              <div class="group">
+                <label>Min Samples Leaf Grid</label>
+                <input type="text" id="min-samples-leaf-grid" value="1, 2, 4, 8, 12, 16, 20" title="Minimum samples required at a leaf node. Higher prevents overfitting to outliers.">
+              </div>
+              <div class="group">
+                <label>N Estimators Grid (number of trees)</label>
+                <input type="text" id="n-estimators-grid" value="25, 50, 75, 100, 150, 200, 300" title="Number of trees in the forest. More trees = better performance but slower. 100-200 is typical.">
+              </div>
+              <div class="group">
+                <label>Max Features Grid (feature sampling for regularization)</label>
+                <input type="text" id="max-features-grid" value="sqrt, log2, 0.3, 0.5, 0.7, 0.9, 1.0" title="Features considered per split. 'sqrt' or 'log2' for strong regularization (reduces correlation between trees), 0.5 for moderate, 1.0 for all features. Lower = more diversity, less overfitting.">
+              </div>
+            </div>
+            
+            <!-- Train Models Only Button -->
+            <div style="margin-top: 1rem; padding: 1rem; background: rgba(59, 130, 246, 0.15); border: 1px dashed rgba(59, 130, 246, 0.5); border-radius: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem;">
+                <div>
+                  <strong style="color: #60a5fa;">🎯 Train & Prune Only</strong>
+                  <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0 0;">
+                    Grid search models for X generations WITHOUT running simulations.<br>
+                    Use this to build a pool of models, then manually select which ones to simulate.
+                  </p>
+                </div>
+              </div>
+              <button type="button" onclick="trainModelsOnly()" style="width: 100%; background: #2563eb; padding: 0.75rem;">
+                🧠 Train Models Only (Skip Simulations)
+              </button>
+            </div>
+            
+            <!-- NEW: Pure Grid Search (No Pruning) -->
+            <div style="margin-top: 1rem; padding: 1rem; background: rgba(168, 85, 247, 0.15); border: 1px dashed rgba(168, 85, 247, 0.5); border-radius: 6px;">
+              <div style="margin-bottom: 0.75rem;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <strong style="color: #a78bfa;">⚡ Pure Grid Search</strong>
+                  <span style="font-size: 0.75rem; color: var(--text-muted);">No pruning, no evolution</span>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0 0;">
+                  Train ALL hyperparameter combinations using the SAME feature set.<br>
+                  Perfect for creating diverse models for ensemble/stacking workflows.
+                </p>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
+                <button type="button" onclick="gridSearchElasticNet(this)" style="background: #6366f1; padding: 0.75rem; font-size: 0.9rem;">
+                  🔹 ElasticNet Grid
+                </button>
+                <button type="button" onclick="gridSearchXGBoost(this)" style="background: #8b5cf6; padding: 0.75rem; font-size: 0.9rem;">
+                  🌲 XGBoost Grid
+                </button>
+                <button type="button" onclick="gridSearchLightGBM(this)" style="background: #a855f7; padding: 0.75rem; font-size: 0.9rem;">
+                  💡 LightGBM Grid
+                </button>
+                <button type="button" onclick="gridSearchRandomForest(this)" style="background: #c026d3; padding: 0.75rem; font-size: 0.9rem;">
+                  🌳 RandomForest Grid
+                </button>
+              </div>
+              <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; text-align: center;">
+                ℹ️ Grid sizes: ElasticNet (8×7=56), XGBoost (7×7×8×7×7≈19,208), LightGBM (7×7×8×7×7≈19,208), RF (7×7×7×7×7≈16,807)<br>
+                ⚙️ L1 (alpha/lambda_l1) drives coefficients to zero = automatic feature selection. L2 (lambda/lambda_l2) shrinks coefficients = reduces noise.<br>
+                ⚠️ Large grids may take 1-3 hours. Start smaller for testing.
+              </p>
             </div>
           </div>
           
@@ -213,6 +334,62 @@
               📊 Simulation Grid Search
               <span style="font-size: 0.75rem; font-weight: normal; color: var(--text-muted);">— Backtest parameter sweep</span>
             </h4>
+            
+            <!-- Model Browser & Selector -->
+            <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; padding: 1rem; margin-bottom: 1rem;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                <strong style="color: #60a5fa;">🔍 Model Browser & Selection</strong>
+                <button type="button" onclick="toggleModelBrowser()" style="padding: 0.5rem 1rem; background: #2563eb; font-size: 0.85rem;">
+                  Browse Models
+                </button>
+              </div>
+              
+              <!-- Selected Models Display -->
+              <div id="selected-models-display" style="min-height: 40px; background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 4px; margin-bottom: 0.5rem;">
+                <span style="color: var(--text-muted); font-size: 0.85rem;">No models selected. Click "Browse Models" to select trained models for simulation.</span>
+              </div>
+              
+              <!-- Model Browser Panel (hidden by default) -->
+              <div id="model-browser-panel" style="display: none; margin-top: 1rem; max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px; padding: 1rem;">
+                <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                  <div style="flex: 1;">
+                    <label style="font-size: 0.85rem; color: var(--text-muted);">Filter by Symbol</label>
+                    <input type="text" id="filter-symbol" placeholder="e.g., AAPL" onkeyup="filterModels()" style="width: 100%; padding: 0.5rem; margin-top: 0.25rem;">
+                  </div>
+                  <div style="flex: 1;">
+                    <label style="font-size: 0.85rem; color: var(--text-muted);">Filter by Algorithm</label>
+                    <select id="filter-algorithm" onchange="filterModels()" style="width: 100%; padding: 0.5rem; margin-top: 0.25rem;">
+                      <option value="">All</option>
+                      <option value="randomforest">Random Forest</option>
+                      <option value="xgboost">XGBoost</option>
+                      <option value="lightgbm">LightGBM</option>
+                      <option value="linearregression">Linear Regression</option>
+                      <option value="elasticnet">ElasticNet</option>
+                      <option value="ridge">Ridge</option>
+                      <option value="lasso">Lasso</option>
+                    </select>
+                  </div>
+                  <div style="flex: 1;">
+                    <label style="font-size: 0.85rem; color: var(--text-muted);">Min Accuracy (%)</label>
+                    <input type="number" id="filter-accuracy" placeholder="e.g., 60" onkeyup="filterModels()" style="width: 100%; padding: 0.5rem; margin-top: 0.25rem;" min="0" max="100" step="1">
+                  </div>
+                </div>
+                
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                  <span style="font-size: 0.85rem; color: var(--text-muted);">
+                    <span id="model-count">0</span> models found
+                  </span>
+                  <div>
+                    <button type="button" onclick="selectAllModels()" style="padding: 0.4rem 0.8rem; background: #10b981; font-size: 0.8rem; margin-right: 0.5rem;">Select All</button>
+                    <button type="button" onclick="clearAllModels()" style="padding: 0.4rem 0.8rem; background: #ef4444; font-size: 0.8rem;">Clear All</button>
+                  </div>
+                </div>
+                
+                <div id="model-list" style="display: grid; gap: 0.5rem;">
+                  <p style="color: var(--text-muted); text-align: center; padding: 2rem;">Loading models...</p>
+                </div>
+              </div>
+            </div>
             
             <div class="row">
               <div class="group">
@@ -275,6 +452,13 @@
               📈 Grid Search: <strong style="color: #34d399;"><span id="grid-size">64</span> simulations</strong> per model 
               (<span id="grid-dims">1 ticker × 4 thresholds × 4 z-scores × 7 regimes</span>)
             </p>
+            
+            <!-- Run Simulations for Selected Models Button -->
+            <button type="button" id="run-selected-sims-btn" onclick="runSimulationsForSelectedModels()" 
+                    style="width: 100%; background: #10b981; padding: 0.75rem; margin-top: 0.5rem; font-weight: bold;"
+                    disabled>
+              🚀 Run Simulations for <span id="selected-count">0</span> Selected Models
+            </button>
           </div>
           
           <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -315,8 +499,9 @@
             </div>
           </details>
           
-          <button type="submit" style="margin-top: 1rem; width: 100%;">
-            🧬 Start Evolution
+          <!-- Full Evolution Button (runs everything) -->
+          <button type="submit" style="margin-top: 1rem; width: 100%; background: #16a34a;">
+            🧬 Start Full Evolution (Train + Simulate)
           </button>
         </form>
         <div id="evolve-result" style="display: none;"></div>
@@ -481,7 +666,7 @@
     </section>
   </div>
 
-  <link rel="stylesheet" href="/static/css/dashboard.css?v=4">
-  <script src="/static/js/dashboard.js?v=4"></script>
+  <link rel="stylesheet" href="/static/css/dashboard.css?v=7">
+  <script src="/static/js/dashboard.js?v=11"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import logging
@@ -152,6 +153,15 @@ async def lifespan(app: FastAPI):
     log.info("Training Service shutdown complete")
 
 app = FastAPI(title="Training Service", lifespan=lifespan)
+
+# Add CORS middleware to allow requests from orchestrator frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in dev; restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Create a global db instance
 db = TrainingDB()

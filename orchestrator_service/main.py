@@ -5,6 +5,7 @@ Recursive Strategy Factory for automated model evolution.
 import os
 import logging
 import threading
+import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -14,6 +15,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import httpx
 
 from .db import db
 from .evolution import engine, EvolutionConfig
@@ -157,6 +159,32 @@ async def get_logs():
         if not logs_list:
             return ["[No logs in buffer yet - check if handler is capturing logs]"]
         return logs_list
+
+
+@app.get("/training/logs")
+async def get_training_logs():
+    """Proxy training service logs to avoid CORS issues."""
+    training_url = os.getenv("TRAINING_URL", "http://training_service:8200")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{training_url}/logs")
+            return resp.json()
+    except Exception as e:
+        log.warning(f"Failed to fetch training logs: {e}")
+        return []
+
+
+@app.get("/simulation/logs")
+async def get_simulation_logs():
+    """Proxy simulation service logs to avoid CORS issues."""
+    simulation_url = os.getenv("SIMULATION_URL", "http://simulation_service:8300")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{simulation_url}/logs")
+            return resp.json()
+    except Exception as e:
+        log.warning(f"Failed to fetch simulation logs: {e}")
+        return []
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -342,6 +370,44 @@ def _get_feature_columns_from_parquet(symbol: str) -> list:
         return []
 
 
+def _get_multi_ticker_features(target_symbol: str, reference_symbols: Optional[List[str]] = None) -> list:
+    """
+    Get feature columns for multi-ticker TS-aligned training.
+    
+    Returns features from target symbol plus all reference symbols with prefixes.
+    For example:
+    - Target AAPL: ['rsi_14', 'sma_20', ...]
+    - Reference SPY: ['SPY_rsi_14', 'SPY_sma_20', ...]
+    - Reference QQQ: ['QQQ_rsi_14', 'QQQ_sma_20', ...]
+    
+    Total: ~30 features/symbol × (1 target + N references) = 30×(N+1) features
+    """
+    all_features = []
+    
+    # Get target symbol features (no prefix)
+    target_features = _get_feature_columns_from_parquet(target_symbol)
+    if target_features:
+        all_features.extend(target_features)
+        log.info(f"Target {target_symbol}: {len(target_features)} features")
+    else:
+        log.warning(f"No features found for target symbol {target_symbol}")
+    
+    # Get reference symbol features (with prefix)
+    if reference_symbols:
+        for ref_symbol in reference_symbols:
+            ref_features = _get_feature_columns_from_parquet(ref_symbol)
+            if ref_features:
+                # Prefix each feature with the reference symbol
+                prefixed_features = [f"{ref_symbol}_{feat}" for feat in ref_features]
+                all_features.extend(prefixed_features)
+                log.info(f"Reference {ref_symbol}: {len(ref_features)} features (prefixed)")
+            else:
+                log.warning(f"No features found for reference symbol {ref_symbol}")
+    
+    log.info(f"Total multi-ticker features: {len(all_features)} ({target_symbol} + {len(reference_symbols or [])} references)")
+    return all_features
+
+
 @app.get("/api/features/columns")
 async def get_feature_columns(symbol: str, limit: int = 1):
     """Get feature columns directly from mounted parquet files."""
@@ -386,6 +452,21 @@ class EvolveRequest(BaseModel):
     # Grid search for regularization (ElasticNet, Ridge, Lasso)
     alpha_grid: Optional[List[float]] = None    # L2 penalty: [0.001, 0.01, 0.1, 1, 10, 50, 100]
     l1_ratio_grid: Optional[List[float]] = None # L1/L2 mix: [0.1, 0.3, 0.5, 0.7, 0.9]
+    # XGBoost hyperparameter grids
+    max_depth_grid: Optional[List[int]] = None
+    min_child_weight_grid: Optional[List[int]] = None
+    reg_lambda_grid: Optional[List[float]] = None
+    learning_rate_grid: Optional[List[float]] = None
+    # LightGBM hyperparameter grids
+    num_leaves_grid: Optional[List[int]] = None
+    min_data_in_leaf_grid: Optional[List[int]] = None
+    lambda_l2_grid: Optional[List[float]] = None
+    lgbm_learning_rate_grid: Optional[List[float]] = None
+    # RandomForest hyperparameter grids
+    rf_max_depth_grid: Optional[List[Any]] = None  # Can include None
+    min_samples_split_grid: Optional[List[int]] = None
+    min_samples_leaf_grid: Optional[List[int]] = None
+    n_estimators_grid: Optional[List[int]] = None
     # Holy Grail thresholds
     sqn_min: float = 3.0
     sqn_max: float = 5.0
@@ -412,12 +493,13 @@ async def start_evolution(req: EvolveRequest, background_tasks: BackgroundTasks)
     seed_features = req.seed_features
     
     # Auto-fetch seed features from mounted parquet if not provided
+    # Includes features from target symbol AND all reference symbols (TS-aligned)
     if not req.seed_model_id and not seed_features:
-        log.info(f"Fetching seed features for {req.symbol} from parquet")
-        seed_features = _get_feature_columns_from_parquet(req.symbol)
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
         
         if seed_features:
-            log.info(f"Auto-fetched {len(seed_features)} features for {req.symbol}")
+            log.info(f"Auto-fetched {len(seed_features)} features ({req.symbol} + {len(req.reference_symbols or [])} references)")
         else:
             raise HTTPException(
                 status_code=404,
@@ -458,6 +540,18 @@ async def start_evolution(req: EvolveRequest, background_tasks: BackgroundTasks)
         regime_configs=req.regime_configs,
         alpha_grid=req.alpha_grid,
         l1_ratio_grid=req.l1_ratio_grid,
+        max_depth_grid=req.max_depth_grid,
+        min_child_weight_grid=req.min_child_weight_grid,
+        reg_lambda_grid=req.reg_lambda_grid,
+        learning_rate_grid=req.learning_rate_grid,
+        num_leaves_grid=req.num_leaves_grid,
+        min_data_in_leaf_grid=req.min_data_in_leaf_grid,
+        lambda_l2_grid=req.lambda_l2_grid,
+        lgbm_learning_rate_grid=req.lgbm_learning_rate_grid,
+        rf_max_depth_grid=req.rf_max_depth_grid,
+        min_samples_split_grid=req.min_samples_split_grid,
+        min_samples_leaf_grid=req.min_samples_leaf_grid,
+        n_estimators_grid=req.n_estimators_grid,
         sqn_min=req.sqn_min,
         sqn_max=req.sqn_max,
         profit_factor_min=req.profit_factor_min,
@@ -876,8 +970,24 @@ class TrainOnlyRequest(BaseModel):
     min_features: int = 5
     data_options: Optional[str] = None
     timeframe: str = "1m"
+    # ElasticNet/Ridge/Lasso grids
     alpha_grid: Optional[List[float]] = None
     l1_ratio_grid: Optional[List[float]] = None
+    # XGBoost grids
+    max_depth_grid: Optional[List[int]] = None
+    min_child_weight_grid: Optional[List[int]] = None
+    reg_lambda_grid: Optional[List[float]] = None
+    learning_rate_grid: Optional[List[float]] = None
+    # LightGBM grids
+    num_leaves_grid: Optional[List[int]] = None
+    min_data_in_leaf_grid: Optional[List[int]] = None
+    lambda_l2_grid: Optional[List[float]] = None
+    lgbm_learning_rate_grid: Optional[List[float]] = None
+    # RandomForest grids
+    rf_max_depth_grid: Optional[List[Any]] = None  # Can include None
+    min_samples_split_grid: Optional[List[int]] = None
+    min_samples_leaf_grid: Optional[List[int]] = None
+    n_estimators_grid: Optional[List[int]] = None
 
 
 @app.post("/train-only")
@@ -891,12 +1001,13 @@ async def train_only(req: TrainOnlyRequest, background_tasks: BackgroundTasks):
     seed_features = req.seed_features
     
     # Auto-fetch features if not provided
+    # Includes features from target symbol AND all reference symbols (TS-aligned)
     if not req.seed_model_id and not seed_features:
-        log.info(f"Fetching seed features for {req.symbol} from parquet")
-        seed_features = _get_feature_columns_from_parquet(req.symbol)
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
         
         if seed_features:
-            log.info(f"Auto-fetched {len(seed_features)} features for {req.symbol}")
+            log.info(f"Auto-fetched {len(seed_features)} features ({req.symbol} + {len(req.reference_symbols or [])} references)")
         else:
             raise HTTPException(
                 status_code=404,
@@ -929,7 +1040,19 @@ async def train_only(req: TrainOnlyRequest, background_tasks: BackgroundTasks):
         z_score_thresholds=[],
         regime_configs=[],
         alpha_grid=req.alpha_grid,
-        l1_ratio_grid=req.l1_ratio_grid
+        l1_ratio_grid=req.l1_ratio_grid,
+        max_depth_grid=req.max_depth_grid,
+        min_child_weight_grid=req.min_child_weight_grid,
+        reg_lambda_grid=req.reg_lambda_grid,
+        learning_rate_grid=req.learning_rate_grid,
+        num_leaves_grid=req.num_leaves_grid,
+        min_data_in_leaf_grid=req.min_data_in_leaf_grid,
+        lambda_l2_grid=req.lambda_l2_grid,
+        lgbm_learning_rate_grid=req.lgbm_learning_rate_grid,
+        rf_max_depth_grid=req.rf_max_depth_grid,
+        min_samples_split_grid=req.min_samples_split_grid,
+        min_samples_leaf_grid=req.min_samples_leaf_grid,
+        n_estimators_grid=req.n_estimators_grid
     )
     
     # Run in background
@@ -947,6 +1070,560 @@ async def train_only(req: TrainOnlyRequest, background_tasks: BackgroundTasks):
         "mode": "train-only",
         "message": f"Training {req.max_generations} generations for {req.symbol} (no simulations)",
         "max_generations": req.max_generations
+    }
+
+
+# ============================================
+# Grid Search Endpoints (Algorithm-Specific)
+# ============================================
+
+class GridSearchElasticNetRequest(BaseModel):
+    """Grid search for ElasticNet regression - no feature pruning, just hyperparameter exploration."""
+    seed_features: Optional[List[str]] = None
+    symbol: str
+    reference_symbols: Optional[List[str]] = None
+    target_col: str = "close"
+    target_transform: str = "log_return"
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    # ElasticNet-specific grids
+    alpha_grid: List[float] = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
+    l1_ratio_grid: List[float] = [0.1, 0.3, 0.5, 0.7, 0.85, 0.95, 0.99]
+
+
+class GridSearchXGBoostRequest(BaseModel):
+    """Grid search for XGBoost - explore tree depth, regularization, and learning rates."""
+    seed_features: Optional[List[str]] = None
+    symbol: str
+    reference_symbols: Optional[List[str]] = None
+    target_col: str = "close"
+    target_transform: str = "log_return"
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    regressor: bool = True  # True for XGBRegressor, False for XGBClassifier
+    # XGBoost-specific grids
+    max_depth_grid: List[int] = [3, 4, 5, 6, 7, 8, 9]
+    min_child_weight_grid: List[int] = [1, 3, 5, 10, 15, 20, 30]
+    reg_alpha_grid: List[float] = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]  # L1 regularization (Lasso) - drives coefficients to zero
+    reg_lambda_grid: List[float] = [0.01, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0]  # L2 regularization (Ridge) - shrinks coefficients
+    learning_rate_grid: List[float] = [0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3]
+
+
+class GridSearchLightGBMRequest(BaseModel):
+    """Grid search for LightGBM - explore leaf complexity and regularization."""
+    seed_features: Optional[List[str]] = None
+    symbol: str
+    reference_symbols: Optional[List[str]] = None
+    target_col: str = "close"
+    target_transform: str = "log_return"
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    regressor: bool = True  # True for LGBMRegressor, False for LGBMClassifier
+    # LightGBM-specific grids
+    num_leaves_grid: List[int] = [7, 15, 31, 63, 95, 127, 191]
+    min_data_in_leaf_grid: List[int] = [5, 10, 20, 40, 60, 80, 100]
+    lambda_l1_grid: List[float] = [0.0, 0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0]  # L1 regularization (Lasso) - feature selection
+    lambda_l2_grid: List[float] = [0.0, 0.01, 0.1, 0.5, 1.0, 5.0, 10.0]  # L2 regularization (Ridge) - coefficient shrinkage
+    learning_rate_grid: List[float] = [0.005, 0.01, 0.03, 0.05, 0.1, 0.2, 0.3]
+
+
+class GridSearchRandomForestRequest(BaseModel):
+    """Grid search for RandomForest - explore tree depth, splits, and ensemble size."""
+    seed_features: Optional[List[str]] = None
+    symbol: str
+    reference_symbols: Optional[List[str]] = None
+    target_col: str = "close"
+    target_transform: str = "log_return"
+    data_options: Optional[str] = None
+    timeframe: str = "1m"
+    regressor: bool = True  # True for RandomForestRegressor, False for Classifier
+    # RandomForest-specific grids
+    max_depth_grid: List[Any] = [5, 10, 15, 20, 30, 50, None]  # None = no limit
+    min_samples_split_grid: List[int] = [2, 5, 10, 20, 30, 50, 100]
+    min_samples_leaf_grid: List[int] = [1, 2, 4, 8, 12, 16, 20]
+    n_estimators_grid: List[int] = [25, 50, 75, 100, 150, 200, 300]
+    max_features_grid: List[Any] = ["sqrt", "log2", 0.3, 0.5, 0.7, 0.9, 1.0]  # Feature sampling: sqrt/log2 for regularization, 0.5/1.0 for % of features
+
+
+@app.post("/grid-search/elasticnet")
+async def grid_search_elasticnet(req: GridSearchElasticNetRequest, background_tasks: BackgroundTasks):
+    """
+    Train ALL ElasticNet hyperparameter combinations (alpha × l1_ratio).
+    
+    Example: 5 alphas × 3 l1_ratios = 15 models saved.
+    No feature pruning - all models use the same feature set.
+    Returns immediately and runs training in background.
+    """
+    log.info(f"=== ElasticNet grid search request received for {req.symbol} ===")
+    
+    # Auto-fetch features if not provided
+    seed_features = req.seed_features
+    if not seed_features:
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
+        
+        if not seed_features:
+            log.error(f"No feature data found for symbol {req.symbol}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No feature data found for symbol {req.symbol}"
+            )
+    
+    log.info(f"Using {len(seed_features)} features for training")
+    
+    # Build data_options with standard flags + reference symbols
+    data_options = req.data_options
+    if req.reference_symbols and len(req.reference_symbols) > 0:
+        import json
+        # Start with defaults if data_options is empty
+        opts = json.loads(data_options) if data_options else {
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        }
+        opts['reference_symbols'] = req.reference_symbols
+        data_options = json.dumps(opts)
+    elif not data_options:
+        # Provide defaults even if no reference symbols
+        import json
+        data_options = json.dumps({
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        })
+
+    
+    grid_size = len(req.alpha_grid) * len(req.l1_ratio_grid)
+    log.info(f"Grid size: {grid_size} models ({len(req.alpha_grid)} alphas × {len(req.l1_ratio_grid)} l1_ratios)")
+    
+    # Create a run record to track progress
+    run_id = str(uuid.uuid4())
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO evolution_runs 
+            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features)
+            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, 'elasticnet_regression', $4, $5, $6, $7::jsonb)
+            """,
+            run_id, req.symbol, grid_size, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features)
+        )
+    
+    log.info(f"Created grid search run {run_id}: ElasticNet {grid_size} models for {req.symbol}")
+    
+    # Use asyncio.create_task instead of background_tasks for async functions
+    async def run_grid_search():
+        log.info(f"[{run_id}] ===== STARTING BACKGROUND GRID SEARCH TASK =====")
+        try:
+            payload = {
+                "symbol": req.symbol,
+                "algorithm": "elasticnet_regression",
+                "target_col": req.target_col,
+                "hyperparameters": {},
+                "target_transform": req.target_transform,
+                "data_options": data_options,
+                "timeframe": req.timeframe,
+                "feature_whitelist": seed_features,
+                "alpha_grid": req.alpha_grid,
+                "l1_ratio_grid": req.l1_ratio_grid,
+                "save_all_grid_models": True
+            }
+            
+            log.info(f"[{run_id}] Payload prepared: {grid_size} models, {len(seed_features)} features")
+            log.info(f"[{run_id}] Sending POST to http://training_service:8200/train ...")
+            async with httpx.AsyncClient(timeout=1800.0) as client:
+                resp = await client.post(
+                    "http://training_service:8200/train",
+                    json=payload
+                )
+                
+                log.info(f"[{run_id}] Training service responded with status {resp.status_code}")
+                log.info(f"[{run_id}] Response body: {resp.text[:500]}")
+                
+                if resp.status_code == 200:
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
+                            run_id
+                        )
+                    log.info(f"[{run_id}] Grid search completed successfully")
+                else:
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1",
+                            run_id
+                        )
+                    log.error(f"[{run_id}] Grid search failed with status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            log.error(f"[{run_id}] Grid search EXCEPTION: {type(e).__name__}: {e}", exc_info=True)
+            async with db.acquire() as conn:
+                await conn.execute(
+                    "UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1",
+                    run_id
+                )
+    
+    # Start the background task
+    log.info(f"[{run_id}] About to create asyncio background task...")
+    import asyncio
+    task = asyncio.create_task(run_grid_search())
+    log.info(f"[{run_id}] Background task created: {task}")
+    
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "algorithm": "elasticnet_regression",
+        "grid_size": grid_size,
+        "symbol": req.symbol,
+        "message": f"Grid search started: training {grid_size} ElasticNet models in background"
+    }
+
+
+@app.post("/grid-search/xgboost")
+async def grid_search_xgboost(req: GridSearchXGBoostRequest, background_tasks: BackgroundTasks):
+    """
+    Train ALL XGBoost hyperparameter combinations.
+    Returns immediately and runs training in background.
+    """
+    seed_features = req.seed_features
+    if not seed_features:
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
+        
+        if not seed_features:
+            raise HTTPException(status_code=404, detail=f"No feature data found for {req.symbol}")
+    
+    data_options = req.data_options
+    if req.reference_symbols:
+        import json
+        opts = json.loads(data_options) if data_options else {
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        }
+        opts['reference_symbols'] = req.reference_symbols
+        data_options = json.dumps(opts)
+    elif not data_options:
+        import json
+        data_options = json.dumps({
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        })
+    
+    algorithm = "xgboost_regressor" if req.regressor else "xgboost_classifier"
+    grid_size = len(req.max_depth_grid) * len(req.min_child_weight_grid) * \
+                len(req.reg_alpha_grid) * len(req.reg_lambda_grid) * len(req.learning_rate_grid)
+    
+    # Create run record
+    run_id = str(uuid.uuid4())
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO evolution_runs 
+            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features)
+            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, $4, $5, $6, $7, $8::jsonb)
+            """,
+            run_id, req.symbol, grid_size, algorithm, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features)
+        )
+    
+    log.info(f"Created grid search run {run_id}: XGBoost {grid_size} models for {req.symbol}")
+    
+    # Run in background
+    async def run_grid_search():
+        try:
+            payload = {
+                "symbol": req.symbol,
+                "algorithm": algorithm,
+                "target_col": req.target_col,
+                "hyperparameters": {},
+                "target_transform": req.target_transform,
+                "data_options": data_options,
+                "timeframe": req.timeframe,
+                "feature_whitelist": seed_features,
+                "max_depth_grid": req.max_depth_grid,
+                "min_child_weight_grid": req.min_child_weight_grid,
+                "reg_alpha_grid": req.reg_alpha_grid,
+                "reg_lambda_grid": req.reg_lambda_grid,
+                "learning_rate_grid": req.learning_rate_grid,
+                "save_all_grid_models": True
+            }
+            
+            async with httpx.AsyncClient(timeout=1800.0) as client:
+                resp = await client.post("http://training_service:8200/train", json=payload)
+                
+                if resp.status_code == 200:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1", run_id)
+                    log.info(f"Grid search {run_id} completed")
+                else:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+                    log.error(f"Grid search {run_id} failed: {resp.text}")
+        except Exception as e:
+            log.error(f"Grid search {run_id} error: {e}")
+            async with db.acquire() as conn:
+                await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+    
+    background_tasks.add_task(run_grid_search)
+    
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "algorithm": algorithm,
+        "grid_size": grid_size,
+        "symbol": req.symbol,
+        "message": f"Grid search started: training {grid_size} XGBoost models in background"
+    }
+
+
+@app.post("/grid-search/lightgbm")
+async def grid_search_lightgbm(req: GridSearchLightGBMRequest, background_tasks: BackgroundTasks):
+    """
+    Train ALL LightGBM hyperparameter combinations.
+    Returns immediately and runs training in background.
+    """
+    seed_features = req.seed_features
+    if not seed_features:
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
+        
+        if not seed_features:
+            raise HTTPException(status_code=404, detail=f"No feature data found for {req.symbol}")
+    
+    data_options = req.data_options
+    if req.reference_symbols:
+        import json
+        opts = json.loads(data_options) if data_options else {
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        }
+        opts['reference_symbols'] = req.reference_symbols
+        data_options = json.dumps(opts)
+    elif not data_options:
+        import json
+        data_options = json.dumps({
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        })
+    
+    algorithm = "lightgbm_regressor" if req.regressor else "lightgbm_classifier"
+    grid_size = len(req.num_leaves_grid) * len(req.min_data_in_leaf_grid) * \
+                len(req.lambda_l1_grid) * len(req.lambda_l2_grid) * len(req.learning_rate_grid)
+    
+    # Create run record
+    run_id = str(uuid.uuid4())
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO evolution_runs 
+            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features)
+            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, $4, $5, $6, $7, $8::jsonb)
+            """,
+            run_id, req.symbol, grid_size, algorithm, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features)
+        )
+    
+    log.info(f"Created grid search run {run_id}: LightGBM {grid_size} models for {req.symbol}")
+    
+    # Run in background
+    async def run_grid_search():
+        try:
+            payload = {
+                "symbol": req.symbol,
+                "algorithm": algorithm,
+                "target_col": req.target_col,
+                "hyperparameters": {},
+                "target_transform": req.target_transform,
+                "data_options": data_options,
+                "timeframe": req.timeframe,
+                "feature_whitelist": seed_features,
+                "num_leaves_grid": req.num_leaves_grid,
+                "min_data_in_leaf_grid": req.min_data_in_leaf_grid,
+                "lambda_l1_grid": req.lambda_l1_grid,
+                "lambda_l2_grid": req.lambda_l2_grid,
+                "lgbm_learning_rate_grid": req.learning_rate_grid,
+                "save_all_grid_models": True
+            }
+            
+            async with httpx.AsyncClient(timeout=1800.0) as client:
+                resp = await client.post("http://training_service:8200/train", json=payload)
+                
+                if resp.status_code == 200:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1", run_id)
+                    log.info(f"Grid search {run_id} completed")
+                else:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+                    log.error(f"Grid search {run_id} failed: {resp.text}")
+        except Exception as e:
+            log.error(f"Grid search {run_id} error: {e}")
+            async with db.acquire() as conn:
+                await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+    
+    background_tasks.add_task(run_grid_search)
+    
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "algorithm": algorithm,
+        "grid_size": grid_size,
+        "symbol": req.symbol,
+        "message": f"Grid search started: training {grid_size} LightGBM models in background"
+    }
+
+
+@app.post("/grid-search/randomforest")
+async def grid_search_randomforest(req: GridSearchRandomForestRequest, background_tasks: BackgroundTasks):
+    """
+    Train ALL RandomForest hyperparameter combinations.
+    Returns immediately and runs training in background.
+    """
+    seed_features = req.seed_features
+    if not seed_features:
+        log.info(f"Fetching multi-ticker seed features: {req.symbol} + {req.reference_symbols or []}")
+        seed_features = _get_multi_ticker_features(req.symbol, req.reference_symbols)
+        
+        if not seed_features:
+            raise HTTPException(status_code=404, detail=f"No feature data found for {req.symbol}")
+    
+    data_options = req.data_options
+    if req.reference_symbols:
+        import json
+        opts = json.loads(data_options) if data_options else {
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        }
+        opts['reference_symbols'] = req.reference_symbols
+        data_options = json.dumps(opts)
+    elif not data_options:
+        import json
+        data_options = json.dumps({
+            "use_rsi": True,
+            "use_macd": True,
+            "use_bb": True,
+            "use_sma": True,
+            "use_vol": True,
+            "use_atr": True,
+            "use_time": True,
+            "enable_segmentation": True,
+            "train_window": 20000,
+            "test_window": 1000
+        })
+    
+    algorithm = "random_forest_regressor" if req.regressor else "random_forest_classifier"
+    grid_size = len(req.max_depth_grid) * len(req.min_samples_split_grid) * \
+                len(req.min_samples_leaf_grid) * len(req.n_estimators_grid) * len(req.max_features_grid)
+    
+    # Create run record
+    run_id = str(uuid.uuid4())
+    async with db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO evolution_runs 
+            (id, symbol, status, max_generations, config, algorithm, target_col, target_transform, timeframe, seed_features)
+            VALUES ($1, $2, 'RUNNING', $3, '{}'::jsonb, $4, $5, $6, $7, $8::jsonb)
+            """,
+            run_id, req.symbol, grid_size, algorithm, req.target_col, req.target_transform, req.timeframe, json.dumps(seed_features)
+        )
+    
+    log.info(f"Created grid search run {run_id}: RandomForest {grid_size} models for {req.symbol}")
+    
+    # Run in background
+    async def run_grid_search():
+        try:
+            payload = {
+                "symbol": req.symbol,
+                "algorithm": algorithm,
+                "target_col": req.target_col,
+                "hyperparameters": {},
+                "target_transform": req.target_transform,
+                "data_options": data_options,
+                "timeframe": req.timeframe,
+                "feature_whitelist": seed_features,
+                "rf_max_depth_grid": req.max_depth_grid,
+                "min_samples_split_grid": req.min_samples_split_grid,
+                "min_samples_leaf_grid": req.min_samples_leaf_grid,
+                "n_estimators_grid": req.n_estimators_grid,
+                "max_features_grid": req.max_features_grid,
+                "save_all_grid_models": True
+            }
+            
+            async with httpx.AsyncClient(timeout=1800.0) as client:
+                resp = await client.post("http://training_service:8200/train", json=payload)
+                
+                if resp.status_code == 200:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1", run_id)
+                    log.info(f"Grid search {run_id} completed")
+                else:
+                    async with db.acquire() as conn:
+                        await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+                    log.error(f"Grid search {run_id} failed: {resp.text}")
+        except Exception as e:
+            log.error(f"Grid search {run_id} error: {e}")
+            async with db.acquire() as conn:
+                await conn.execute("UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1", run_id)
+    
+    background_tasks.add_task(run_grid_search)
+    
+    return {
+        "status": "started",
+        "run_id": run_id,
+        "algorithm": algorithm,
+        "grid_size": grid_size,
+        "symbol": req.symbol,
+        "message": f"Grid search started: training {grid_size} RandomForest models in background"
     }
 
 

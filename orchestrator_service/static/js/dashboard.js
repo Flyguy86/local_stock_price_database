@@ -29,17 +29,41 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================
-// Regularization Grid Toggle
+// Hyperparameter Grid Toggle (Algorithm-Specific)
 // ============================================
 
 function toggleRegularizationGrid() {
   const algorithm = document.getElementById('algorithm')?.value || '';
-  const regGrid = document.getElementById('regularization-grid');
-  if (!regGrid) return;
   
-  // Show regularization inputs for ElasticNet, Ridge, Lasso
-  const showGrid = algorithm.includes('elasticnet') || algorithm.includes('ridge') || algorithm.includes('lasso');
-  regGrid.style.display = showGrid ? 'flex' : 'none';
+  // Get all grid sections
+  const regGrid = document.getElementById('regularization-grid');
+  const xgboostGrid = document.getElementById('xgboost-grid');
+  const lightgbmGrid = document.getElementById('lightgbm-grid');
+  const randomforestGrid = document.getElementById('randomforest-grid');
+  
+  // Hide all grids first
+  if (regGrid) regGrid.style.display = 'none';
+  if (xgboostGrid) xgboostGrid.style.display = 'none';
+  if (lightgbmGrid) lightgbmGrid.style.display = 'none';
+  if (randomforestGrid) randomforestGrid.style.display = 'none';
+  
+  // Show appropriate grid based on algorithm
+  const algoLower = algorithm.toLowerCase();
+  
+  if (algoLower.includes('elasticnet') || algoLower.includes('ridge') || algoLower.includes('lasso')) {
+    // ElasticNet/Ridge/Lasso: Alpha and L1 Ratio
+    if (regGrid) regGrid.style.display = 'flex';
+  } else if (algoLower.includes('xgboost')) {
+    // XGBoost: max_depth, min_child_weight, reg_lambda, learning_rate
+    if (xgboostGrid) xgboostGrid.style.display = 'flex';
+  } else if (algoLower.includes('lightgbm')) {
+    // LightGBM: num_leaves, min_data_in_leaf, lambda_l2, learning_rate
+    if (lightgbmGrid) lightgbmGrid.style.display = 'flex';
+  } else if (algoLower.includes('random_forest') || algoLower.includes('randomforest')) {
+    // Random Forest: max_depth, min_samples_split, min_samples_leaf, n_estimators
+    if (randomforestGrid) randomforestGrid.style.display = 'flex';
+  }
+  // Linear Regression has no hyperparameter grids - all grids stay hidden
 }
 
 // ============================================
@@ -847,6 +871,720 @@ function hideDetails() {
 // Form Handling
 // ============================================
 
+// ============================================
+// Model Browser & Selection for Simulations
+// ============================================
+
+let availableModels = [];
+let selectedModelIds = new Set();
+
+async function toggleModelBrowser() {
+  const panel = document.getElementById('model-browser-panel');
+  const isVisible = panel.style.display !== 'none';
+  
+  if (isVisible) {
+    panel.style.display = 'none';
+  } else {
+    panel.style.display = 'block';
+    await loadAvailableModels();
+  }
+}
+
+async function loadAvailableModels() {
+  const listDiv = document.getElementById('model-list');
+  listDiv.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 2rem;">Loading models...</p>';
+  
+  try {
+    const res = await fetch(`${API}/models/browse?limit=100`);
+    const data = await res.json();
+    
+    availableModels = data.models || [];
+    document.getElementById('model-count').textContent = availableModels.length;
+    
+    renderModelList();
+  } catch (e) {
+    listDiv.innerHTML = `<p style="color: #ef4444; text-align: center; padding: 2rem;">Error loading models: ${e.message}</p>`;
+  }
+}
+
+function filterModels() {
+  const symbol = document.getElementById('filter-symbol').value.toLowerCase();
+  const algorithm = document.getElementById('filter-algorithm').value.toLowerCase();
+  const minAccuracy = parseFloat(document.getElementById('filter-accuracy').value) || 0;
+  
+  const filtered = availableModels.filter(m => {
+    const matchSymbol = !symbol || m.symbol.toLowerCase().includes(symbol);
+    const matchAlgo = !algorithm || m.algorithm.toLowerCase() === algorithm;
+    const matchAcc = (m.accuracy * 100) >= minAccuracy;
+    return matchSymbol && matchAlgo && matchAcc;
+  });
+  
+  document.getElementById('model-count').textContent = filtered.length;
+  renderModelList(filtered);
+}
+
+function renderModelList(models = null) {
+  const listToRender = models || availableModels;
+  const listDiv = document.getElementById('model-list');
+  
+  if (listToRender.length === 0) {
+    listDiv.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 2rem;">No models found. Try adjusting filters or train some models first.</p>';
+    return;
+  }
+  
+  listDiv.innerHTML = listToRender.map(model => {
+    const isSelected = selectedModelIds.has(model.id);
+    const acc = model.accuracy ? (model.accuracy * 100).toFixed(1) : 'N/A';
+    const r2 = model.r2_score ? (model.r2_score * 100).toFixed(1) : 'N/A';
+    const mse = model.mse ? model.mse.toFixed(4) : 'N/A';
+    
+    return `
+      <div style="background: ${isSelected ? 'rgba(16, 185, 129, 0.2)' : 'rgba(0,0,0,0.3)'}; 
+                  border: 1px solid ${isSelected ? '#10b981' : 'rgba(255,255,255,0.1)'}; 
+                  border-radius: 4px; 
+                  padding: 0.75rem; 
+                  cursor: pointer;"
+           onclick="toggleModelSelection('${model.id}')">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation(); toggleModelSelection('${model.id}')" style="cursor: pointer;">
+          <div style="flex: 1;">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+              <strong style="color: #60a5fa;">${model.symbol}</strong>
+              <span style="background: rgba(59, 130, 246, 0.2); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.75rem;">${model.algorithm}</span>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">${model.feature_count} features</span>
+            </div>
+            <div style="display: flex; gap: 1rem; font-size: 0.8rem;">
+              <span>Acc: <strong style="color: ${acc >= 60 ? '#10b981' : '#ef4444'}">${acc}%</strong></span>
+              <span>R²: <strong style="color: ${r2 >= 50 ? '#10b981' : '#ef4444'}">${r2}%</strong></span>
+              <span>MSE: <strong>${mse}</strong></span>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+              ID: ${model.id.substring(0, 12)}... | Transform: ${model.target_transform || 'none'}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function toggleModelSelection(modelId) {
+  if (selectedModelIds.has(modelId)) {
+    selectedModelIds.delete(modelId);
+  } else {
+    selectedModelIds.add(modelId);
+  }
+  updateSelectedModelsDisplay();
+  renderModelList();
+}
+
+function selectAllModels() {
+  const symbol = document.getElementById('filter-symbol').value.toLowerCase();
+  const algorithm = document.getElementById('filter-algorithm').value.toLowerCase();
+  const minAccuracy = parseFloat(document.getElementById('filter-accuracy').value) || 0;
+  
+  availableModels.forEach(m => {
+    const matchSymbol = !symbol || m.symbol.toLowerCase().includes(symbol);
+    const matchAlgo = !algorithm || m.algorithm.toLowerCase() === algorithm;
+    const matchAcc = (m.accuracy * 100) >= minAccuracy;
+    if (matchSymbol && matchAlgo && matchAcc) {
+      selectedModelIds.add(m.id);
+    }
+  });
+  
+  updateSelectedModelsDisplay();
+  renderModelList();
+}
+
+function clearAllModels() {
+  selectedModelIds.clear();
+  updateSelectedModelsDisplay();
+  renderModelList();
+}
+
+function updateSelectedModelsDisplay() {
+  const display = document.getElementById('selected-models-display');
+  const countSpan = document.getElementById('selected-count');
+  const btn = document.getElementById('run-selected-sims-btn');
+  
+  countSpan.textContent = selectedModelIds.size;
+  btn.disabled = selectedModelIds.size === 0;
+  
+  if (selectedModelIds.size === 0) {
+    display.innerHTML = '<span style="color: var(--text-muted); font-size: 0.85rem;">No models selected. Click "Browse Models" to select trained models for simulation.</span>';
+  } else {
+    const selectedModels = availableModels.filter(m => selectedModelIds.has(m.id));
+    display.innerHTML = selectedModels.map(m => {
+      const acc = m.accuracy ? (m.accuracy * 100).toFixed(1) : 'N/A';
+      return `
+        <div style="display: inline-flex; align-items: center; gap: 0.5rem; background: rgba(16, 185, 129, 0.2); 
+                    padding: 0.25rem 0.5rem; border-radius: 4px; margin: 0.25rem; border: 1px solid #10b981;">
+          <span style="font-size: 0.85rem;"><strong>${m.symbol}</strong> ${m.algorithm} (${acc}%)</span>
+          <button onclick="event.stopPropagation(); toggleModelSelection('${m.id}')" 
+                  style="background: transparent; border: none; color: #ef4444; cursor: pointer; padding: 0; font-size: 1rem;">×</button>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+async function runSimulationsForSelectedModels() {
+  if (selectedModelIds.size === 0) {
+    alert('Please select at least one model first.');
+    return;
+  }
+  
+  const btn = document.getElementById('run-selected-sims-btn');
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = '⏳ Launching Simulations...';
+  
+  // Get simulation parameters
+  const thresholds = document.getElementById('thresholds').value
+    .split(',')
+    .map(t => parseFloat(t.trim()))
+    .filter(t => !isNaN(t));
+  
+  const zScores = document.getElementById('z-scores').value
+    .split(',')
+    .map(z => parseFloat(z.trim()))
+    .filter(z => !isNaN(z));
+  
+  const regimeConfigs = getSelectedRegimeConfigs();
+  
+  // Get simulation tickers (or use model's training symbol)
+  const simTickers = Array.from(selectedSimTickers);
+  if (simTickers.length === 0) {
+    // Use each model's training symbol
+    const selectedModels = availableModels.filter(m => selectedModelIds.has(m.id));
+    selectedModels.forEach(m => {
+      if (!simTickers.includes(m.symbol)) {
+        simTickers.push(m.symbol);
+      }
+    });
+  }
+  
+  // Holy Grail criteria
+  const sqnMin = parseFloat(document.getElementById('sqn-min')?.value || 3.0);
+  const pfMin = parseFloat(document.getElementById('pf-min')?.value || 2.0);
+  const tradesMin = parseInt(document.getElementById('trades-min')?.value || 200);
+  
+  const payload = {
+    model_ids: Array.from(selectedModelIds),
+    simulation_tickers: simTickers,
+    thresholds: thresholds,
+    z_score_thresholds: zScores,
+    regime_configs: regimeConfigs,
+    sqn_min: sqnMin,
+    profit_factor_min: pfMin,
+    trade_count_min: tradesMin
+  };
+  
+  try {
+    const res = await fetch(`${API}/simulations/manual`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    const data = await res.json();
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ Simulations launched!<br>
+          Models: ${data.model_count}<br>
+          Tickers: ${data.ticker_count}<br>
+          Simulations per model: ${data.simulations_per_model}<br>
+          <strong>Total simulations queued: ${data.total_simulations}</strong><br>
+          Jobs queued: ${data.total_jobs}
+        </div>
+      `;
+      loadRuns();
+      loadStats();
+    } else {
+      resultDiv.innerHTML = `
+        <div class="alert error">
+          ❌ Error: ${data.detail || JSON.stringify(data)}
+        </div>
+      `;
+    }
+  } catch (e) {
+    document.getElementById('evolve-result').innerHTML = `
+      <div class="alert error">
+        ❌ Network error: ${e.message}
+      </div>
+    `;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+// ============================================
+// Train Models Only (Skip Simulations)
+// ============================================
+
+// ============================================
+// Helper: Collect Hyperparameter Grids
+// ============================================
+
+function collectHyperparameterGrids() {
+  const algorithm = document.getElementById('algorithm')?.value || '';
+  const algoLower = algorithm.toLowerCase();
+  
+  const grids = {};
+  
+  // ElasticNet/Ridge/Lasso grids
+  if (algoLower.includes('elasticnet') || algoLower.includes('ridge') || algoLower.includes('lasso')) {
+    const alphaGridStr = document.getElementById('alpha-grid')?.value || '';
+    const l1RatioGridStr = document.getElementById('l1-ratio-grid')?.value || '';
+    const alphaGrid = alphaGridStr.split(',').map(a => parseFloat(a.trim())).filter(a => !isNaN(a));
+    const l1RatioGrid = l1RatioGridStr.split(',').map(l => parseFloat(l.trim())).filter(l => !isNaN(l));
+    
+    if (alphaGrid.length > 0) grids.alpha_grid = alphaGrid;
+    if (l1RatioGrid.length > 0) grids.l1_ratio_grid = l1RatioGrid;
+  }
+  
+  // XGBoost grids
+  else if (algoLower.includes('xgboost')) {
+    const maxDepthStr = document.getElementById('max-depth-grid')?.value || '';
+    const minChildWeightStr = document.getElementById('min-child-weight-grid')?.value || '';
+    const regLambdaStr = document.getElementById('reg-lambda-grid')?.value || '';
+    const learningRateStr = document.getElementById('learning-rate-grid')?.value || '';
+    
+    const maxDepthGrid = maxDepthStr.split(',').map(d => parseInt(d.trim())).filter(d => !isNaN(d));
+    const minChildWeightGrid = minChildWeightStr.split(',').map(w => parseInt(w.trim())).filter(w => !isNaN(w));
+    const regLambdaGrid = regLambdaStr.split(',').map(l => parseFloat(l.trim())).filter(l => !isNaN(l));
+    const learningRateGrid = learningRateStr.split(',').map(r => parseFloat(r.trim())).filter(r => !isNaN(r));
+    
+    if (maxDepthGrid.length > 0) grids.max_depth_grid = maxDepthGrid;
+    if (minChildWeightGrid.length > 0) grids.min_child_weight_grid = minChildWeightGrid;
+    if (regLambdaGrid.length > 0) grids.reg_lambda_grid = regLambdaGrid;
+    if (learningRateGrid.length > 0) grids.learning_rate_grid = learningRateGrid;
+  }
+  
+  // LightGBM grids
+  else if (algoLower.includes('lightgbm')) {
+    const numLeavesStr = document.getElementById('num-leaves-grid')?.value || '';
+    const minDataInLeafStr = document.getElementById('min-data-in-leaf-grid')?.value || '';
+    const lambdaL2Str = document.getElementById('lambda-l2-grid')?.value || '';
+    const learningRateStr = document.getElementById('lgbm-learning-rate-grid')?.value || '';
+    
+    const numLeavesGrid = numLeavesStr.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+    const minDataInLeafGrid = minDataInLeafStr.split(',').map(d => parseInt(d.trim())).filter(d => !isNaN(d));
+    const lambdaL2Grid = lambdaL2Str.split(',').map(l => parseFloat(l.trim())).filter(l => !isNaN(l));
+    const learningRateGrid = learningRateStr.split(',').map(r => parseFloat(r.trim())).filter(r => !isNaN(r));
+    
+    if (numLeavesGrid.length > 0) grids.num_leaves_grid = numLeavesGrid;
+    if (minDataInLeafGrid.length > 0) grids.min_data_in_leaf_grid = minDataInLeafGrid;
+    if (lambdaL2Grid.length > 0) grids.lambda_l2_grid = lambdaL2Grid;
+    if (learningRateGrid.length > 0) grids.lgbm_learning_rate_grid = learningRateGrid;
+  }
+  
+  // Random Forest grids
+  else if (algoLower.includes('random_forest') || algoLower.includes('randomforest')) {
+    const maxDepthStr = document.getElementById('rf-max-depth-grid')?.value || '';
+    const minSamplesSplitStr = document.getElementById('min-samples-split-grid')?.value || '';
+    const minSamplesLeafStr = document.getElementById('min-samples-leaf-grid')?.value || '';
+    const nEstimatorsStr = document.getElementById('n-estimators-grid')?.value || '';
+    
+    // Parse max_depth (handle 'None' as string)
+    const maxDepthGrid = maxDepthStr.split(',').map(d => {
+      const trimmed = d.trim();
+      if (trimmed.toLowerCase() === 'none') return null;
+      const parsed = parseInt(trimmed);
+      return isNaN(parsed) ? null : parsed;
+    });
+    
+    const minSamplesSplitGrid = minSamplesSplitStr.split(',').map(s => parseInt(s.trim())).filter(s => !isNaN(s));
+    const minSamplesLeafGrid = minSamplesLeafStr.split(',').map(l => parseInt(l.trim())).filter(l => !isNaN(l));
+    const nEstimatorsGrid = nEstimatorsStr.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+    
+    if (maxDepthGrid.length > 0) grids.rf_max_depth_grid = maxDepthGrid;
+    if (minSamplesSplitGrid.length > 0) grids.min_samples_split_grid = minSamplesSplitGrid;
+    if (minSamplesLeafGrid.length > 0) grids.min_samples_leaf_grid = minSamplesLeafGrid;
+    if (nEstimatorsGrid.length > 0) grids.n_estimators_grid = nEstimatorsGrid;
+  }
+  
+  return grids;
+}
+
+// ============================================
+// Train Models Only (Skip Simulations)
+// ============================================
+
+async function trainModelsOnly() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Starting Training...';
+  
+  // Collect all hyperparameter grids based on selected algorithm
+  const hyperparamGrids = collectHyperparameterGrids();
+  
+  const payload = {
+    seed_model_id: document.getElementById('seed-model-id').value || null,
+    symbol: document.getElementById('symbol').value,
+    reference_symbols: Array.from(selectedReferences),  // Include reference symbols
+    data_options: selectedDataOptions,  // Include selected fold/options
+    algorithm: document.getElementById('algorithm').value,
+    target_col: document.getElementById('target-col').value,
+    max_generations: parseInt(document.getElementById('max-generations').value),
+    prune_fraction: parseInt(document.getElementById('prune-fraction').value) / 100,  // Convert % to decimal
+    min_features: parseInt(document.getElementById('min-features').value),
+    target_transform: document.getElementById('target-transform').value,
+    timeframe: document.getElementById('timeframe').value,
+    ...hyperparamGrids  // Spread all collected grids into payload
+  };
+  
+  try {
+    const res = await fetch(`${API}/train-only`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    const data = await res.json();
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ Training started! Run ID: ${data.run_id?.substring(0, 12)}...<br>
+          Target: ${payload.symbol}${payload.reference_symbols.length > 0 ? ` + ${payload.reference_symbols.length} references` : ''}<br>
+          <strong>Training only - no simulations will run.</strong><br>
+          After training completes, visit <a href="/models" style="color: #60a5fa; text-decoration: underline;">Model Browser</a> to review and select models for simulation.
+        </div>
+      `;
+      loadRuns();
+      loadStats();
+    } else {
+      resultDiv.innerHTML = `
+        <div class="alert error">
+          ❌ Error: ${data.detail || JSON.stringify(data)}
+        </div>
+      `;
+    }
+  } catch (e) {
+    resultDiv.innerHTML = `
+      <div class="alert error">
+        ❌ Network error: ${e.message}
+      </div>
+    `;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧠 Train Models Only (Skip Simulations)';
+  }
+}
+
+// ============================================
+// Pure Grid Search Functions (No Evolution/Pruning)
+// ============================================
+
+async function gridSearchElasticNet(btn) {
+  console.log('gridSearchElasticNet called');
+  const symbol = document.getElementById('symbol').value.trim();
+  console.log('Symbol:', symbol);
+  
+  if (!symbol) {
+    alert('Please enter a ticker symbol');
+    return;
+  }
+  
+  if (!btn) btn = event.target;
+  console.log('Button:', btn);
+  
+  btn.disabled = true;
+  btn.textContent = '⏳ Training...';
+  
+  try {
+    const payload = {
+      symbol: symbol,
+      reference_symbols: Array.from(selectedReferences),
+      target_col: document.getElementById('target-col').value,
+      target_transform: document.getElementById('target-transform').value,
+      timeframe: document.getElementById('timeframe').value,
+      alpha_grid: document.getElementById('alpha-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v)),
+      l1_ratio_grid: document.getElementById('l1-ratio-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
+    };
+    
+    console.log('ElasticNet payload:', payload);
+    
+    const gridSize = payload.alpha_grid.length * payload.l1_ratio_grid.length;
+    console.log('Grid size:', gridSize);
+    
+    if (!confirm(`This will train ${gridSize} ElasticNet models. Continue?`)) {
+      btn.disabled = false;
+      btn.textContent = '🔹 ElasticNet Grid';
+      console.log('User cancelled');
+      return;
+    }
+    
+    console.log('Sending request to /grid-search/elasticnet');
+    const res = await fetch('/grid-search/elasticnet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    console.log('Response status:', res.status);
+    const data = await res.json();
+    console.log('Response data:', data);
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ ElasticNet Grid Search Started!<br>
+          Training ${data.grid_size} models for ${symbol} in background<br>
+          Run ID: ${data.run_id}<br>
+          Check "Active Runs" tab to monitor progress
+        </div>
+      `;
+      loadStats();
+      loadActiveRuns();  // Refresh active runs to show new grid search
+    } else {
+      resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
+    }
+  } catch (e) {
+    document.getElementById('evolve-result').innerHTML = `<div class="alert error">❌ Network error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔹 ElasticNet Grid';
+  }
+}
+
+async function gridSearchXGBoost(btn) {
+  const symbol = document.getElementById('symbol').value.trim();
+  if (!symbol) {
+    alert('Please enter a ticker symbol');
+    return;
+  }
+  
+  if (!btn) btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Training...';
+  
+  try {
+    const payload = {
+      symbol: symbol,
+      reference_symbols: Array.from(selectedReferences),
+      target_col: document.getElementById('target-col').value,
+      target_transform: document.getElementById('target-transform').value,
+      timeframe: document.getElementById('timeframe').value,
+      regressor: true,
+      max_depth_grid: document.getElementById('max-depth-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      min_child_weight_grid: document.getElementById('min-child-weight-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      reg_alpha_grid: document.getElementById('reg-alpha-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v)),
+      reg_lambda_grid: document.getElementById('reg-lambda-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v)),
+      learning_rate_grid: document.getElementById('learning-rate-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
+    };
+    
+    const gridSize = payload.max_depth_grid.length * payload.min_child_weight_grid.length * 
+                     payload.reg_alpha_grid.length * payload.reg_lambda_grid.length * payload.learning_rate_grid.length;
+    
+    if (!confirm(`This will train ${gridSize} XGBoost models (may take 15-30 mins). Continue?`)) {
+      btn.disabled = false;
+      btn.textContent = '🌲 XGBoost Grid';
+      return;
+    }
+    
+    const res = await fetch('/grid-search/xgboost', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    const data = await res.json();
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ XGBoost Grid Search Started!<br>
+          Training ${data.grid_size} models for ${symbol} in background<br>
+          Run ID: ${data.run_id}<br>
+          Check "Active Runs" tab to monitor progress
+        </div>
+      `;
+      loadStats();
+      loadActiveRuns();  // Refresh active runs
+    } else {
+      resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
+    }
+  } catch (e) {
+    document.getElementById('evolve-result').innerHTML = `<div class="alert error">❌ Network error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🌲 XGBoost Grid';
+  }
+}
+
+async function gridSearchLightGBM(btn) {
+  const symbol = document.getElementById('symbol').value.trim();
+  if (!symbol) {
+    alert('Please enter a ticker symbol');
+    return;
+  }
+  
+  if (!btn) btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Training...';
+  
+  try {
+    const payload = {
+      symbol: symbol,
+      reference_symbols: Array.from(selectedReferences),
+      target_col: document.getElementById('target-col').value,
+      target_transform: document.getElementById('target-transform').value,
+      timeframe: document.getElementById('timeframe').value,
+      regressor: true,
+      num_leaves_grid: document.getElementById('num-leaves-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      min_data_in_leaf_grid: document.getElementById('min-data-in-leaf-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      lambda_l1_grid: document.getElementById('lambda-l1-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v)),
+      lambda_l2_grid: document.getElementById('lambda-l2-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v)),
+      learning_rate_grid: document.getElementById('lgbm-learning-rate-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
+    };
+    
+    const gridSize = payload.num_leaves_grid.length * payload.min_data_in_leaf_grid.length * 
+                     payload.lambda_l1_grid.length * payload.lambda_l2_grid.length * payload.learning_rate_grid.length;
+    
+    if (!confirm(`This will train ${gridSize} LightGBM models (may take 15-30 mins). Continue?`)) {
+      btn.disabled = false;
+      btn.textContent = '💡 LightGBM Grid';
+      return;
+    }
+    
+    const res = await fetch('/grid-search/lightgbm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    const data = await res.json();
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ LightGBM Grid Search Started!<br>
+          Training ${data.grid_size} models for ${symbol} in background<br>
+          Run ID: ${data.run_id}<br>
+          Check "Active Runs" tab to monitor progress
+        </div>
+      `;
+      loadStats();
+      loadActiveRuns();  // Refresh active runs
+    } else {
+      resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
+    }
+  } catch (e) {
+    document.getElementById('evolve-result').innerHTML = `<div class="alert error">❌ Network error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💡 LightGBM Grid';
+  }
+}
+
+async function gridSearchRandomForest(btn) {
+  const symbol = document.getElementById('symbol').value.trim();
+  if (!symbol) {
+    alert('Please enter a ticker symbol');
+    return;
+  }
+  
+  if (!btn) btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '⏳ Training...';
+  
+  try {
+    // Parse max_depth_grid - handle "None" as null
+    const maxDepthRaw = document.getElementById('rf-max-depth-grid').value.split(',').map(v => v.trim());
+    const maxDepthGrid = maxDepthRaw.map(v => {
+      if (v.toLowerCase() === 'none') return null;
+      const num = parseInt(v);
+      return isNaN(num) ? null : num;
+    });
+    
+    // Parse max_features_grid - handle "sqrt", "log2", and numeric values
+    const maxFeaturesRaw = document.getElementById('max-features-grid').value.split(',').map(v => v.trim());
+    const maxFeaturesGrid = maxFeaturesRaw.map(v => {
+      if (v.toLowerCase() === 'sqrt' || v.toLowerCase() === 'log2') return v.toLowerCase();
+      const num = parseFloat(v);
+      return isNaN(num) ? v : num;
+    });
+    
+    const payload = {
+      symbol: symbol,
+      reference_symbols: Array.from(selectedReferences),
+      target_col: document.getElementById('target-col').value,
+      target_transform: document.getElementById('target-transform').value,
+      timeframe: document.getElementById('timeframe').value,
+      regressor: true,
+      max_depth_grid: maxDepthGrid,
+      min_samples_split_grid: document.getElementById('min-samples-split-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      min_samples_leaf_grid: document.getElementById('min-samples-leaf-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      n_estimators_grid: document.getElementById('n-estimators-grid').value.split(',').map(v => parseInt(v.trim())).filter(v => !isNaN(v)),
+      max_features_grid: maxFeaturesGrid
+    };
+    
+    const gridSize = payload.max_depth_grid.length * payload.min_samples_split_grid.length * 
+                     payload.min_samples_leaf_grid.length * payload.n_estimators_grid.length * payload.max_features_grid.length;
+    
+    if (!confirm(`This will train ${gridSize} RandomForest models (may take 15-30 mins). Continue?`)) {
+      btn.disabled = false;
+      btn.textContent = '🌳 RandomForest Grid';
+      return;
+    }
+    
+    const res = await fetch('/grid-search/randomforest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    
+    const data = await res.json();
+    
+    const resultDiv = document.getElementById('evolve-result');
+    resultDiv.style.display = 'block';
+    
+    if (res.ok) {
+      resultDiv.innerHTML = `
+        <div class="alert success">
+          ✅ RandomForest Grid Search Started!<br>
+          Training ${data.grid_size} models for ${symbol} in background<br>
+          Run ID: ${data.run_id}<br>
+          Check "Active Runs" tab to monitor progress
+        </div>
+      `;
+      loadStats();
+      loadActiveRuns();  // Refresh active runs
+    } else {
+      resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
+    }
+  } catch (e) {
+    document.getElementById('evolve-result').innerHTML = `<div class="alert error">❌ Network error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🌳 RandomForest Grid';
+  }
+}
+
+// ============================================
+// Form Handler (Full Evolution)
+// ============================================
+
 function setupFormHandler() {
   const form = document.getElementById('evolve-form');
   if (!form) return;
@@ -871,11 +1609,8 @@ function setupFormHandler() {
     // Regime configs - dynamically built from checkboxes
     const regimeConfigs = getSelectedRegimeConfigs();
     
-    // Regularization grid (for ElasticNet, Ridge, Lasso)
-    const alphaGridStr = document.getElementById('alpha-grid')?.value || '';
-    const l1RatioGridStr = document.getElementById('l1-ratio-grid')?.value || '';
-    const alphaGrid = alphaGridStr.split(',').map(a => parseFloat(a.trim())).filter(a => !isNaN(a));
-    const l1RatioGrid = l1RatioGridStr.split(',').map(l => parseFloat(l.trim())).filter(l => !isNaN(l));
+    // Collect all hyperparameter grids based on selected algorithm
+    const hyperparamGrids = collectHyperparameterGrids();
     
     const payload = {
       seed_model_id: document.getElementById('seed-model-id').value || null,
@@ -893,8 +1628,7 @@ function setupFormHandler() {
       thresholds: thresholds,
       z_score_thresholds: zScores,
       regime_configs: regimeConfigs,
-      alpha_grid: alphaGrid.length > 0 ? alphaGrid : null,      // L2 penalty grid search
-      l1_ratio_grid: l1RatioGrid.length > 0 ? l1RatioGrid : null,  // L1/L2 mix grid search
+      ...hyperparamGrids,  // Spread all collected grids into payload
       sqn_min: parseFloat(document.getElementById('sqn-min').value),
       sqn_max: parseFloat(document.getElementById('sqn-max').value),
       profit_factor_min: parseFloat(document.getElementById('pf-min').value),
@@ -968,11 +1702,11 @@ function toggleLogsHeight() {
 
 async function loadLogs() {
   try {
-    // Fetch logs from all three services
+    // Fetch logs from all three services via orchestrator proxy
     const [orchResp, trainResp, simResp] = await Promise.all([
       fetch(`${API}/logs`).catch(() => ({json: () => []})),
-      fetch('http://localhost:8200/logs').catch(() => ({json: () => []})),
-      fetch('http://localhost:8300/logs').catch(() => ({json: () => []}))
+      fetch(`${API}/training/logs`).catch(() => ({json: () => []})),
+      fetch(`${API}/simulation/logs`).catch(() => ({json: () => []}))
     ]);
     
     const orchLogs = await orchResp.json();

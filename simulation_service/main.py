@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
 import threading
@@ -75,6 +76,15 @@ async def lifespan(app: FastAPI):
     log.info("PostgreSQL connection pool closed")
 
 app = FastAPI(title="Simulation Service", lifespan=lifespan)
+
+# Add CORS middleware to allow requests from orchestrator frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins in dev; restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Locate templates relative to this file
 BASE_DIR = Path(__file__).resolve().parent
