@@ -1349,7 +1349,7 @@ async function gridSearchElasticNet(btn) {
         </div>
       `;
       loadStats();
-      loadActiveRuns();  // Refresh active runs to show new grid search
+      loadRuns();  // Refresh runs to show new grid search
     } else {
       resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
     }
@@ -1417,7 +1417,7 @@ async function gridSearchXGBoost(btn) {
         </div>
       `;
       loadStats();
-      loadActiveRuns();  // Refresh active runs
+      loadRuns();  // Refresh active runs
     } else {
       resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
     }
@@ -1485,7 +1485,7 @@ async function gridSearchLightGBM(btn) {
         </div>
       `;
       loadStats();
-      loadActiveRuns();  // Refresh active runs
+      loadRuns();  // Refresh active runs
     } else {
       resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
     }
@@ -1569,7 +1569,7 @@ async function gridSearchRandomForest(btn) {
         </div>
       `;
       loadStats();
-      loadActiveRuns();  // Refresh active runs
+      loadRuns();  // Refresh active runs
     } else {
       resultDiv.innerHTML = `<div class="alert error">❌ Error: ${data.detail || JSON.stringify(data)}</div>`;
     }

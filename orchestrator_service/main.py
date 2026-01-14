@@ -1254,12 +1254,53 @@ async def grid_search_elasticnet(req: GridSearchElasticNetRequest, background_ta
                 log.info(f"[{run_id}] Response body: {resp.text[:500]}")
                 
                 if resp.status_code == 200:
+                    result = resp.json()
+                    model_id = result.get("id")
+                    log.info(f"[{run_id}] Training started with model_id: {model_id}")
+                    
+                    # Poll for completion (training is async)
+                    log.info(f"[{run_id}] Polling for training completion...")
+                    max_wait = 3600  # 1 hour max
+                    poll_interval = 5  # Check every 5 seconds
+                    elapsed = 0
+                    
+                    while elapsed < max_wait:
+                        await asyncio.sleep(poll_interval)
+                        elapsed += poll_interval
+                        
+                        # Check training status via /models endpoint
+                        status_resp = await client.get(f"http://training_service:8200/models/{model_id}")
+                        if status_resp.status_code == 200:
+                            model_data = status_resp.json()
+                            training_status = model_data.get("status")
+                            log.info(f"[{run_id}] Training status after {elapsed}s: {training_status}")
+                            
+                            if training_status == "completed":
+                                log.info(f"[{run_id}] Training completed successfully!")
+                                async with db.acquire() as conn:
+                                    await conn.execute(
+                                        "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
+                                        run_id
+                                    )
+                                return
+                            elif training_status == "failed":
+                                log.error(f"[{run_id}] Training failed")
+                                async with db.acquire() as conn:
+                                    await conn.execute(
+                                        "UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1",
+                                        run_id
+                                    )
+                                return
+                        else:
+                            log.warning(f"[{run_id}] Model not found yet (status {status_resp.status_code}), continuing...")
+                    
+                    # Timeout
+                    log.warning(f"[{run_id}] Training timed out after {max_wait}s")
                     async with db.acquire() as conn:
                         await conn.execute(
-                            "UPDATE evolution_runs SET status = 'COMPLETED' WHERE id = $1",
+                            "UPDATE evolution_runs SET status = 'FAILED' WHERE id = $1",
                             run_id
                         )
-                    log.info(f"[{run_id}] Grid search completed successfully")
                 else:
                     async with db.acquire() as conn:
                         await conn.execute(
