@@ -1,0 +1,317 @@
+services:
+  # ============================================
+  # PostgreSQL - Shared state for orchestrator
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: orchestrator_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD: orchestrator_secret
+      POSTGRES_DB: strategy_factory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./orchestrator_service/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator -d strategy_factory"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Orchestrator - Recursive Strategy Factory
+  # ============================================
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: orchestrator
+    restart: unless-stopped
+    ports:
+      - "8400:8400"
+    volumes:
+      - ./data:/app/data
+      - ./orchestrator_service:/app/orchestrator_service
+    environment:
+      TRAINING_URL: http://training_service:8200
+      SIMULATION_URL: http://simulation_service:8300
+      FEATURE_URL: http://feature_builder:8100
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+      DEFAULT_MAX_GENERATIONS: "4"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      training_service:
+        condition: service_started
+      simulation_service:
+        condition: service_started
+      feature_builder:
+        condition: service_started
+
+  # ============================================
+  # API - Ingestion Service
+  # ============================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ALPACA_KEY_ID: ${ALPACA_KEY_ID:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://data.alpaca.markets}
+    volumes:
+      - ./data:/app/data
+      - .:/app  # Mount source code as volume
+    ports:
+      - "8000:8000"
+
+  feature_builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.feature
+    restart: unless-stopped
+    environment:
+      SOURCE_DUCKDB_PATH: ${SOURCE_DUCKDB_PATH:-/app/data/duckdb/local.db}
+      DEST_DUCKDB_PATH: ${DEST_DUCKDB_PATH:-/app/data/duckdb/features.db}
+      DEST_PARQUET_DIR: ${DEST_PARQUET_DIR:-/app/data/features_parquet}
+      LOG_LEVEL: ${FEATURE_BUILDER_LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    command: ["uvicorn", "feature_service.web:app", "--host", "0.0.0.0", "--port", "8100"]
+    ports:
+      - "8100:8100"
+
+  training_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: INFO
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    command: ["uvicorn", "training_service.main:app", "--host", "0.0.0.0", "--port", "8200", "--reload"]
+    ports:
+      - "8200:8200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      - "8200:8200"
+
+  simulation_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulation
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: INFO
+      MODELS_DIR: /app/data/models
+      FEATURES_PATH: /app/data/features_parquet
+      PYTHONPATH: /app
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    command: ["uvicorn", "simulation_service.main:app", "--host", "0.0.0.0", "--port", "8300", "--reload"]
+    ports:
+      - "8300:8300"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  optimization:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimize
+    container_name: optimization_c2
+    restart: unless-stopped
+    command: python optimization_service/main.py
+    ports:
+      - "8002:8002"
+    volumes:
+      - .:/app
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================
+  # Priority Worker - Pulls from PostgreSQL queue
+  # ============================================
+  priority_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimize
+    container_name: priority_worker_1
+    restart: unless-stopped
+    command: python -m orchestrator_service.priority_worker
+    volumes:
+      - ./data:/app/data
+      - .:/app
+    environment:
+      POSTGRES_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+      SIMULATION_URL: http://simulation_service:8300
+      WORKER_ID: priority_worker_1
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      simulation_service:
+        condition: service_started
+
+  # ============================================
+  # Test Suite - Run all 208+ tests
+  # ============================================
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.training  # Use training dockerfile (has all dependencies)
+    container_name: test_runner
+    profiles: ["test"]  # Only run when explicitly requested
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: orchestrator
+      DB_PASSWORD: orchestrator_secret
+      DB_NAME: strategy_factory_test
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    working_dir: /app
+    command: >
+      sh -c "
+        echo '============================================';
+        echo 'Waiting for PostgreSQL to be ready...';
+        echo '============================================';
+        sleep 5;
+        echo '';
+        echo '============================================';
+        echo 'Installing test dependencies...';
+        echo '============================================';
+        pip install -q -r tests/requirements.txt;
+        echo '';
+        echo '============================================';
+        echo 'Running Test Suite (208+ tests)';
+        echo '============================================';
+        pytest tests/ -v --tb=short --color=yes -m 'not slow' || exit 1;
+        echo '';
+        echo '============================================';
+        echo 'All Tests Passed! ✅';
+        echo '============================================';
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================
+  # Test Suite - Full (includes slow tests)
+  # ============================================
+  tests-full:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    container_name: test_runner_full
+    profiles: ["test"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: orchestrator
+      DB_PASSWORD: orchestrator_secret
+      DB_NAME: strategy_factory_test
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    working_dir: /app
+    command: >
+      sh -c "
+        echo '============================================';
+        echo 'Waiting for PostgreSQL to be ready...';
+        echo '============================================';
+        sleep 5;
+        echo '';
+        echo '============================================';
+        echo 'Installing test dependencies...';
+        echo '============================================';
+        pip install -q -r tests/requirements.txt;
+        echo '';
+        echo '============================================';
+        echo 'Running FULL Test Suite (208+ tests)';
+        echo 'Including Load & Performance Tests';
+        echo '============================================';
+        pytest tests/ -v --tb=short --color=yes || exit 1;
+        echo '';
+        echo '============================================';
+        echo 'All Tests Passed! ✅';
+        echo '============================================';
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================
+  # Test Suite - With Coverage Report
+  # ============================================
+  tests-coverage:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+    container_name: test_runner_coverage
+    profiles: ["test"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: orchestrator
+      DB_PASSWORD: orchestrator_secret
+      DB_NAME: strategy_factory_test
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    working_dir: /app
+    command: >
+      sh -c "
+        echo '============================================';
+        echo 'Waiting for PostgreSQL to be ready...';
+        echo '============================================';
+        sleep 5;
+        echo '';
+        echo '============================================';
+        echo 'Installing test dependencies...';
+        echo '============================================';
+        pip install -q -r tests/requirements.txt;
+        echo '';
+        echo '============================================';
+        echo 'Running Tests with Coverage Report';
+        echo '============================================';
+        pytest tests/ -v --tb=short --color=yes -m 'not slow' \
+          --cov=training_service \
+          --cov=simulation_service \
+          --cov-report=term \
+          --cov-report=html || exit 1;
+        echo '';
+        echo '============================================';
+        echo 'Coverage report saved to htmlcov/';
+        echo '============================================';
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
