@@ -90,8 +90,9 @@ async def ensure_tables():
                 test_window INTEGER,
                 
                 -- Model lineage
-                parent_model_id VARCHAR,
-                group_id VARCHAR,
+                parent_model_id VARCHAR,  -- Feature evolution: model this was pruned from
+                cohort_id VARCHAR,        -- Grid search: shared ID for all models in same grid search
+                group_id VARCHAR,         -- Orchestrator evolution group
                 
                 -- Target configuration for fingerprint
                 target_transform VARCHAR DEFAULT 'none',
@@ -199,23 +200,55 @@ class TrainingDB:
             return self._injected_pool
         return await get_pool()
     
+    async def _has_cohort_column(self, conn) -> bool:
+        """Check if cohort_id column exists in models table."""
+        result = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'models' AND column_name = 'cohort_id'
+            )
+        """)
+        return result
+    
     async def list_models(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """List all models with metadata including grid search info."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            query = """
-                SELECT 
-                    m.id, m.name, m.algorithm, m.symbol, m.status, m.metrics, m.created_at,
-                    m.error_message, m.data_options, m.timeframe, m.target_col,
-                    m.parent_model_id, m.group_id, m.target_transform,
-                    m.columns_initial, m.columns_remaining, m.fingerprint,
-                    m.context_symbols, m.cv_folds, m.cv_strategy,
-                    COALESCE(m.is_grid_member, FALSE) as is_grid_member,
-                    m.hyperparameters,
-                    (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count
-                FROM models m
-                ORDER BY m.created_at DESC
-            """
+            # Check if cohort_id column exists (backward compatibility)
+            has_cohort = await self._has_cohort_column(conn)
+            
+            if has_cohort:
+                query = """
+                    SELECT 
+                        m.id, m.name, m.algorithm, m.symbol, m.status, m.metrics, m.created_at,
+                        m.error_message, m.data_options, m.timeframe, m.target_col,
+                        m.parent_model_id, m.cohort_id, m.group_id, m.target_transform,
+                        m.columns_initial, m.columns_remaining, m.fingerprint,
+                        m.context_symbols, m.cv_folds, m.cv_strategy,
+                        COALESCE(m.is_grid_member, FALSE) as is_grid_member,
+                        m.hyperparameters,
+                        (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count,
+                        (SELECT COUNT(*) FROM models c WHERE c.cohort_id = m.cohort_id AND c.id != m.id) as cohort_size
+                    FROM models m
+                    ORDER BY m.created_at DESC
+                """
+            else:
+                # Fallback for databases without cohort_id column
+                query = """
+                    SELECT 
+                        m.id, m.name, m.algorithm, m.symbol, m.status, m.metrics, m.created_at,
+                        m.error_message, m.data_options, m.timeframe, m.target_col,
+                        m.parent_model_id, NULL as cohort_id, m.group_id, m.target_transform,
+                        m.columns_initial, m.columns_remaining, m.fingerprint,
+                        m.context_symbols, m.cv_folds, m.cv_strategy,
+                        COALESCE(m.is_grid_member, FALSE) as is_grid_member,
+                        m.hyperparameters,
+                        (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count,
+                        0 as cohort_size
+                    FROM models m
+                    ORDER BY m.created_at DESC
+                """
+            
             if limit is not None:
                 rows = await conn.fetch(query + " LIMIT $1", limit)
             else:
@@ -249,6 +282,15 @@ class TrainingDB:
                         pass  # Keep as string if not valid JSON
         
         async with pool.acquire() as conn:
+            # Check if cohort_id column exists (backward compatibility)
+            has_cohort = await self._has_cohort_column(conn)
+            
+            # Remove cohort_id from data if column doesn't exist
+            if not has_cohort and 'cohort_id' in data:
+                log.warning("cohort_id column does not exist, removing from insert")
+                data = data.copy()  # Don't mutate original
+                data.pop('cohort_id', None)
+            
             # Build dynamic insert
             columns = list(data.keys())
             values = list(data.values())

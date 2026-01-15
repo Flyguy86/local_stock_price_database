@@ -56,7 +56,7 @@ def test_save_all_grid_models_uses_training_id_not_parent_model_id():
                 base_model = MagicMock()
                 X_train, y_train, X_test, y_test = _generate_simple_arrays()
                 
-                # Call the function with training_id (the fix)
+                # Call the function with cohort_id (the new pattern after refactor)
                 trainer._save_all_grid_models(
                     grid_search=grid_search,
                     base_model=base_model,
@@ -70,9 +70,11 @@ def test_save_all_grid_models_uses_training_id_not_parent_model_id():
                     target_col='close',
                     target_transform='log_return',
                     timeframe='1m',
-                    parent_model_id=training_id,  # This should be training_id, not None
+                    cohort_id=training_id,  # Grid search models share cohort_id
                     db=MagicMock(),
-                    settings=MagicMock(models_dir='/tmp')
+                    settings=MagicMock(models_dir='/tmp'),
+                    data_options=None,
+                    parent_model_id=None  # No parent for pure grid search
                 )
                 
                 # Verify it was called (even if it errored out due to mocks)
@@ -89,9 +91,9 @@ def test_save_all_grid_models_uses_training_id_not_parent_model_id():
 
 def test_grid_search_parameter_signature():
     """
-    Verify _save_all_grid_models function signature accepts parent_model_id.
+    Verify _save_all_grid_models function signature accepts cohort_id and parent_model_id.
     
-    This test documents the expected signature of the function.
+    This test documents the expected signature of the function after cohort refactor.
     """
     from training_service.trainer import _save_all_grid_models
     import inspect
@@ -99,15 +101,19 @@ def test_grid_search_parameter_signature():
     sig = inspect.signature(_save_all_grid_models)
     params = list(sig.parameters.keys())
     
+    # After cohort refactor, we have both cohort_id and parent_model_id
+    assert 'cohort_id' in params, (
+        "_save_all_grid_models should have cohort_id parameter"
+    )
     assert 'parent_model_id' in params, (
         "_save_all_grid_models should have parent_model_id parameter"
     )
     
-    # Verify it's in the right position (should be param 11, after timeframe)
+    # Verify essential parameters exist
     expected_params = [
         'grid_search', 'base_model', 'X_train', 'y_train', 'X_test', 'y_test',
         'feature_cols_used', 'symbol', 'algorithm', 'target_col',
-        'target_transform', 'timeframe', 'parent_model_id', 'db', 'settings'
+        'target_transform', 'timeframe', 'cohort_id', 'db', 'settings'
     ]
     
     for expected_param in expected_params:
@@ -117,9 +123,9 @@ def test_grid_search_parameter_signature():
 def test_elasticnet_grid_calls_save_with_training_id():
     """
     Integration-style test: verify the ElasticNet grid search code path
-    passes training_id to _save_all_grid_models.
+    passes cohort_id=training_id to _save_all_grid_models.
     
-    This is testing the actual fix at trainer.py:690-692.
+    This is testing the cohort refactor at trainer.py where we now use cohort_id.
     """
     from training_service import trainer
     
@@ -129,25 +135,18 @@ def test_elasticnet_grid_calls_save_with_training_id():
     
     source = inspect.getsource(trainer.train_model_task)
     
-    # Look for the pattern we fixed:
-    # The call should pass training_id (12th positional arg) to _save_all_grid_models
-    # NOT: parent_model_id (which would be None for grid searches)
-    
-    # Check that training_id appears near _save_all_grid_models call
-    # The positional arg after timeframe should be training_id, not parent_model_id
-    assert 'timeframe, training_id, db, settings' in source, (
-        "Code should pass training_id to _save_all_grid_models as 12th positional arg. "
-        "Check trainer.py around lines 690, 794, 857, 920."
+    # After cohort refactor, should use cohort_id=training_id
+    # Check that cohort_id appears in _save_all_grid_models calls
+    assert 'cohort_id=' in source, (
+        "Code should use cohort_id parameter in _save_all_grid_models calls. "
+        "Check trainer.py grid search sections."
     )
     
-    # Verify parent_model_id is NOT passed directly (which would be None)
-    # Old bug pattern: timeframe, parent_model_id, db, settings
-    if 'timeframe, parent_model_id, db, settings' in source:
-        raise AssertionError(
-            "BUG DETECTED: Code passes parent_model_id (None) instead of training_id. "
-            "This causes orchestrator to find 0 grid models. "
-            "Fix: Change parent_model_id to training_id in _save_all_grid_models calls."
-        )
+    # Should use keyword arguments now
+    assert 'cohort_id=training_id' in source or 'cohort_id = training_id' in source, (
+        "Code should pass training_id as cohort_id to _save_all_grid_models. "
+        "Check trainer.py around grid search save calls."
+    )
 
 
 def _generate_mock_data():

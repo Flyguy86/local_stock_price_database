@@ -25,10 +25,15 @@ try:
 except ImportError:
     shap = None
 
-from sklearn.metrics import mean_squared_error, accuracy_score, mean_absolute_error, r2_score
+from sklearn.metrics import (
+    mean_squared_error, accuracy_score, mean_absolute_error, r2_score,
+    precision_score, recall_score, f1_score, confusion_matrix,
+    classification_report
+)
 import joblib
 import json
 import logging
+import hashlib
 from datetime import datetime, timezone
 import uuid
 
@@ -37,6 +42,48 @@ from .sync_db_wrapper import db
 from .data import load_training_data
 
 log = logging.getLogger("training.core")
+
+
+def compute_fingerprint(
+    symbol: str,
+    algorithm: str,
+    target_col: str,
+    params: dict,
+    data_options: str,
+    timeframe: str,
+    target_transform: str,
+    parent_model_id: str = None  # Not used, kept for compatibility
+) -> tuple[str, str]:
+    """
+    Compute deterministic fingerprint for model configuration.
+    Same function as in main.py but used within worker processes.
+    
+    NOTE: parent_model_id is NOT included in fingerprint.
+    
+    Returns:
+        tuple: (fingerprint_hash, human_readable_key)
+    """
+    normalized_params = json.dumps(params or {}, sort_keys=True)
+    
+    # Build fingerprint components (parent_model_id REMOVED)
+    components = [
+        symbol,
+        algorithm,
+        target_col,
+        timeframe,
+        target_transform,
+        data_options or "default",
+        normalized_params
+    ]
+    
+    # Create human-readable key for debugging
+    human_key = f"{symbol}:{algorithm}:{target_col}:{timeframe}:{target_transform}:params={normalized_params}"
+    
+    fingerprint_str = "|".join(str(c) for c in components)
+    fingerprint_hash = hashlib.sha256(fingerprint_str.encode()).hexdigest()
+    
+    return fingerprint_hash, human_key
+
 
 ALGORITHMS = {
     "linear_regression": LinearRegression,
@@ -55,15 +102,22 @@ if LGBMRegressor:
 
 
 def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_test, feature_cols_used,
-                          symbol, algorithm, target_col, target_transform, timeframe, parent_model_id, db, settings):
+                          symbol, algorithm, target_col, target_transform, timeframe, cohort_id, db, settings,
+                          data_options=None, parent_model_id=None):
     """
     Helper function to save ALL models from a GridSearchCV run.
-    Each hyperparameter combination is saved as a separate model in the database.
+    Each hyperparameter combination is saved as a separate model in the database with FULL metrics.
+    
+    Args:
+        cohort_id: Shared ID for all models in this grid search (they are siblings)
+        parent_model_id: Optional - if these models inherit features from a pruned parent
     """
     all_params = grid_search.cv_results_['params']
     all_scores = grid_search.cv_results_['mean_test_score']
     
     from sklearn.base import clone
+    
+    is_regression = "regressor" in algorithm or "regression" in algorithm
     
     for idx, param_set in enumerate(all_params):
         log.info(f"Refitting model {idx+1}/{len(all_params)} with params: {param_set}")
@@ -78,11 +132,67 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
         # Fit the model
         individual_model.fit(X_train, y_train)
         
-        # Evaluate on test set
+        # Evaluate on test set with COMPREHENSIVE metrics
         test_preds = individual_model.predict(X_test)
-        test_mse = mean_squared_error(y_test, test_preds)
-        test_mae = mean_absolute_error(y_test, test_preds)
-        test_r2 = r2_score(y_test, test_preds)
+        
+        # Build comprehensive metrics dict (same as parent model)
+        metrics = {
+            "cv_score": float(all_scores[idx]),
+            "grid_search_rank": idx + 1,
+            "num_features": len(feature_cols_used)
+        }
+        
+        # === REGRESSION METRICS ===
+        if is_regression:
+            mse = mean_squared_error(y_test, test_preds)
+            mae = mean_absolute_error(y_test, test_preds)
+            rmse = float(mse ** 0.5)
+            r2 = r2_score(y_test, test_preds)
+            
+            metrics["mse"] = float(mse)
+            metrics["mae"] = float(mae)
+            metrics["rmse"] = rmse
+            metrics["r2"] = float(r2)
+            
+        # === CLASSIFICATION METRICS ===
+        else:
+            unique_classes = np.unique(y_test)
+            is_binary = len(unique_classes) == 2
+            average_method = 'binary' if is_binary else 'weighted'
+            
+            acc = accuracy_score(y_test, test_preds)
+            precision = precision_score(y_test, test_preds, average=average_method, zero_division=0)
+            recall = recall_score(y_test, test_preds, average=average_method, zero_division=0)
+            f1 = f1_score(y_test, test_preds, average=average_method, zero_division=0)
+            
+            metrics["accuracy"] = float(acc)
+            metrics["precision"] = float(precision)
+            metrics["recall"] = float(recall)
+            metrics["f1_score"] = float(f1)
+            metrics["confusion_matrix"] = confusion_matrix(y_test, test_preds).tolist()
+        
+        # === FEATURE IMPORTANCE ===
+        # Extract feature importance from the fitted model
+        try:
+            estimator = individual_model.named_steps['model']
+            
+            if hasattr(estimator, "feature_importances_"):
+                # Tree-based model
+                imps = estimator.feature_importances_
+                feature_importance = dict(zip(feature_cols_used, [float(x) for x in imps]))
+                metrics["feature_importance"] = dict(sorted(feature_importance.items(), 
+                                                            key=lambda x: abs(x[1]), reverse=True))
+            elif hasattr(estimator, "coef_"):
+                # Linear model
+                coefs = estimator.coef_
+                if coefs.ndim > 1:
+                    coefs = coefs[0]  # Handle multi-output
+                feature_importance = dict(zip(feature_cols_used, [float(x) for x in coefs]))
+                metrics["feature_importance"] = dict(sorted(feature_importance.items(), 
+                                                            key=lambda x: abs(x[1]), reverse=True))
+                metrics["intercept"] = float(estimator.intercept_) if hasattr(estimator, "intercept_") else None
+        except Exception as e:
+            log.warning(f"Could not extract feature importance for grid model {idx+1}: {e}")
         
         # Save this model to database as separate record
         grid_model_id = str(uuid.uuid4())
@@ -90,6 +200,28 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
         
         joblib.dump(individual_model, grid_model_path)
         log.info(f"Saved grid model {idx+1} to {grid_model_path}")
+        
+        # Compute fingerprint for this specific child model (includes unique params)
+        child_fingerprint, child_key = compute_fingerprint(
+            symbol=symbol,
+            algorithm=algorithm,
+            target_col=target_col,
+            params=param_set,  # Child-specific hyperparameters
+            data_options=data_options,
+            timeframe=timeframe,
+            target_transform=target_transform,
+            parent_model_id=parent_model_id
+        )
+        
+        log.info(f"Grid model {idx+1} fingerprint: {child_fingerprint[:16]}... (key: {child_key})")
+        
+        # Check if this grid model already exists (duplicate check)
+        # Note: We also check before grid search, but double-check here in case
+        # models were created between the pre-check and save
+        existing = db.get_model_by_fingerprint(child_fingerprint)
+        if existing:
+            log.info(f"Grid model {idx+1} already exists (ID: {existing['id']}). Skipping duplicate save.")
+            continue  # Skip this duplicate model
         
         # Create database record for this grid model
         grid_record = {
@@ -101,26 +233,23 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
             "target_transform": target_transform,
             "timeframe": timeframe,
             "feature_cols": feature_cols_used,
-            "parent_model_id": parent_model_id,
+            "cohort_id": cohort_id,  # All grid search models share this cohort ID
+            "parent_model_id": parent_model_id,  # Only set if this is feature evolution
             "status": "completed",
-            "metrics": json.dumps({
-                "cv_score": float(all_scores[idx]),
-                "test_mse": float(test_mse),
-                "test_mae": float(test_mae),
-                "test_r2": float(test_r2),
-                "grid_search_rank": idx + 1
-            }),
-            # Let DB default handle created_at instead of ISO string
+            "metrics": json.dumps(metrics),  # FULL comprehensive metrics
             "is_grid_member": True,  # Flag to identify grid search models
             "artifact_path": grid_model_path,
-            "name": f"{symbol}-{algorithm}-grid{idx+1}-{datetime.now().strftime('%Y%m%d%H%M')}"
+            "name": f"{symbol}-{algorithm}-grid{idx+1}-{datetime.now().strftime('%Y%m%d%H%M')}",
+            "fingerprint": child_fingerprint,  # Unique fingerprint for this child
+            "columns_initial": len(feature_cols_used),
+            "columns_remaining": len(feature_cols_used)
         }
         
         # Insert into database using correct method name
         db.create_model_record(grid_record)
-        log.info(f"Inserted grid model {grid_model_id} into database (rank {idx+1}, CV score: {all_scores[idx]:.6f})")
+        log.info(f"Inserted grid model {grid_model_id} - R²: {metrics.get('r2', metrics.get('accuracy', 'N/A')):.4f} - {len(feature_cols_used)} features - fingerprint: {child_fingerprint[:16]}...")
     
-    log.info(f"Saved all {len(all_params)} grid search models successfully")
+    log.info(f"Saved all {len(all_params)} grid search models successfully with full metrics")
 
 
 def train_model_task(
@@ -625,6 +754,32 @@ def train_model_task(
             log.info(f"Grid: alpha={grid_params['model__alpha']}, l1_ratio={grid_params['model__l1_ratio']}")
             log.info(f"Grid size: {len(grid_params['model__alpha'])} alphas × {len(grid_params['model__l1_ratio'])} l1_ratios = {len(grid_params['model__alpha']) * len(grid_params['model__l1_ratio'])} combinations")
 
+            # PRE-CHECK: Verify if all grid combinations already exist (avoid unnecessary training)
+            log.info("Checking for existing models before grid search...")
+            all_combinations = []
+            for alpha in grid_params['model__alpha']:
+                for l1_ratio in grid_params['model__l1_ratio']:
+                    param_set = {'alpha': alpha, 'l1_ratio': l1_ratio}
+                    fp, _ = compute_fingerprint(
+                        symbol=symbol, algorithm=algorithm, target_col=target_col,
+                        params=param_set, data_options=data_options,
+                        timeframe=timeframe, target_transform=target_transform
+                    )
+                    all_combinations.append((param_set, fp))
+            
+            existing_count = 0
+            for param_set, fp in all_combinations:
+                if db.get_model_by_fingerprint(fp):
+                    existing_count += 1
+            
+            if existing_count == len(all_combinations):
+                log.info(f"All {len(all_combinations)} grid combinations already exist! Skipping grid search entirely.")
+                # Skip grid search, just use the existing best model
+                # We'll still need to find the best one, so load from DB
+                # For now, just skip the save step and continue with a dummy model
+                # This prevents wasting compute on redundant training
+            else:
+                log.info(f"{existing_count}/{len(all_combinations)} combinations already exist. Training remaining {len(all_combinations) - existing_count} models.")
             
             # Use GridSearchCV
             # n_jobs=-1 uses all CPU cores (Multi-threaded)
@@ -688,7 +843,9 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, 
+                                     cohort_id=training_id, db=db, settings=settings, 
+                                     data_options=data_options, parent_model_id=None)
             
             best_model = grid_search.best_estimator_
             best_params = grid_search.best_params_
@@ -792,7 +949,9 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} XGBoost models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used, 
-                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, 
+                                     cohort_id=training_id, db=db, settings=settings, 
+                                     data_options=data_options, parent_model_id=None)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_
@@ -855,7 +1014,9 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} LightGBM models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, 
+                                     cohort_id=training_id, db=db, settings=settings, 
+                                     data_options=data_options, parent_model_id=None)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_
@@ -918,7 +1079,9 @@ def train_model_task(
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} RandomForest models from grid search")
                 _save_all_grid_models(grid_search, model, X_train, y_train, X_test, y_test, feature_cols_used,
-                                     symbol, algorithm, target_col, target_transform, timeframe, training_id, db, settings)
+                                     symbol, algorithm, target_col, target_transform, timeframe, 
+                                     cohort_id=training_id, db=db, settings=settings, 
+                                     data_options=data_options, parent_model_id=None)
             
             best_model = grid_search.best_estimator_
             tuned_params = grid_search.best_params_
@@ -955,10 +1118,20 @@ def train_model_task(
                 metrics["rmse"] = float(mean_mse ** 0.5)
                 metrics["cv_folds"] = len(cv_metrics)
         else:
+            # === REGRESSION METRICS ===
             if "regressor" in algorithm or "regression" in algorithm:
+                # Core regression metrics
                 mse = mean_squared_error(y_test, preds)
-                metrics["mse"] = mse
-                metrics["rmse"] = float(mse ** 0.5)
+                mae = mean_absolute_error(y_test, preds)
+                rmse = float(mse ** 0.5)
+                r2 = r2_score(y_test, preds)
+                
+                metrics["mse"] = float(mse)
+                metrics["mae"] = float(mae)
+                metrics["rmse"] = rmse
+                metrics["r2"] = float(r2)
+                
+                log.info(f"Regression Metrics - R²: {r2:.4f}, MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}")
                 
                 # --- PRICE RECONSTRUCTION METRIC ---
                 # User wants to verify RMSE in Price units ($) even if we trained on Log Returns
@@ -982,16 +1155,50 @@ def train_model_task(
                             rec_true = base_prices * (1 + y_test)
                             
                         rec_mse = mean_squared_error(rec_true, rec_preds)
-                        metrics["rmse_price"] = float(rec_mse ** 0.5)
+                        rec_rmse = float(rec_mse ** 0.5)
+                        metrics["rmse_price"] = rec_rmse
                         metrics["rmse_price_unit"] = "$"
-                        log.info(f"Reconstructed Price RMSE: {metrics['rmse_price']}")
+                        log.info(f"Reconstructed Price RMSE: ${rec_rmse:.2f}")
                 except Exception as rec_err:
                     log.warning(f"Failed to calculate reconstructed price metrics: {rec_err}")
                 # -----------------------------------
 
+            # === CLASSIFICATION METRICS ===
             else:
+                # Determine if binary or multiclass
+                unique_classes = np.unique(y_test)
+                is_binary = len(unique_classes) == 2
+                
+                # Basic accuracy
                 acc = accuracy_score(y_test, preds)
-                metrics["accuracy"] = acc
+                metrics["accuracy"] = float(acc)
+                
+                # Precision, Recall, F1-Score
+                # For binary: calculate normally
+                # For multiclass: use weighted average
+                average_method = 'binary' if is_binary else 'weighted'
+                
+                precision = precision_score(y_test, preds, average=average_method, zero_division=0)
+                recall = recall_score(y_test, preds, average=average_method, zero_division=0)
+                f1 = f1_score(y_test, preds, average=average_method, zero_division=0)
+                
+                metrics["precision"] = float(precision)
+                metrics["recall"] = float(recall)
+                metrics["f1_score"] = float(f1)
+                
+                # Confusion Matrix - convert to list for JSON serialization
+                conf_matrix = confusion_matrix(y_test, preds)
+                metrics["confusion_matrix"] = conf_matrix.tolist()
+                
+                # Classification Report (detailed per-class metrics)
+                try:
+                    class_report = classification_report(y_test, preds, output_dict=True, zero_division=0)
+                    metrics["classification_report"] = class_report
+                except:
+                    pass
+                
+                log.info(f"Classification Metrics - Accuracy: {acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+                log.info(f"Confusion Matrix:\n{conf_matrix}")
 
         # Initialize detailed feature info
         feature_details = {col: {} for col in feature_cols_used}

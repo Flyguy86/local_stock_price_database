@@ -4,51 +4,192 @@ const SECTIONS = ['enet', 'xgb', 'lgbm'];
 let featureMap = {};
 
 /**
+ * Get inline metrics display for table.
+ * Shows key performance metrics based on model type.
+ */
+function getMetricsDisplay(model) {
+    if (model.status !== 'completed' || !model.metrics) {
+        return '-';
+    }
+    
+    try {
+        const metrics = typeof model.metrics === 'string' ? JSON.parse(model.metrics) : model.metrics;
+        const isRegression = model.algorithm && (model.algorithm.includes('regressor') || model.algorithm.includes('regression'));
+        
+        if (isRegression) {
+            // Show R² and RMSE for regression
+            const r2 = metrics.r2 !== undefined ? metrics.r2.toFixed(3) : '-';
+            const rmse = metrics.rmse !== undefined ? metrics.rmse.toFixed(4) : '-';
+            return `<div style="font-size:0.85rem; line-height:1.3">
+                <div><strong>R²:</strong> ${r2}</div>
+                <div><strong>RMSE:</strong> ${rmse}</div>
+            </div>`;
+        } else {
+            // Show Accuracy and F1 for classification
+            const acc = metrics.accuracy !== undefined ? (metrics.accuracy * 100).toFixed(1) + '%' : '-';
+            const f1 = metrics.f1_score !== undefined ? (metrics.f1_score * 100).toFixed(1) + '%' : '-';
+            return `<div style="font-size:0.85rem; line-height:1.3">
+                <div><strong>Acc:</strong> ${acc}</div>
+                <div><strong>F1:</strong> ${f1}</div>
+            </div>`;
+        }
+    } catch(e) {
+        console.error('Error parsing metrics for display:', e);
+        return '-';
+    }
+}
+
+/**
+ * Get fingerprint display for table.
+ * Shows first 8 chars with full fingerprint on hover.
+ */
+function getFingerprintDisplay(model) {
+    if (!model.fingerprint) {
+        return '<span style="color:var(--text-muted); font-size:0.8rem">none</span>';
+    }
+    
+    const short = model.fingerprint.substring(0, 8);
+    return `<span class="badge" style="font-family:monospace; font-size:0.7rem; cursor:help" title="${model.fingerprint}">${short}...</span>`;
+}
+
+/**
  * Get grid search display info for a model.
- * Shows if model is a grid parent (with child count) or grid child (with alpha/l1_ratio).
+ * Shows if model is a cohort leader (with cohort size) or cohort member (with alpha/l1_ratio).
  */
 function getGridInfo(model, allModels) {
-    // Check if this is a grid parent (has children)
-    const childCount = model.grid_children_count || 0;
-    if (childCount > 0) {
-        return `<span class="badge grid-parent grid-indicator" style="cursor:pointer" onclick="showGridDetails('${model.id}')" title="Click to see grid search details">🔍 <span class="count">${childCount}</span> children ✓</span>`;
+    // NEW COHORT SYSTEM (with cohort_id column)
+    const cohortSize = model.cohort_size || 0;
+    if (cohortSize > 0 && model.cohort_id) {
+        return `<span class="badge grid-parent grid-indicator" style="cursor:pointer" onclick="showGridDetails('${model.cohort_id}')" title="Click to see cohort details">🔍 <span class="count">${cohortSize}</span> siblings ✓</span>`;
     }
     
-    // Check if this is a grid child
-    if (model.is_grid_member && model.parent_model_id) {
-        // Try to get hyperparameters to show alpha/l1_ratio
-        let paramStr = '';
-        try {
-            let hp = model.hyperparameters;
-            if (typeof hp === 'string') hp = JSON.parse(hp);
-            if (hp) {
-                const parts = [];
-                if (hp.alpha !== undefined) parts.push(`α=${hp.alpha}`);
-                if (hp.l1_ratio !== undefined) parts.push(`L1=${hp.l1_ratio}`);
-                paramStr = parts.join(' ');
-            }
-        } catch(e) {}
+    if (model.is_grid_member && model.cohort_id) {
+        const paramStr = formatModelParams(model);
+        return `<span class="badge grid-child" style="cursor:pointer" onclick="showGridDetails('${model.cohort_id}')" title="${paramStr}">🤝 ${paramStr}</span>`;
+    }
+    
+    // LEGACY SYSTEM (with parent_model_id) - backward compatibility
+    // Check if this model has grid children using parent_model_id
+    const gridChildrenCount = model.grid_children_count || 0;
+    if (gridChildrenCount > 0 && model.parent_model_id === null) {
+        return `<span class="badge grid-parent grid-indicator" style="cursor:pointer" title="Grid parent with ${gridChildrenCount} children">🔍 <span class="count">${gridChildrenCount}</span> children</span>`;
+    }
+    
+    // Check if this is a grid child (has parent_model_id)
+    if (model.parent_model_id) {
+        const paramStr = formatModelParams(model);
+        return `<span class="badge grid-child" title="${paramStr}">🤝 ${paramStr}</span>`;
+    }
+    
+    // Display params for ALL models that have hyperparameters
+    if (model.hyperparameters) {
+        const paramStr = formatModelParams(model);
+        console.log(`Grid display for ${model.id}: "${paramStr}"`);
         
-        return `<span class="badge grid-child" style="cursor:pointer" onclick="showGridDetails('${model.parent_model_id}')" title="Click to see parent grid">👶 ${paramStr || 'child'}</span>`;
+        // Show any valid parameter string
+        if (paramStr && paramStr !== 'no params' && paramStr !== 'parse error' && paramStr !== 'error') {
+            return `<span style="font-size:0.75rem; color:var(--text-muted)">${paramStr}</span>`;
+        }
     }
     
+    console.log(`Grid column for ${model.id}: no params to display`);
     return '-';
 }
 
 /**
- * Show grid search details in a modal.
- * Displays parent model info and all child models in a table.
+ * Format model hyperparameters for display based on algorithm.
  */
-async function showGridDetails(parentId) {
-    const parent = modelsCache[parentId];
-    if (!parent) {
-        alert('Parent model not found in cache');
+function formatModelParams(model) {
+    try {
+        let hp = model.hyperparameters;
+        
+        // Parse if it's a JSON string
+        if (typeof hp === 'string') {
+            try {
+                hp = JSON.parse(hp);
+            } catch(e) {
+                console.error('Failed to parse hyperparameters JSON:', hp, e);
+                return 'parse error';
+            }
+        }
+        
+        if (!hp || typeof hp !== 'object') {
+            console.warn('No valid hyperparameters for model:', model.id, 'hp:', hp);
+            return 'no params';
+        }
+        
+        const algo = model.algorithm;
+        const parts = [];
+        
+        // ElasticNet / Ridge
+        if (algo === 'elastic_net' || algo === 'elasticnet_regression' || algo === 'ridge') {
+            if (hp.alpha !== undefined) parts.push(`α=${hp.alpha}`);
+            if (hp.l1_ratio !== undefined) parts.push(`L1=${hp.l1_ratio}`);
+        }
+        // XGBoost
+        else if (algo === 'xgboost') {
+            if (hp.max_depth !== undefined) parts.push(`depth=${hp.max_depth}`);
+            if (hp.learning_rate !== undefined) parts.push(`lr=${hp.learning_rate}`);
+            if (hp.n_estimators !== undefined) parts.push(`trees=${hp.n_estimators}`);
+            if (hp.subsample !== undefined) parts.push(`sub=${hp.subsample}`);
+        }
+        // LightGBM
+        else if (algo === 'lightgbm') {
+            if (hp.max_depth !== undefined) parts.push(`depth=${hp.max_depth}`);
+            if (hp.learning_rate !== undefined) parts.push(`lr=${hp.learning_rate}`);
+            if (hp.n_estimators !== undefined) parts.push(`trees=${hp.n_estimators}`);
+            if (hp.num_leaves !== undefined) parts.push(`leaves=${hp.num_leaves}`);
+        }
+        // Random Forest
+        else if (algo === 'random_forest') {
+            if (hp.max_depth !== undefined) parts.push(`depth=${hp.max_depth}`);
+            if (hp.n_estimators !== undefined) parts.push(`trees=${hp.n_estimators}`);
+            if (hp.min_samples_split !== undefined) parts.push(`split=${hp.min_samples_split}`);
+        }
+        // Generic fallback - show first 3 params
+        else {
+            const keys = Object.keys(hp).slice(0, 3);
+            keys.forEach(k => {
+                let val = hp[k];
+                if (typeof val === 'number') val = val.toFixed(4).replace(/\.?0+$/, '');
+                parts.push(`${k}=${val}`);
+            });
+        }
+        
+        const result = parts.length > 0 ? parts.join(' ') : '';
+        console.log(`formatModelParams for ${model.id} (${algo}):`, result, 'from hp:', hp);
+        return result || 'no params';
+    } catch(e) {
+        console.error('Error formatting params for model', model.id, ':', e);
+        return 'error';
+    }
+}
+
+/**
+ * Show grid search cohort details in a modal.
+ * Displays cohort info and all sibling models in a table.
+ */
+async function showGridDetails(cohortId) {
+    // Find all models in this cohort
+    const cohortModels = Object.values(modelsCache).filter(m => m.cohort_id === cohortId);
+    
+    if (cohortModels.length === 0) {
+        alert('No models found in this cohort');
         return;
     }
     
-    // Find all children of this parent
-    const children = Object.values(modelsCache).filter(m => m.parent_model_id === parentId);
-    children.sort((a, b) => {
+    // Pick first model as representative for cohort metadata
+    const representative = cohortModels[0];
+    
+    // Debug logging
+    console.log(`Found ${cohortModels.length} models in cohort ${cohortId}`);
+    if (cohortModels.length > 0) {
+        console.log('First model sample:', cohortModels[0]);
+        console.log('First model hyperparameters:', cohortModels[0].hyperparameters);
+        console.log('Hyperparameters type:', typeof cohortModels[0].hyperparameters);
+    }
+    
+    cohortModels.sort((a, b) => {
         // Sort by hyperparameters (alpha, l1_ratio)
         try {
             let hpA = typeof a.hyperparameters === 'string' ? JSON.parse(a.hyperparameters) : a.hyperparameters;
@@ -62,46 +203,84 @@ async function showGridDetails(parentId) {
     // Build the modal content
     let html = `
         <div style="margin-bottom:1rem; padding:0.75rem; background:rgba(139,92,246,0.1); border-radius:6px; border:1px solid rgba(139,92,246,0.3)">
-            <h3 style="margin:0 0 0.5rem 0; color:#a78bfa">📊 Parent Model</h3>
+            <h3 style="margin:0 0 0.5rem 0; color:#a78bfa">🤝 Grid Search Cohort</h3>
             <div style="display:grid; grid-template-columns:auto 1fr; gap:0.25rem 1rem; font-size:0.85rem">
-                <span style="color:var(--text-muted)">ID:</span><span>${parent.id}</span>
-                <span style="color:var(--text-muted)">Name:</span><span>${parent.name}</span>
-                <span style="color:var(--text-muted)">Symbol:</span><span>${parent.symbol}</span>
-                <span style="color:var(--text-muted)">Algorithm:</span><span>${parent.algorithm}</span>
-                <span style="color:var(--text-muted)">Status:</span><span class="badge ${parent.status}">${parent.status}</span>
+                <span style="color:var(--text-muted)">Cohort ID:</span><span style="font-family:monospace">${cohortId.substring(0, 12)}...</span>
+                <span style="color:var(--text-muted)">Symbol:</span><span>${representative.symbol}</span>
+                <span style="color:var(--text-muted)">Algorithm:</span><span>${representative.algorithm}</span>
+                <span style="color:var(--text-muted)">Siblings:</span><span>${cohortModels.length}</span>
             </div>
         </div>
     `;
     
     // Grid search verification status
-    const completedChildren = children.filter(c => c.status === 'completed').length;
-    const failedChildren = children.filter(c => c.status === 'failed').length;
-    const totalChildren = children.length;
+    const completedModels = cohortModels.filter(c => c.status === 'completed').length;
+    const failedModels = cohortModels.filter(c => c.status === 'failed').length;
+    const totalModels = cohortModels.length;
     
-    const isSuccess = parent.status === 'completed' && completedChildren === totalChildren && totalChildren > 0;
-    const hasIssues = failedChildren > 0 || parent.status === 'failed';
+    const isSuccess = completedModels === totalModels && totalModels > 0;
+    const hasIssues = failedModels > 0;
     
     html += `
         <div style="margin-bottom:1rem; padding:0.75rem; background:${isSuccess ? 'rgba(16,185,129,0.1)' : hasIssues ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)'}; border-radius:6px; border:1px solid ${isSuccess ? 'rgba(16,185,129,0.3)' : hasIssues ? 'rgba(239,68,68,0.3)' : 'rgba(59,130,246,0.3)'}">
-            <h3 style="margin:0 0 0.5rem 0; color:${isSuccess ? '#34d399' : hasIssues ? '#fca5a5' : '#60a5fa'}">${isSuccess ? '✅ Grid Search Verified' : hasIssues ? '❌ Grid Search Has Issues' : '⏳ Grid Search In Progress'}</h3>
+            <h3 style="margin:0 0 0.5rem 0; color:${isSuccess ? '#34d399' : hasIssues ? '#fca5a5' : '#60a5fa'}">${isSuccess ? '✅ Grid Search Complete' : hasIssues ? '❌ Grid Search Has Issues' : '⏳ Grid Search In Progress'}</h3>
             <div style="font-size:0.85rem">
-                <span style="color:var(--text-muted)">Total Children:</span> <strong>${totalChildren}</strong><br>
-                <span style="color:var(--text-muted)">Completed:</span> <strong style="color:#34d399">${completedChildren}</strong><br>
-                ${failedChildren > 0 ? `<span style="color:var(--text-muted)">Failed:</span> <strong style="color:#fca5a5">${failedChildren}</strong><br>` : ''}
+                <span style="color:var(--text-muted)">Total Models:</span> <strong>${totalModels}</strong><br>
+                <span style="color:var(--text-muted)">Completed:</span> <strong style="color:#34d399">${completedModels}</strong><br>
+                ${failedModels > 0 ? `<span style="color:var(--text-muted)">Failed:</span> <strong style="color:#fca5a5">${failedModels}</strong><br>` : ''}
             </div>
         </div>
     `;
     
-    // Children table
-    if (children.length > 0) {
+    // Cohort siblings table
+    if (cohortModels.length > 0) {
+        // Determine which columns to show based on algorithm
+        const algo = representative.algorithm;
+        let paramColumns = [];
+        
+        if (algo === 'elastic_net' || algo === 'elasticnet_regression') {
+            paramColumns = [{key: 'alpha', label: 'Alpha (α)'}, {key: 'l1_ratio', label: 'L1 Ratio'}];
+        } else if (algo === 'ridge') {
+            paramColumns = [{key: 'alpha', label: 'Alpha (α)'}];
+        } else if (algo === 'xgboost') {
+            paramColumns = [
+                {key: 'max_depth', label: 'Max Depth'},
+                {key: 'learning_rate', label: 'Learn Rate'},
+                {key: 'n_estimators', label: 'Trees'},
+                {key: 'subsample', label: 'Subsample'}
+            ];
+        } else if (algo === 'lightgbm') {
+            paramColumns = [
+                {key: 'max_depth', label: 'Max Depth'},
+                {key: 'learning_rate', label: 'Learn Rate'},
+                {key: 'n_estimators', label: 'Trees'},
+                {key: 'num_leaves', label: 'Leaves'}
+            ];
+        } else if (algo === 'random_forest') {
+            paramColumns = [
+                {key: 'max_depth', label: 'Max Depth'},
+                {key: 'n_estimators', label: 'Trees'},
+                {key: 'min_samples_split', label: 'Min Split'}
+            ];
+        } else {
+            // Generic: show first 3 params from first model
+            try {
+                const sampleHp = typeof cohortModels[0].hyperparameters === 'string' 
+                    ? JSON.parse(cohortModels[0].hyperparameters) 
+                    : cohortModels[0].hyperparameters;
+                if (sampleHp) {
+                    paramColumns = Object.keys(sampleHp).slice(0, 3).map(k => ({key: k, label: k}));
+                }
+            } catch(e) {}
+        }
+        
         html += `
-            <h3 style="margin:0 0 0.5rem 0">👶 Child Models (${children.length})</h3>
+            <h3 style="margin:0 0 0.5rem 0">🤝 Cohort Siblings (${cohortModels.length})</h3>
             <div style="max-height:300px; overflow-y:auto">
                 <table style="width:100%; font-size:0.8rem">
                     <thead>
                         <tr>
-                            <th>Alpha (α)</th>
-                            <th>L1 Ratio</th>
+                            ${paramColumns.map(col => `<th>${col.label}</th>`).join('')}
                             <th>Status</th>
                             <th>R² Score</th>
                             <th>ID</th>
@@ -110,38 +289,52 @@ async function showGridDetails(parentId) {
                     <tbody>
         `;
         
-        for (const child of children) {
+        for (const sibling of cohortModels) {
             let hp = {};
-            try { hp = typeof child.hyperparameters === 'string' ? JSON.parse(child.hyperparameters) : (child.hyperparameters || {}); } catch(e){}
+            
+            // Try to parse hyperparameters
+            try { 
+                hp = typeof sibling.hyperparameters === 'string' ? JSON.parse(sibling.hyperparameters) : (sibling.hyperparameters || {}); 
+            } catch(e){
+                console.error('Failed to parse hyperparameters for sibling', sibling.id, e);
+                console.log('Raw hyperparameters:', sibling.hyperparameters);
+            }
+            
+            // Extract parameter values
+            const paramValues = paramColumns.map(col => {
+                const val = hp[col.key];
+                if (val === undefined || val === null) return '-';
+                if (typeof val === 'number') return val.toFixed(4).replace(/\.?0+$/, '');
+                return val;
+            });
             
             let r2 = '-';
             try {
-                let metrics = typeof child.metrics === 'string' ? JSON.parse(child.metrics) : child.metrics;
+                let metrics = typeof sibling.metrics === 'string' ? JSON.parse(sibling.metrics) : sibling.metrics;
                 if (metrics) {
-                    r2 = metrics.r2 || metrics.R2 || metrics.test_r2 || metrics.cv_mean_r2 || '-';
+                    r2 = metrics.r2 || metrics.R2 || metrics.test_r2 || metrics.cv_score || metrics.cv_mean_r2 || '-';
                     if (typeof r2 === 'number') r2 = r2.toFixed(4);
                 }
             } catch(e){}
             
-            const statusClass = child.status === 'completed' ? 'completed' : child.status === 'failed' ? 'failed' : 'running';
+            const statusClass = sibling.status === 'completed' ? 'completed' : sibling.status === 'failed' ? 'failed' : 'running';
             
             html += `
                 <tr>
-                    <td>${hp.alpha !== undefined ? hp.alpha : '-'}</td>
-                    <td>${hp.l1_ratio !== undefined ? hp.l1_ratio : '-'}</td>
-                    <td><span class="badge ${statusClass}">${child.status}</span></td>
+                    ${paramValues.map(val => `<td>${val}</td>`).join('')}
+                    <td><span class="badge ${statusClass}">${sibling.status}</span></td>
                     <td>${r2}</td>
-                    <td><span class="badge" title="${child.id}">${child.id.substring(0,8)}</span></td>
+                    <td><span class="badge" title="${sibling.id}">${sibling.id.substring(0,8)}</span></td>
                 </tr>
             `;
         }
         
         html += `</tbody></table></div>`;
     } else {
-        html += `<p style="color:var(--text-muted)">No child models found yet. Grid search may still be running.</p>`;
+        html += `<p style="color:var(--text-muted)">No cohort models found yet. Grid search may still be running.</p>`;
     }
     
-    $('grid-title').innerText = `🔍 Grid Search: ${parent.name}`;
+    $('grid-title').innerText = `🤝 Grid Search Cohort: ${representative.symbol} ${representative.algorithm}`;
     $('grid-content').innerHTML = html;
     $('grid-modal').showModal();
 }
@@ -366,6 +559,17 @@ async function trainModel(prefix) {
             const err = await res.json();
             alert('Error: ' + err.detail);
         } else {
+            const result = await res.json();
+            
+            // Check if duplicate was detected
+            if (result.status === 'duplicate') {
+                const msg = `⚠️ Duplicate Detected!\n\n${result.message}\n\nExisting Model ID: ${result.existing_model.id}\nStatus: ${result.existing_model.status}\n\nNo new training started.`;
+                alert(msg);
+                console.log('Duplicate model found:', result.existing_model);
+            } else {
+                console.log('New training started:', result.id);
+            }
+            
             loadModels();
         }
     } catch(e) { alert("Req failed: " + e); }
@@ -380,6 +584,24 @@ async function loadModels() {
         const res = await fetch('/models');
         const models = await res.json();
         const tbody = $('models-body');
+        
+        // Debug: Log first 3 models to see structure
+        if (models.length > 0) {
+            console.log('=== Model Data Debug ===');
+            models.slice(0, 3).forEach((m, i) => {
+                console.log(`Model ${i+1}:`, {
+                    id: m.id,
+                    algorithm: m.algorithm,
+                    cohort_id: m.cohort_id,
+                    is_grid_member: m.is_grid_member,
+                    parent_model_id: m.parent_model_id,
+                    grid_children_count: m.grid_children_count,
+                    cohort_size: m.cohort_size,
+                    hyperparameters_type: typeof m.hyperparameters,
+                    hyperparameters: m.hyperparameters
+                });
+            });
+        }
         
         // Update Parent Dropdowns for all sections
         const completed = models.filter(m => m.status === 'completed');
@@ -421,6 +643,8 @@ async function loadModels() {
         tbody.innerHTML = models.map(m => {
             const statusClass = m.status === 'failed' ? 'failed' : (m.status==='completed'?'completed':'running');
             const gridInfo = getGridInfo(m, models);
+            const metricsDisplay = getMetricsDisplay(m);
+            const fingerprintDisplay = getFingerprintDisplay(m);
             return `
             <tr>
                 <td><span class="badge" title="${m.id}">${m.id.substring(0,8)}</span></td>
@@ -430,11 +654,12 @@ async function loadModels() {
                 <td>${m.timeframe||'-'}</td>
                 <td><span class="badge ${statusClass}">${m.status}</span></td>
                 <td>${gridInfo}</td>
-                <td>${m.metrics && m.metrics.length > 5 ? `<button onclick="showReport('${m.id}')" class="secondary">Report</button>` : '-'}</td>
+                <td>${metricsDisplay}</td>
+                <td>${fingerprintDisplay}</td>
                 <td>${m.created_at.split('T')[1].split('.')[0]}</td>
                 <td>
                     <button class="secondary" style="color:#fca5a5" onclick="deleteModel('${m.id}')">Del</button>
-                    ${m.status === 'completed' ? `<button class="secondary" style="color:#60a5fa" onclick="retrainModel('${m.id}')">Re</button>` : ''}
+                    ${m.status === 'completed' && m.metrics ? `<button class="secondary" style="color:#60a5fa" onclick="showReport('${m.id}')">📊</button>` : ''}
                 </td>
             </tr>`;
         }).join('');
@@ -464,8 +689,104 @@ function showReport(id) {
     const m = modelsCache[id];
     if(!m) return;
     $('report-title').innerText = m.name;
-    // Primitive dump for now
-    let html = '<pre>' + JSON.stringify(JSON.parse(m.metrics || '{}'), null, 2) + '</pre>';
+    
+    // Parse metrics
+    let metrics = {};
+    try {
+        metrics = typeof m.metrics === 'string' ? JSON.parse(m.metrics) : (m.metrics || {});
+    } catch(e) {
+        console.error('Failed to parse metrics:', e);
+    }
+    
+    const isRegression = m.algorithm && (m.algorithm.includes('regressor') || m.algorithm.includes('regression'));
+    const isClassification = !isRegression;
+    
+    let html = '';
+    
+    // === REGRESSION METRICS ===
+    if (isRegression && (metrics.r2 !== undefined || metrics.mse !== undefined)) {
+        html += `
+            <div style="background:rgba(16,185,129,0.1); padding:1rem; border-radius:6px; margin-bottom:1rem">
+                <h3 style="margin:0 0 0.75rem 0; color:#34d399">📊 Regression Performance</h3>
+                <div style="display:grid; grid-template-columns:auto 1fr; gap:0.5rem 1.5rem; font-size:0.9rem">
+                    ${metrics.r2 !== undefined ? `<strong>R² Score:</strong><span>${metrics.r2.toFixed(4)}</span>` : ''}
+                    ${metrics.mae !== undefined ? `<strong>MAE:</strong><span>${metrics.mae.toFixed(6)}</span>` : ''}
+                    ${metrics.mse !== undefined ? `<strong>MSE:</strong><span>${metrics.mse.toFixed(6)}</span>` : ''}
+                    ${metrics.rmse !== undefined ? `<strong>RMSE:</strong><span>${metrics.rmse.toFixed(6)}</span>` : ''}
+                    ${metrics.rmse_price !== undefined ? `<strong>RMSE (Price):</strong><span style="color:#34d399; font-weight:600">$${metrics.rmse_price.toFixed(2)}</span>` : ''}
+                </div>
+            </div>
+        `;
+    }
+    
+    // === CLASSIFICATION METRICS ===
+    if (isClassification && (metrics.accuracy !== undefined)) {
+        html += `
+            <div style="background:rgba(139,92,246,0.1); padding:1rem; border-radius:6px; margin-bottom:1rem">
+                <h3 style="margin:0 0 0.75rem 0; color:#a78bfa">🎯 Classification Performance</h3>
+                <div style="display:grid; grid-template-columns:auto 1fr; gap:0.5rem 1.5rem; font-size:0.9rem">
+                    ${metrics.accuracy !== undefined ? `<strong>Accuracy:</strong><span>${(metrics.accuracy * 100).toFixed(2)}%</span>` : ''}
+                    ${metrics.precision !== undefined ? `<strong>Precision:</strong><span>${(metrics.precision * 100).toFixed(2)}%</span>` : ''}
+                    ${metrics.recall !== undefined ? `<strong>Recall:</strong><span>${(metrics.recall * 100).toFixed(2)}%</span>` : ''}
+                    ${metrics.f1_score !== undefined ? `<strong>F1-Score:</strong><span>${(metrics.f1_score * 100).toFixed(2)}%</span>` : ''}
+                </div>
+            </div>
+        `;
+        
+        // Confusion Matrix
+        if (metrics.confusion_matrix) {
+            html += `
+                <div style="background:rgba(244,114,182,0.1); padding:1rem; border-radius:6px; margin-bottom:1rem">
+                    <h3 style="margin:0 0 0.75rem 0; color:#f472b6">🔢 Confusion Matrix</h3>
+                    <table style="font-size:0.85rem; border-collapse:collapse">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                ${metrics.confusion_matrix[0].map((_, i) => `<th>Pred ${i}</th>`).join('')}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${metrics.confusion_matrix.map((row, i) => `
+                                <tr>
+                                    <td><strong>True ${i}</strong></td>
+                                    ${row.map(val => `<td style="text-align:center; padding:0.25rem 0.5rem">${val}</td>`).join('')}
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+    }
+    
+    // === CROSS-VALIDATION DETAILS ===
+    if (metrics.cv_detail && metrics.cv_detail.length > 0) {
+        html += `
+            <div style="background:rgba(59,130,246,0.1); padding:1rem; border-radius:6px; margin-bottom:1rem">
+                <h3 style="margin:0 0 0.75rem 0; color:#60a5fa">🔄 Cross-Validation (${metrics.cv_folds} folds)</h3>
+                <div style="max-height:150px; overflow-y:auto; font-size:0.85rem">
+                    ${metrics.cv_detail.map((fold, i) => `
+                        <div style="padding:0.25rem 0">
+                            <strong>Fold ${i+1}:</strong> 
+                            ${fold.score !== undefined ? `Score: ${fold.score.toFixed(4)}` : ''}
+                            ${fold.mse !== undefined ? `MSE: ${fold.mse.toFixed(6)}` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    // === RAW JSON (collapsed) ===
+    html += `
+        <details style="margin-top:1rem">
+            <summary style="cursor:pointer; font-weight:600; padding:0.5rem; background:rgba(0,0,0,0.2); border-radius:4px">
+                📄 Raw Metrics JSON
+            </summary>
+            <pre style="margin-top:0.5rem; font-size:0.75rem">${JSON.stringify(metrics, null, 2)}</pre>
+        </details>
+    `;
+    
     $('report-content').innerHTML = html;
     $('report-modal').showModal();
 }

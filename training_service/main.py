@@ -9,6 +9,8 @@ import uuid
 import threading
 import asyncio
 import os
+import hashlib
+import json
 from pathlib import Path
 from collections import deque
 from contextlib import asynccontextmanager
@@ -74,6 +76,61 @@ async def submit_training_task(
         except:
             pass
 
+def compute_fingerprint(
+    symbol: str,
+    algorithm: str,
+    target_col: str,
+    params: dict,
+    data_options: Optional[str],
+    timeframe: str,
+    target_transform: str,
+    parent_model_id: Optional[str] = None,  # Not used in fingerprint, kept for compatibility
+    alpha_grid: Optional[list] = None,
+    l1_ratio_grid: Optional[list] = None
+) -> tuple[str, str]:
+    """
+    Compute deterministic fingerprint for model configuration.
+    Prevents duplicate training of identical models.
+    
+    Fingerprint includes:
+    - Symbol, algorithm, target_col, timeframe
+    - All hyperparameters (sorted for determinism)
+    - Data options (train/test windows)
+    - Target transform (log_return, pct_change, etc.)
+    - Grid search configuration
+    
+    NOTE: parent_model_id is NOT included - models with different parents
+    but same config should be deduplicated.
+    
+    Returns:
+        tuple: (fingerprint_hash, human_readable_key)
+    """
+    # Normalize params - sort keys for determinism
+    normalized_params = json.dumps(params or {}, sort_keys=True)
+    
+    # Build fingerprint components (parent_model_id REMOVED)
+    components = [
+        symbol,
+        algorithm,
+        target_col,
+        timeframe,
+        target_transform,
+        data_options or "default",
+        normalized_params,
+        json.dumps(sorted(alpha_grid) if alpha_grid else []),
+        json.dumps(sorted(l1_ratio_grid) if l1_ratio_grid else [])
+    ]
+    
+    # Create human-readable key for debugging
+    human_key = f"{symbol}:{algorithm}:{target_col}:{timeframe}:{target_transform}:params={normalized_params}"
+    
+    # Create SHA256 hash
+    fingerprint_str = "|".join(str(c) for c in components)
+    fingerprint_hash = hashlib.sha256(fingerprint_str.encode()).hexdigest()
+    
+    return fingerprint_hash, human_key
+
+
 async def async_start_training(
     symbol: str,
     algorithm: str,
@@ -86,13 +143,32 @@ async def async_start_training(
     target_transform: str = "none"
 ) -> str:
     """Create a new training job record in the database."""
-    import json
     from datetime import datetime
     
     if params is None:
         params = {}
     
     training_id = str(uuid.uuid4())
+    
+    # Compute fingerprint for deduplication
+    fingerprint, fingerprint_key = compute_fingerprint(
+        symbol=symbol,
+        algorithm=algorithm,
+        target_col=target_col,
+        params=params,
+        data_options=data_options,
+        timeframe=timeframe,
+        target_transform=target_transform,
+        parent_model_id=parent_model_id
+    )
+    
+    log.info(f"Model fingerprint: {fingerprint[:16]}... (key: {fingerprint_key})")
+    
+    # Check if this exact model already exists
+    existing = await db.get_model_by_fingerprint(fingerprint)
+    if existing:
+        log.info(f"Duplicate detected! Model {existing['id']} already exists with same config. Returning existing model.")
+        return existing['id']
     
     # Create initial model record
     await db.create_model_record({
@@ -109,7 +185,8 @@ async def async_start_training(
         "parent_model_id": parent_model_id,
         "group_id": group_id,
         "timeframe": timeframe,
-        "target_transform": target_transform
+        "target_transform": target_transform,
+        "fingerprint": fingerprint
     })
     
     return training_id
@@ -404,6 +481,38 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
     # Inject p_value_threshold into parameters for persistence and task usage
     params = req.hyperparameters or {}
     params["p_value_threshold"] = req.p_value_threshold
+    
+    # Compute fingerprint to check for duplicates
+    fingerprint, fingerprint_key = compute_fingerprint(
+        symbol=req.symbol,
+        algorithm=req.algorithm,
+        target_col=req.target_col,
+        params=params,
+        data_options=req.data_options,
+        timeframe=req.timeframe,
+        target_transform=req.target_transform,
+        parent_model_id=req.parent_model_id,
+        alpha_grid=req.alpha_grid,
+        l1_ratio_grid=req.l1_ratio_grid
+    )
+    
+    log.info(f"Training request fingerprint: {fingerprint[:16]}... (key: {fingerprint_key})")
+    
+    # Check if this exact model already exists
+    existing = await db.get_model_by_fingerprint(fingerprint)
+    if existing:
+        log.info(f"Duplicate detected! Model {existing['id']} already trained with same config")
+        return {
+            "id": existing['id'],
+            "status": "duplicate",
+            "message": f"Model already exists (trained {existing['created_at']})",
+            "existing_model": {
+                "id": existing['id'],
+                "name": existing['name'],
+                "status": existing['status'],
+                "created_at": str(existing['created_at'])
+            }
+        }
     
     training_id = await async_start_training(
         req.symbol, 

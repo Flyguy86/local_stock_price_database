@@ -235,26 +235,40 @@ class SyncDBWrapper:
         async def _create():
             pool = await self._get_or_create_pool()
             
-            # Parse JSON strings to Python objects for JSONB columns
-            # The pool has JSON codecs that handle serialization
-            for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options',
-                              'alpha_grid', 'l1_ratio_grid', 'regime_configs', 'context_symbols']:
-                if json_field in data and data[json_field] is not None:
-                    # If it's a JSON string, parse to Python object
-                    if isinstance(data[json_field], str):
-                        try:
-                            data[json_field] = json.loads(data[json_field])
-                        except json.JSONDecodeError:
-                            pass  # Keep as string if not valid JSON
-            
-            columns = list(data.keys())
-            values = list(data.values())
-            placeholders = ', '.join(f'${i+1}' for i in range(len(values)))
-            columns_str = ', '.join(columns)
-            
-            query = f"INSERT INTO models ({columns_str}) VALUES ({placeholders})"
-            
             async with pool.acquire() as conn:
+                # Check if cohort_id column exists (backward compatibility)
+                has_cohort = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'models' AND column_name = 'cohort_id'
+                    )
+                """)
+                
+                # Remove cohort_id from data if column doesn't exist
+                data_to_insert = data.copy()  # Always copy to avoid mutating original
+                if not has_cohort and 'cohort_id' in data_to_insert:
+                    import logging
+                    logging.warning("cohort_id column does not exist, removing from insert")
+                    data_to_insert.pop('cohort_id', None)
+                
+                # Parse JSON strings to Python objects for JSONB columns
+                # The pool has JSON codecs that handle serialization
+                for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options',
+                                  'alpha_grid', 'l1_ratio_grid', 'regime_configs', 'context_symbols']:
+                    if json_field in data_to_insert and data_to_insert[json_field] is not None:
+                        # If it's a JSON string, parse to Python object
+                        if isinstance(data_to_insert[json_field], str):
+                            try:
+                                data_to_insert[json_field] = json.loads(data_to_insert[json_field])
+                            except json.JSONDecodeError:
+                                pass  # Keep as string if not valid JSON
+                
+                columns = list(data_to_insert.keys())
+                values = list(data_to_insert.values())
+                placeholders = ', '.join(f'${i+1}' for i in range(len(values)))
+                columns_str = ', '.join(columns)
+                
+                query = f"INSERT INTO models ({columns_str}) VALUES ({placeholders})"
                 await conn.execute(query, *values)
         
         return self._execute_async(_create())
@@ -292,6 +306,19 @@ class SyncDBWrapper:
                 row = await conn.fetchrow(
                     "SELECT * FROM models WHERE id = $1",
                     model_id
+                )
+                return dict(row) if row else None
+        
+        return self._execute_async(_get())
+    
+    def get_model_by_fingerprint(self, fingerprint: str) -> Optional[Dict[str, Any]]:
+        """Find model with matching fingerprint."""
+        async def _get():
+            pool = await self._get_or_create_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM models WHERE fingerprint = $1 LIMIT 1",
+                    fingerprint
                 )
                 return dict(row) if row else None
         
