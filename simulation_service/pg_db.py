@@ -21,6 +21,22 @@ POSTGRES_URL = os.environ.get(
 _pool: Optional[asyncpg.Pool] = None
 
 
+async def _init_connection(conn):
+    """Initialize connection with JSON codecs for JSONB support."""
+    await conn.set_type_codec(
+        'jsonb',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
+    await conn.set_type_codec(
+        'json',
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema='pg_catalog'
+    )
+
+
 async def get_pool() -> asyncpg.Pool:
     """Get or create connection pool."""
     global _pool
@@ -31,7 +47,8 @@ async def get_pool() -> asyncpg.Pool:
             min_size=2,
             max_size=10,
             command_timeout=60,
-            statement_cache_size=0  # Disable statement caching to prevent collisions
+            statement_cache_size=0,  # Disable statement caching to prevent collisions
+            init=_init_connection  # Initialize JSON codecs on each connection
         )
         log.info("PostgreSQL pool created for simulation service")
     return _pool

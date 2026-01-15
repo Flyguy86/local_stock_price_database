@@ -35,29 +35,220 @@ def failing_task(task_id):
     raise ValueError(f"Task {task_id} failed intentionally")
 
 
-def task_with_db_access(task_id):
-    """Simulate training task that accesses database."""
+def simple_subprocess_task(x):
+    """Simple module-level function for subprocess test (can be pickled)."""
+    return x * 2
+
+
+def subprocess_import_only():
+    """Step 6a: Just import sync_wrapper in subprocess."""
     import os
     import sys
-    from pathlib import Path
-    import uuid
-    import json
     
-    # Add project root
-    project_root = Path(__file__).parent.parent.parent
-    sys.path.insert(0, str(project_root))
+    try:
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        import training_service.sync_db_wrapper as sync_wrapper
+        return {'success': True, 'module': str(sync_wrapper)}
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def subprocess_create_wrapper():
+    """Step 6b: Create SyncDBWrapper instance in subprocess (no DB ops)."""
+    import os
+    import sys
     
-    # Set test database
-    os.environ['POSTGRES_URL'] = os.environ.get(
+    test_url = os.environ.get(
+        'TEST_POSTGRES_URL',
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+    )
+    os.environ['POSTGRES_URL'] = test_url
+    
+    try:
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        import training_service.sync_db_wrapper as sync_wrapper
+        db = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
+        return {'success': True, 'wrapper': str(db), 'url': test_url}
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def subprocess_create_pool_only():
+    """Step 6b2: Actually create the async pool in subprocess (no query)."""
+    import os
+    import sys
+    import asyncio
+    
+    test_url = os.environ.get(
+        'TEST_POSTGRES_URL',
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+    )
+    os.environ['POSTGRES_URL'] = test_url
+    
+    try:
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        import training_service.sync_db_wrapper as sync_wrapper
+        db = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
+        
+        # Force pool creation by calling internal method
+        async def create_pool():
+            pool = await db._get_or_create_pool()
+            return str(pool)
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            pool_str = loop.run_until_complete(create_pool())
+            return {'success': True, 'pool': pool_str, 'url': test_url}
+        finally:
+            loop.close()
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def subprocess_raw_asyncpg():
+    """Step 6b3: Use raw asyncpg directly in subprocess (bypass wrapper)."""
+    import os
+    import sys
+    import asyncio
+    
+    test_url = os.environ.get(
         'TEST_POSTGRES_URL',
         'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
     )
     
-    from training_service.sync_db_wrapper import db
+    try:
+        import asyncpg
+        
+        async def test_connection():
+            conn = await asyncpg.connect(test_url)
+            result = await conn.fetchval('SELECT 1')
+            await conn.close()
+            return result
+        
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(test_connection())
+            return {'success': True, 'result': result, 'url': test_url}
+        finally:
+            loop.close()
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def subprocess_simple_query():
+    """Step 6c: Execute a simple read query in subprocess."""
+    import os
+    import sys
+    
+    test_url = os.environ.get(
+        'TEST_POSTGRES_URL',
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+    )
+    os.environ['POSTGRES_URL'] = test_url
+    
+    try:
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        import training_service.sync_db_wrapper as sync_wrapper
+        db = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
+        
+        # Try to list models (should work even if empty)
+        models = db.list_models()
+        return {'success': True, 'model_count': len(models), 'url': test_url}
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def subprocess_insert_model():
+    """Step 6d: Insert a model in subprocess."""
+    import os
+    import sys
+    import uuid
+    import json
+    
+    test_url = os.environ.get(
+        'TEST_POSTGRES_URL',
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+    )
+    os.environ['POSTGRES_URL'] = test_url
+    
+    try:
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        import training_service.sync_db_wrapper as sync_wrapper
+        db = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
+        
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'algorithm': 'RandomForest',
+            'symbol': 'STEP6D',
+            'target_col': 'close',
+            'feature_cols': json.dumps(['sma_20']),
+            'hyperparameters': json.dumps({'n_estimators': 10}),
+            'status': 'preprocessing',
+            'timeframe': '1m'
+        }
+        
+        db.create_model_record(model_data)
+        model = db.get_model(model_id)
+        
+        return {
+            'success': True,
+            'model_id': model_id,
+            'retrieved': model is not None,
+            'url': test_url
+        }
+    except Exception as e:
+        import traceback
+        return {'success': False, 'error': str(e), 'traceback': traceback.format_exc()}
+
+
+def task_with_db_access(task_id):
+    """Simulate training task that accesses database."""
+    import os
+    import sys
+    import uuid
+    import json
     
     pid = os.getpid()
     
+    # CRITICAL: Set environment variable BEFORE any imports
+    # This ensures the module reads the correct URL when first imported
+    test_url = os.environ.get(
+        'TEST_POSTGRES_URL',
+        'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+    )
+    os.environ['POSTGRES_URL'] = test_url
+    
+    # Add project root - use /app since we're in Docker
+    # Also try the current working directory approach
+    if '/app' not in sys.path:
+        sys.path.insert(0, '/app')
+    
     try:
+        # Now import - the module will read POSTGRES_URL from environment
+        import training_service.sync_db_wrapper as sync_wrapper
+        
+        # Create a fresh wrapper instance with explicit URL
+        # This ensures subprocess uses correct DB even if module was cached
+        db = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
+        
         # Create a model
         model_id = str(uuid.uuid4())
         model_data = {
@@ -81,14 +272,19 @@ def task_with_db_access(task_id):
             'pid': pid,
             'success': True,
             'model_id': model_id,
-            'status': model.get('status') if model else None
+            'status': model.get('status') if model else None,
+            'db_url': test_url
         }
     except Exception as e:
+        import traceback
         return {
             'task_id': task_id,
             'pid': pid,
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': traceback.format_exc(),
+            'db_url': test_url,
+            'sys_path': sys.path[:5]  # First 5 entries for debugging
         }
 
 
@@ -228,6 +424,254 @@ class TestProcessPoolExecutor:
         # Should have cancelled some (may have already started some)
         assert cancelled_count >= 0  # Some might already be running
     
+    # ========================================
+    # DIAGNOSTIC TESTS for process pool DB access
+    # ========================================
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_db_step1_tables_exist_in_test_db(self, db_tables):
+        """Step 1: Verify tables exist in test database."""
+        async with db_tables.acquire() as conn:
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'models'
+                )
+            """)
+            assert exists, "models table should exist in test database"
+            print("✓ models table exists in test database")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_db_step2_can_insert_directly(self, db_tables):
+        """Step 2: Verify we can insert into models table directly."""
+        import uuid
+        model_id = str(uuid.uuid4())
+        
+        async with db_tables.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO models (id, algorithm, symbol, status)
+                VALUES ($1, $2, $3, $4)
+            """, model_id, 'TestAlgo', 'TEST', 'testing')
+            
+            row = await conn.fetchrow("SELECT * FROM models WHERE id = $1", model_id)
+            assert row is not None, "Inserted row should be found"
+            print(f"✓ Direct insert worked: {model_id}")
+    
+    @pytest.mark.integration
+    def test_db_step3_sync_wrapper_imports(self):
+        """Step 3: Verify sync_db_wrapper can be imported."""
+        import os
+        import sys
+        
+        # Set up like the child process would
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        os.environ['POSTGRES_URL'] = test_url
+        
+        if '/app' not in sys.path:
+            sys.path.insert(0, '/app')
+        
+        try:
+            import training_service.sync_db_wrapper as sync_wrapper
+            sync_wrapper.POSTGRES_URL = test_url
+            print(f"✓ sync_db_wrapper imported, POSTGRES_URL = {sync_wrapper.POSTGRES_URL}")
+        except Exception as e:
+            print(f"✗ Import failed: {e}")
+            raise
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_db_step4_sync_wrapper_can_connect(self, db_tables):
+        """Step 4: Verify SyncDBWrapper can create a connection."""
+        import os
+        import training_service.sync_db_wrapper as sync_wrapper
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        sync_wrapper.POSTGRES_URL = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        db = sync_wrapper.SyncDBWrapper()
+        
+        # Try to get a model (should return None, but tests connection)
+        try:
+            result = db.get_model('nonexistent-id')
+            print(f"✓ SyncDBWrapper connected, get_model returned: {result}")
+        except Exception as e:
+            print(f"✗ SyncDBWrapper connection failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    @pytest.mark.integration
+    def test_db_step5_sync_wrapper_can_insert(self, db_tables):
+        """Step 5: Verify SyncDBWrapper can insert a model (sync test, uses db_tables for setup)."""
+        import os
+        import uuid
+        import json
+        import asyncio
+        import training_service.sync_db_wrapper as sync_wrapper
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        sync_wrapper.POSTGRES_URL = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        # Reset any existing pool to force using new URL
+        sync_wrapper_instance = sync_wrapper.SyncDBWrapper()
+        sync_wrapper_instance._pool = None
+        
+        model_id = str(uuid.uuid4())
+        model_data = {
+            'id': model_id,
+            'algorithm': 'RandomForest',
+            'symbol': 'STEP5TEST',
+            'target_col': 'close',
+            'feature_cols': json.dumps(['sma_20']),
+            'hyperparameters': json.dumps({'n_estimators': 10}),
+            'status': 'preprocessing',
+            'timeframe': '1m'
+        }
+        
+        try:
+            sync_wrapper_instance.create_model_record(model_data)
+            print(f"✓ SyncDBWrapper inserted model: {model_id}")
+            
+            # Verify it exists
+            model = sync_wrapper_instance.get_model(model_id)
+            assert model is not None, "Model should exist after insert"
+            print(f"✓ Model retrieved: {model['id']}")
+        except Exception as e:
+            print(f"✗ SyncDBWrapper insert failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    @pytest.mark.integration
+    def test_db_step6_simple_subprocess_works(self):
+        """Step 6: Verify a simple subprocess can run."""
+        from concurrent.futures import ProcessPoolExecutor
+        
+        with ProcessPoolExecutor(max_workers=2) as pool:
+            future = pool.submit(simple_subprocess_task, 21)
+            result = future.result(timeout=10)
+        
+        assert result == 42, f"Expected 42, got {result}"
+        print("✓ Simple subprocess task worked")
+    
+    @pytest.mark.integration
+    def test_db_step6a_subprocess_import_only(self):
+        """Step 6a: Subprocess can import sync_wrapper module."""
+        from concurrent.futures import ProcessPoolExecutor
+        
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(subprocess_import_only)
+            result = future.result(timeout=15)
+        
+        print(f"\nStep 6a result: {result}")
+        if not result['success']:
+            print(f"Error: {result.get('error')}")
+            print(f"Traceback:\n{result.get('traceback')}")
+        
+        assert result['success'], f"Import failed: {result.get('error')}\n{result.get('traceback', '')}"
+        print("✓ Subprocess imported sync_wrapper successfully")
+    
+    @pytest.mark.integration
+    def test_db_step6b_subprocess_create_wrapper(self):
+        """Step 6b: Subprocess can create SyncDBWrapper instance."""
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(subprocess_create_wrapper)
+            result = future.result(timeout=15)
+        
+        print(f"\nStep 6b result: {result}")
+        if not result['success']:
+            print(f"Error: {result.get('error')}")
+            print(f"Traceback:\n{result.get('traceback')}")
+        
+        assert result['success'], f"Wrapper creation failed: {result.get('error')}\n{result.get('traceback', '')}"
+        print("✓ Subprocess created SyncDBWrapper successfully")
+    
+    @pytest.mark.integration
+    def test_db_step6c_subprocess_simple_query(self, db_tables):
+        """Step 6c: Subprocess can execute a simple read query."""
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(subprocess_simple_query)
+            result = future.result(timeout=20)
+        
+        print(f"\nStep 6c result: {result}")
+        if not result['success']:
+            print(f"Error: {result.get('error')}")
+            print(f"Traceback:\n{result.get('traceback')}")
+        
+        assert result['success'], f"Simple query failed: {result.get('error')}\n{result.get('traceback', '')}"
+        print(f"✓ Subprocess queried DB successfully (found {result.get('model_count')} models)")
+    
+    @pytest.mark.integration
+    def test_db_step6d_subprocess_insert_model(self, db_tables):
+        """Step 6d: Subprocess can insert a model record."""
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(subprocess_insert_model)
+            result = future.result(timeout=20)
+        
+        print(f"\nStep 6d result: {result}")
+        if not result['success']:
+            print(f"Error: {result.get('error')}")
+            print(f"Traceback:\n{result.get('traceback')}")
+        
+        assert result['success'], f"Insert failed: {result.get('error')}\n{result.get('traceback', '')}"
+        assert result.get('retrieved'), "Model should be retrievable after insert"
+        print(f"✓ Subprocess inserted model {result.get('model_id')} successfully")
+    
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_db_step7_subprocess_with_db_single(self, db_tables):
+        """Step 7: Single subprocess with DB access (easier to debug)."""
+        import os
+        from concurrent.futures import ProcessPoolExecutor
+        
+        test_url = 'postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory_test'
+        os.environ['TEST_POSTGRES_URL'] = test_url
+        os.environ['POSTGRES_URL'] = test_url
+        
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(task_with_db_access, 0)
+            result = future.result(timeout=30)
+        
+        print(f"\nSubprocess result: {result}")
+        
+        if not result['success']:
+            print(f"Error: {result.get('error')}")
+            print(f"Traceback:\n{result.get('traceback')}")
+            print(f"DB URL: {result.get('db_url')}")
+            print(f"sys.path: {result.get('sys_path')}")
+        
+        assert result['success'], f"Task failed: {result.get('error')}\n{result.get('traceback', '')}"
+        print("✓ Single subprocess with DB access worked")
+    
+    # ========================================
+    # END DIAGNOSTIC TESTS
+    # ========================================
+    
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_process_pool_with_db_access(self, db_tables):
@@ -252,9 +696,14 @@ class TestProcessPoolExecutor:
             
             results = [f.result(timeout=30) for f in futures]
         
-        # All tasks should succeed
+        # All tasks should succeed - print detailed error info
         for result in results:
-            assert result['success'] is True, f"Task {result['task_id']} failed: {result.get('error')}"
+            if not result['success']:
+                print(f"\n=== TASK {result['task_id']} FAILED ===")
+                print(f"Error: {result.get('error')}")
+                print(f"Traceback:\n{result.get('traceback', 'No traceback')}")
+                print("=" * 50)
+            assert result['success'] is True, f"Task {result['task_id']} failed: {result.get('error')}\n{result.get('traceback', '')}"
             assert result['status'] == 'completed'
         
         # Should have multiple PIDs

@@ -26,10 +26,31 @@ class SyncDBWrapper:
     Each process worker creates its own connection pool.
     """
     
-    def __init__(self):
+    def __init__(self, postgres_url: Optional[str] = None):
         self._pool = None
         self._pool_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db_async")
+        # Use provided URL, or check env at init time (not module load time)
+        self._postgres_url = postgres_url or os.environ.get(
+            "POSTGRES_URL",
+            POSTGRES_URL  # Fall back to module-level default
+        )
+    
+    async def _init_connection(self, conn):
+        """Initialize connection with JSON codecs for JSONB support."""
+        import json
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
     
     async def _get_or_create_pool(self):
         """Get or create connection pool (async version)."""
@@ -38,11 +59,12 @@ class SyncDBWrapper:
                 if self._pool is None:  # Double-check locking
                     import asyncpg
                     self._pool = await asyncpg.create_pool(
-                        POSTGRES_URL,
+                        self._postgres_url,  # Use instance URL, not module-level
                         min_size=1,
                         max_size=3,
                         command_timeout=30,
-                        statement_cache_size=0  # Disable statement caching to prevent collisions
+                        statement_cache_size=0,  # Disable statement caching to prevent collisions
+                        init=self._init_connection  # Initialize JSON codecs
                     )
         return self._pool
     
@@ -102,8 +124,14 @@ class SyncDBWrapper:
             
             if metrics:
                 updates.append(f"metrics = ${param_idx}")
-                # Keep as JSON string for asyncpg JSONB column
-                params.append(metrics if isinstance(metrics, str) else json.dumps(metrics))
+                # Parse JSON string to Python object for JSONB column (codec handles serialization)
+                if isinstance(metrics, str):
+                    try:
+                        params.append(json.loads(metrics))
+                    except json.JSONDecodeError:
+                        params.append(metrics)
+                else:
+                    params.append(metrics)
                 param_idx += 1
             
             if artifact_path:
@@ -118,8 +146,14 @@ class SyncDBWrapper:
             
             if feature_cols:
                 updates.append(f"feature_cols = ${param_idx}")
-                # Keep as JSON string for asyncpg JSONB column
-                params.append(feature_cols if isinstance(feature_cols, str) else json.dumps(feature_cols))
+                # Parse JSON string to Python object for JSONB column
+                if isinstance(feature_cols, str):
+                    try:
+                        params.append(json.loads(feature_cols))
+                    except json.JSONDecodeError:
+                        params.append(feature_cols)
+                else:
+                    params.append(feature_cols)
                 param_idx += 1
             
             if target_transform:
@@ -155,14 +189,17 @@ class SyncDBWrapper:
         async def _create():
             pool = await self._get_or_create_pool()
             
-            # Ensure JSONB fields are kept as JSON strings for asyncpg
-            # asyncpg expects JSON strings for JSONB columns, not Python objects
+            # Parse JSON strings to Python objects for JSONB columns
+            # The pool has JSON codecs that handle serialization
             for json_field in ['feature_cols', 'hyperparameters', 'metrics', 'data_options',
                               'alpha_grid', 'l1_ratio_grid', 'regime_configs', 'context_symbols']:
-                if json_field in data:
-                    # If it's a Python object (dict/list), convert to JSON string
-                    if not isinstance(data[json_field], str) and data[json_field] is not None:
-                        data[json_field] = json.dumps(data[json_field])
+                if json_field in data and data[json_field] is not None:
+                    # If it's a JSON string, parse to Python object
+                    if isinstance(data[json_field], str):
+                        try:
+                            data[json_field] = json.loads(data[json_field])
+                        except json.JSONDecodeError:
+                            pass  # Keep as string if not valid JSON
             
             columns = list(data.keys())
             values = list(data.values())

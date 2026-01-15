@@ -60,6 +60,23 @@ async def test_db_pool():
         print(f"\n⚠ Could not create test database: {e}")
         print(f"  Assuming it already exists")
     
+    # Define JSON codec initialization function
+    async def init_connection(conn):
+        """Initialize connection with JSON codecs for JSONB support."""
+        import json
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+    
     # Create connection pool to test database with statement cache disabled
     # This prevents "prepared statement already exists" errors
     pool = await asyncpg.create_pool(
@@ -67,7 +84,8 @@ async def test_db_pool():
         min_size=1,
         max_size=3,
         command_timeout=60,
-        statement_cache_size=0  # Disable statement caching to prevent collisions
+        statement_cache_size=0,  # Disable statement caching to prevent collisions
+        init=init_connection  # Initialize JSON codecs on each connection
     )
     
     # Clean up any existing tables
@@ -279,6 +297,22 @@ def training_db_fixture():
     
     pool = None  # Will be set in setup
     
+    async def init_connection(conn):
+        """Initialize connection with JSON codecs for JSONB support."""
+        import json
+        await conn.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+        await conn.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json.loads,
+            schema='pg_catalog'
+        )
+    
     async def setup_tables():
         """Set up test database tables and create pool."""
         nonlocal pool
@@ -296,13 +330,14 @@ def training_db_fixture():
         except Exception:
             pass  # Database might already exist
         
-        # Create the pool with statement caching disabled
+        # Create the pool with statement caching disabled and JSON codecs
         pool = await asyncpg.create_pool(
             TEST_POSTGRES_URL,
             min_size=1,
             max_size=3,
             command_timeout=60,
-            statement_cache_size=0
+            statement_cache_size=0,
+            init=init_connection  # Initialize JSON codecs
         )
         
         # Set the global pool so get_pool() uses it
