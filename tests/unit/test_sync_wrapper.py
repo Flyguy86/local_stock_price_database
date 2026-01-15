@@ -149,7 +149,8 @@ class TestSyncDBWrapper:
         sync_wrapper.POSTGRES_URL = test_url
         
         try:
-            wrapper = sync_wrapper.SyncDBWrapper()
+            # Pass URL explicitly to ensure correct DB is used
+            wrapper = sync_wrapper.SyncDBWrapper(postgres_url=test_url)
             
             # Create model
             model_id = str(uuid.uuid4())

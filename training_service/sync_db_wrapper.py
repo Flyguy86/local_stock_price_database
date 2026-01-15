@@ -225,6 +225,19 @@ class SyncDBWrapper:
         
         return self._execute_async(_save())
     
+    def list_models(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+        """List models with pagination."""
+        async def _list():
+            pool = await self._get_or_create_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT * FROM models ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+                    limit, offset
+                )
+                return [dict(row) for row in rows]
+        
+        return self._execute_async(_list())
+    
     def get_model(self, model_id: str) -> Optional[Dict[str, Any]]:
         """Get model."""
         async def _get():
