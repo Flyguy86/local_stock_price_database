@@ -297,13 +297,29 @@
               <div style="margin-bottom: 0.75rem;">
                 <div style="display: flex; align-items: center; justify-content: space-between;">
                   <strong style="color: #a78bfa;">⚡ Pure Grid Search</strong>
-                  <span style="font-size: 0.75rem; color: var(--text-muted);">No pruning, no evolution</span>
+                  <span style="font-size: 0.75rem; color: var(--text-muted);">Complete hyperparameter exploration</span>
                 </div>
                 <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0.25rem 0 0 0;">
                   Train ALL hyperparameter combinations using the SAME feature set.<br>
                   Perfect for creating diverse models for ensemble/stacking workflows.
                 </p>
               </div>
+              
+              <!-- Multi-Generational Pruning Option -->
+              <div style="background: rgba(139, 92, 246, 0.15); border: 1px solid rgba(139, 92, 246, 0.4); border-radius: 4px; padding: 0.75rem; margin-bottom: 0.75rem;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: #c4b5fd;">
+                  <input type="checkbox" id="grid-enable-pruning" style="width: auto; cursor: pointer;" onchange="toggleGridPruningInfo()">
+                  <strong>🌱 Enable Multi-Generational Pruning</strong>
+                </label>
+                <p id="grid-pruning-info" style="font-size: 0.75rem; color: var(--text-muted); margin: 0.5rem 0 0 1.5rem; display: none;">
+                  Will use settings from Training Configuration above:<br>
+                  • Max Generations: <span id="grid-gen-display">4</span><br>
+                  • Prune % per Gen: <span id="grid-prune-display">25</span>%<br>
+                  • Min Features: <span id="grid-min-feat-display">5</span><br>
+                  <span style="color: #a78bfa;">Each generation prunes weak features and trains a new grid.</span>
+                </p>
+              </div>
+              
               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem;">
                 <button type="button" onclick="gridSearchElasticNet(this)" style="background: #6366f1; padding: 0.75rem; font-size: 0.9rem;">
                   🔹 ElasticNet Grid

@@ -26,6 +26,49 @@ document.addEventListener('DOMContentLoaded', () => {
   setupSymbolSelector();
   setupGridCalculator();
   toggleRegularizationGrid();  // Initialize visibility based on algorithm
+  syncGridPruningDisplay();  // Sync grid pruning display with training config
+});
+
+// ============================================
+// Grid Search Pruning Toggle
+// ============================================
+
+function toggleGridPruningInfo() {
+  const checkbox = document.getElementById('grid-enable-pruning');
+  const info = document.getElementById('grid-pruning-info');
+  
+  if (checkbox && info) {
+    info.style.display = checkbox.checked ? 'block' : 'none';
+    // Sync display values when toggled on
+    if (checkbox.checked) {
+      syncGridPruningDisplay();
+    }
+  }
+}
+
+function syncGridPruningDisplay() {
+  const genDisplay = document.getElementById('grid-gen-display');
+  const pruneDisplay = document.getElementById('grid-prune-display');
+  const minFeatDisplay = document.getElementById('grid-min-feat-display');
+  
+  const maxGen = document.getElementById('max-generations')?.value || '4';
+  const pruneFrac = document.getElementById('prune-fraction')?.value || '25';
+  const minFeat = document.getElementById('min-features')?.value || '5';
+  
+  if (genDisplay) genDisplay.textContent = maxGen;
+  if (pruneDisplay) pruneDisplay.textContent = pruneFrac;
+  if (minFeatDisplay) minFeatDisplay.textContent = minFeat;
+}
+
+// Sync display when training config values change
+document.addEventListener('DOMContentLoaded', () => {
+  const maxGenInput = document.getElementById('max-generations');
+  const pruneFracInput = document.getElementById('prune-fraction');
+  const minFeatInput = document.getElementById('min-features');
+  
+  if (maxGenInput) maxGenInput.addEventListener('input', syncGridPruningDisplay);
+  if (pruneFracInput) pruneFracInput.addEventListener('input', syncGridPruningDisplay);
+  if (minFeatInput) minFeatInput.addEventListener('input', syncGridPruningDisplay);
 });
 
 // ============================================
@@ -1313,12 +1356,26 @@ async function gridSearchElasticNet(btn) {
       l1_ratio_grid: document.getElementById('l1-ratio-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
     };
     
+    // Check if multi-generational pruning is enabled
+    const enablePruning = document.getElementById('grid-enable-pruning')?.checked || false;
+    if (enablePruning) {
+      payload.max_generations = parseInt(document.getElementById('max-generations').value) || 4;
+      payload.prune_fraction = parseFloat(document.getElementById('prune-fraction').value) / 100 || 0.25;
+      payload.min_features = parseInt(document.getElementById('min-features').value) || 5;
+    }
+    
     console.log('ElasticNet payload:', payload);
     
     const gridSize = payload.alpha_grid.length * payload.l1_ratio_grid.length;
     console.log('Grid size:', gridSize);
     
-    if (!confirm(`This will train ${gridSize} ElasticNet models. Continue?`)) {
+    let confirmMsg = `This will train ${gridSize} ElasticNet models`;
+    if (enablePruning) {
+      confirmMsg += ` across up to ${payload.max_generations} generations with feature pruning`;
+    }
+    confirmMsg += '. Continue?';
+    
+    if (!confirm(confirmMsg)) {
       btn.disabled = false;
       btn.textContent = '🔹 ElasticNet Grid';
       console.log('User cancelled');
@@ -1387,10 +1444,24 @@ async function gridSearchXGBoost(btn) {
       learning_rate_grid: document.getElementById('learning-rate-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
     };
     
+    // Check if multi-generational pruning is enabled
+    const enablePruning = document.getElementById('grid-enable-pruning')?.checked || false;
+    if (enablePruning) {
+      payload.max_generations = parseInt(document.getElementById('max-generations').value) || 4;
+      payload.prune_fraction = parseFloat(document.getElementById('prune-fraction').value) / 100 || 0.25;
+      payload.min_features = parseInt(document.getElementById('min-features').value) || 5;
+    }
+    
     const gridSize = payload.max_depth_grid.length * payload.min_child_weight_grid.length * 
                      payload.reg_alpha_grid.length * payload.reg_lambda_grid.length * payload.learning_rate_grid.length;
     
-    if (!confirm(`This will train ${gridSize} XGBoost models (may take 15-30 mins). Continue?`)) {
+    let confirmMsg = `This will train ${gridSize} XGBoost models (may take 15-30 mins)`;
+    if (enablePruning) {
+      confirmMsg += ` across up to ${payload.max_generations} generations with feature pruning`;
+    }
+    confirmMsg += '. Continue?';
+    
+    if (!confirm(confirmMsg)) {
       btn.disabled = false;
       btn.textContent = '🌲 XGBoost Grid';
       return;
@@ -1455,10 +1526,24 @@ async function gridSearchLightGBM(btn) {
       learning_rate_grid: document.getElementById('lgbm-learning-rate-grid').value.split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v))
     };
     
+    // Check if multi-generational pruning is enabled
+    const enablePruning = document.getElementById('grid-enable-pruning')?.checked || false;
+    if (enablePruning) {
+      payload.max_generations = parseInt(document.getElementById('max-generations').value) || 4;
+      payload.prune_fraction = parseFloat(document.getElementById('prune-fraction').value) / 100 || 0.25;
+      payload.min_features = parseInt(document.getElementById('min-features').value) || 5;
+    }
+    
     const gridSize = payload.num_leaves_grid.length * payload.min_data_in_leaf_grid.length * 
                      payload.lambda_l1_grid.length * payload.lambda_l2_grid.length * payload.learning_rate_grid.length;
     
-    if (!confirm(`This will train ${gridSize} LightGBM models (may take 15-30 mins). Continue?`)) {
+    let confirmMsg = `This will train ${gridSize} LightGBM models (may take 15-30 mins)`;
+    if (enablePruning) {
+      confirmMsg += ` across up to ${payload.max_generations} generations with feature pruning`;
+    }
+    confirmMsg += '. Continue?';
+    
+    if (!confirm(confirmMsg)) {
       btn.disabled = false;
       btn.textContent = '💡 LightGBM Grid';
       return;
@@ -1539,10 +1624,24 @@ async function gridSearchRandomForest(btn) {
       max_features_grid: maxFeaturesGrid
     };
     
+    // Check if multi-generational pruning is enabled
+    const enablePruning = document.getElementById('grid-enable-pruning')?.checked || false;
+    if (enablePruning) {
+      payload.max_generations = parseInt(document.getElementById('max-generations').value) || 4;
+      payload.prune_fraction = parseFloat(document.getElementById('prune-fraction').value) / 100 || 0.25;
+      payload.min_features = parseInt(document.getElementById('min-features').value) || 5;
+    }
+    
     const gridSize = payload.max_depth_grid.length * payload.min_samples_split_grid.length * 
                      payload.min_samples_leaf_grid.length * payload.n_estimators_grid.length * payload.max_features_grid.length;
     
-    if (!confirm(`This will train ${gridSize} RandomForest models (may take 15-30 mins). Continue?`)) {
+    let confirmMsg = `This will train ${gridSize} RandomForest models (may take 15-30 mins)`;
+    if (enablePruning) {
+      confirmMsg += ` across up to ${payload.max_generations} generations with feature pruning`;
+    }
+    confirmMsg += '. Continue?';
+    
+    if (!confirm(confirmMsg)) {
       btn.disabled = false;
       btn.textContent = '🌳 RandomForest Grid';
       return;

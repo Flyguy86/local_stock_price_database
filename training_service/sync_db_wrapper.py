@@ -327,15 +327,20 @@ class SyncDBWrapper:
     def close(self):
         """Cleanup connection pool and event loop."""
         # Close pool first (while loop is still running)
-        if self._pool:
+        if self._pool is not None:
             async def _close_pool():
-                await self._pool.close()
+                try:
+                    # Check if pool has _config attribute before trying to close
+                    if hasattr(self._pool, '_config') and self._pool._config is not None:
+                        await self._pool.close()
+                except Exception as inner_e:
+                    log.debug(f"Inner error closing pool: {inner_e}")
             
             try:
                 if self._loop and not self._loop.is_closed():
                     self._loop.run_until_complete(_close_pool())
             except Exception as e:
-                log.warning(f"Error closing pool: {e}")
+                log.debug(f"Error closing pool: {e}")
             finally:
                 self._pool = None
         

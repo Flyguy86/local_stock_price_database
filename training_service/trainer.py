@@ -1355,11 +1355,20 @@ def train_model_task(
                      try:
                         explainer = shap.TreeExplainer(estimator)
                      except Exception as tree_err:
-                        log.warning(f"TreeExplainer failed for {est_type}, falling back to Explainer: {tree_err}")
-                        explainer = shap.Explainer(estimator, X_bg)
+                        log.warning(f"TreeExplainer failed for {est_type}, falling back to KernelExplainer: {tree_err}")
+                        try:
+                            # Use model.predict as the function for KernelExplainer
+                            explainer = shap.KernelExplainer(estimator.predict, X_bg)
+                        except Exception as kernel_err:
+                            log.warning(f"KernelExplainer also failed: {kernel_err}")
+                            explainer = None
                 else:
                      # Fallback
-                     explainer = shap.Explainer(estimator, X_bg)
+                     try:
+                         explainer = shap.Explainer(estimator, X_bg)
+                     except Exception as fallback_err:
+                         log.warning(f"Fallback Explainer failed: {fallback_err}")
+                         explainer = None
                 
                 if explainer and len(X_eval) > 0 and not is_ohe:
                      # Only run SHAP mapping if dimensions match (no OHE expansion)

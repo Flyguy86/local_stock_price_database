@@ -56,6 +56,67 @@ function getFingerprintDisplay(model) {
  * Get grid search display info for a model.
  * Shows if model is a cohort leader (with cohort size) or cohort member (with alpha/l1_ratio).
  */
+/**
+ * Format parent model ID for display
+ */
+function getParentDisplay(model) {
+    if (!model.parent_model_id) {
+        return '-';
+    }
+    
+    // Show abbreviated parent ID with tooltip
+    const shortId = model.parent_model_id.substring(0, 8);
+    return `<span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #a78bfa; cursor: pointer;" 
+                  title="Parent: ${model.parent_model_id}\nClick to highlight parent" 
+                  onclick="highlightModel('${model.parent_model_id}')">
+              ⬆️ ${shortId}
+            </span>`;
+}
+
+/**
+ * Format cohort ID for display
+ */
+function getCohortDisplay(model) {
+    if (!model.cohort_id) {
+        return '-';
+    }
+    
+    // Show abbreviated cohort ID with tooltip and sibling count
+    const shortId = model.cohort_id.substring(0, 8);
+    const siblingCount = model.cohort_size || 0;
+    
+    return `<span class="badge" style="background: rgba(244, 114, 182, 0.2); color: #f472b6; cursor: pointer;" 
+                  title="Cohort: ${model.cohort_id}\nSiblings: ${siblingCount}\nClick to see cohort details" 
+                  onclick="showGridDetails('${model.cohort_id}')">
+              🤝 ${shortId}
+            </span>`;
+}
+
+/**
+ * Highlight a model row temporarily
+ */
+function highlightModel(modelId) {
+    // Find all table rows
+    const rows = document.querySelectorAll('#models-body tr');
+    
+    rows.forEach(row => {
+        const idBadge = row.querySelector('.badge');
+        if (idBadge && idBadge.title === modelId) {
+            // Flash highlight
+            row.style.backgroundColor = 'rgba(139, 92, 246, 0.3)';
+            row.style.transition = 'background-color 0.3s';
+            
+            // Scroll into view
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Remove highlight after 2 seconds
+            setTimeout(() => {
+                row.style.backgroundColor = '';
+            }, 2000);
+        }
+    });
+}
+
 function getGridInfo(model, allModels) {
     // NEW COHORT SYSTEM (with cohort_id column)
     const cohortSize = model.cohort_size || 0;
@@ -631,7 +692,7 @@ async function loadModels() {
 
         // Render Table (simplified flat list for new Dashboard)
         if(!models.length) {
-            tbody.innerHTML = '<tr><td colspan="9">No models</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="13">No models</td></tr>';
             return;
         }
         
@@ -645,6 +706,8 @@ async function loadModels() {
             const gridInfo = getGridInfo(m, models);
             const metricsDisplay = getMetricsDisplay(m);
             const fingerprintDisplay = getFingerprintDisplay(m);
+            const parentDisplay = getParentDisplay(m);
+            const cohortDisplay = getCohortDisplay(m);
             return `
             <tr>
                 <td><span class="badge" title="${m.id}">${m.id.substring(0,8)}</span></td>
@@ -653,6 +716,8 @@ async function loadModels() {
                 <td>${m.symbol}</td>
                 <td>${m.timeframe||'-'}</td>
                 <td><span class="badge ${statusClass}">${m.status}</span></td>
+                <td>${parentDisplay}</td>
+                <td>${cohortDisplay}</td>
                 <td>${gridInfo}</td>
                 <td>${metricsDisplay}</td>
                 <td>${fingerprintDisplay}</td>
