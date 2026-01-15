@@ -218,6 +218,7 @@ class TrainingDB:
             has_cohort = await self._has_cohort_column(conn)
             
             if has_cohort:
+                # Optimized query using LEFT JOINs instead of correlated subqueries
                 query = """
                     SELECT 
                         m.id, m.name, m.algorithm, m.symbol, m.status, m.metrics, m.created_at,
@@ -227,9 +228,21 @@ class TrainingDB:
                         m.context_symbols, m.cv_folds, m.cv_strategy,
                         COALESCE(m.is_grid_member, FALSE) as is_grid_member,
                         m.hyperparameters,
-                        (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count,
-                        (SELECT COUNT(*) FROM models c WHERE c.cohort_id = m.cohort_id AND c.id != m.id) as cohort_size
+                        COALESCE(children.count, 0) as grid_children_count,
+                        COALESCE(siblings.count, 0) as cohort_size
                     FROM models m
+                    LEFT JOIN (
+                        SELECT parent_model_id, COUNT(*) as count 
+                        FROM models 
+                        WHERE parent_model_id IS NOT NULL 
+                        GROUP BY parent_model_id
+                    ) children ON children.parent_model_id = m.id
+                    LEFT JOIN (
+                        SELECT cohort_id, COUNT(*) - 1 as count 
+                        FROM models 
+                        WHERE cohort_id IS NOT NULL 
+                        GROUP BY cohort_id
+                    ) siblings ON siblings.cohort_id = m.cohort_id
                     ORDER BY m.created_at DESC
                 """
             else:
@@ -243,9 +256,15 @@ class TrainingDB:
                         m.context_symbols, m.cv_folds, m.cv_strategy,
                         COALESCE(m.is_grid_member, FALSE) as is_grid_member,
                         m.hyperparameters,
-                        (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count,
+                        COALESCE(children.count, 0) as grid_children_count,
                         0 as cohort_size
                     FROM models m
+                    LEFT JOIN (
+                        SELECT parent_model_id, COUNT(*) as count 
+                        FROM models 
+                        WHERE parent_model_id IS NOT NULL 
+                        GROUP BY parent_model_id
+                    ) children ON children.parent_model_id = m.id
                     ORDER BY m.created_at DESC
                 """
             

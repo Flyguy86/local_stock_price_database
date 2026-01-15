@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [x-cloak] { display: none !important; }
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.15); }
+        .pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(99, 102, 241, 0.5); }
+            50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.8); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen" x-data="dashboard()">
+    <!-- Header -->
+    <header class="gradient-bg shadow-lg">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <i class="fas fa-bolt text-3xl text-yellow-300"></i>
+                    <div>
+                        <h1 class="text-2xl font-bold">Ray Orchestrator</h1>
+                        <p class="text-sm text-gray-200">Distributed ML Training & Deployment</p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-3 h-3 rounded-full" 
+                              :class="status.ray_initialized ? 'bg-green-400 pulse-glow' : 'bg-red-400'"></span>
+                        <span class="text-sm" x-text="status.ray_initialized ? 'Ray Connected' : 'Ray Disconnected'"></span>
+                    </div>
+                    <a :href="rayDashboardUrl" target="_blank" 
+                       class="bg-white/20 hover:bg-white/30 px-4 py-2 rounded-lg text-sm transition">
+                        <i class="fas fa-external-link-alt mr-2"></i>Ray Dashboard
+                    </a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-8">
+        <!-- Quick Stats -->
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
+            <div class="bg-gray-800 rounded-xl p-6 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Experiments</p>
+                        <p class="text-3xl font-bold" x-text="experiments.length">0</p>
+                    </div>
+                    <div class="w-12 h-12 bg-indigo-500/20 rounded-full flex items-center justify-center">
+                        <i class="fas fa-flask text-indigo-400 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Deployed Ensembles</p>
+                        <p class="text-3xl font-bold" x-text="ensembles.length">0</p>
+                    </div>
+                    <div class="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center">
+                        <i class="fas fa-layer-group text-green-400 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Fingerprints (Cached)</p>
+                        <p class="text-3xl font-bold" x-text="fingerprintStats.total_fingerprints || 0">0</p>
+                    </div>
+                    <div class="w-12 h-12 bg-orange-500/20 rounded-full flex items-center justify-center">
+                        <i class="fas fa-fingerprint text-orange-400 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Available Symbols</p>
+                        <p class="text-3xl font-bold" x-text="symbols.length">0</p>
+                    </div>
+                    <div class="w-12 h-12 bg-yellow-500/20 rounded-full flex items-center justify-center">
+                        <i class="fas fa-chart-line text-yellow-400 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-xl p-6 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">CPUs Available</p>
+                        <p class="text-3xl font-bold" x-text="status.available_resources?.CPU || 0">0</p>
+                    </div>
+                    <div class="w-12 h-12 bg-purple-500/20 rounded-full flex items-center justify-center">
+                        <i class="fas fa-microchip text-purple-400 text-xl"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="mb-8">
+            <div class="flex space-x-4 border-b border-gray-700">
+                <button @click="activeTab = 'search'" 
+                        :class="activeTab === 'search' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-gray-400'"
+                        class="px-4 py-3 font-medium transition">
+                    <i class="fas fa-search mr-2"></i>Hyperparameter Search
+                </button>
+                <button @click="activeTab = 'experiments'" 
+                        :class="activeTab === 'experiments' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-gray-400'"
+                        class="px-4 py-3 font-medium transition">
+                    <i class="fas fa-flask mr-2"></i>Experiments
+                </button>
+                <button @click="activeTab = 'ensembles'" 
+                        :class="activeTab === 'ensembles' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'text-gray-400'"
+                        class="px-4 py-3 font-medium transition">
+                    <i class="fas fa-layer-group mr-2"></i>Ensembles
+                </button>
+            </div>
+        </div>
+
+        <!-- Search Tab -->
+        <div x-show="activeTab === 'search'" x-cloak>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Search Type Selection -->
+                <div class="bg-gray-800 rounded-xl p-6">
+                    <h2 class="text-xl font-bold mb-4">
+                        <i class="fas fa-rocket mr-2 text-indigo-400"></i>Start New Search
+                    </h2>
+                    
+                    <!-- Search Type Cards -->
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <button @click="searchType = 'grid'" 
+                                :class="searchType === 'grid' ? 'ring-2 ring-indigo-500 bg-indigo-500/20' : 'bg-gray-700'"
+                                class="p-4 rounded-lg text-left transition hover:bg-gray-600">
+                            <i class="fas fa-th text-2xl text-blue-400 mb-2"></i>
+                            <h3 class="font-semibold">Grid Search</h3>
+                            <p class="text-xs text-gray-400">Exhaustive parameter sweep</p>
+                        </button>
+                        <button @click="searchType = 'pbt'" 
+                                :class="searchType === 'pbt' ? 'ring-2 ring-indigo-500 bg-indigo-500/20' : 'bg-gray-700'"
+                                class="p-4 rounded-lg text-left transition hover:bg-gray-600">
+                            <i class="fas fa-dna text-2xl text-green-400 mb-2"></i>
+                            <h3 class="font-semibold">PBT (Evolution)</h3>
+                            <p class="text-xs text-gray-400">Multi-generational search</p>
+                        </button>
+                        <button @click="searchType = 'asha'" 
+                                :class="searchType === 'asha' ? 'ring-2 ring-indigo-500 bg-indigo-500/20' : 'bg-gray-700'"
+                                class="p-4 rounded-lg text-left transition hover:bg-gray-600">
+                            <i class="fas fa-filter text-2xl text-yellow-400 mb-2"></i>
+                            <h3 class="font-semibold">ASHA</h3>
+                            <p class="text-xs text-gray-400">Early stopping search</p>
+                        </button>
+                        <button @click="searchType = 'bayesian'" 
+                                :class="searchType === 'bayesian' ? 'ring-2 ring-indigo-500 bg-indigo-500/20' : 'bg-gray-700'"
+                                class="p-4 rounded-lg text-left transition hover:bg-gray-600">
+                            <i class="fas fa-brain text-2xl text-pink-400 mb-2"></i>
+                            <h3 class="font-semibold">Bayesian</h3>
+                            <p class="text-xs text-gray-400">Smart search (skip_duplicate)</p>
+                        </button>
+                        <button @click="searchType = 'multi-pbt'" 
+                                :class="searchType === 'multi-pbt' ? 'ring-2 ring-indigo-500 bg-indigo-500/20' : 'bg-gray-700'"
+                                class="p-4 rounded-lg text-left transition hover:bg-gray-600 col-span-2">
+                            <i class="fas fa-globe text-2xl text-purple-400 mb-2"></i>
+                            <h3 class="font-semibold">Multi-Ticker PBT</h3>
+                            <p class="text-xs text-gray-400">Universal hyperparameters across all tickers</p>
+                        </button>
+                    </div>
+
+                    <!-- Algorithm Selection -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Algorithm</label>
+                        <select x-model="searchConfig.algorithm" 
+                                class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                            <option value="elasticnet">ElasticNet Regression</option>
+                            <option value="xgboost_regressor">XGBoost Regressor</option>
+                            <option value="lightgbm_regressor">LightGBM Regressor</option>
+                            <option value="random_forest_regressor">Random Forest Regressor</option>
+                        </select>
+                    </div>
+
+                    <!-- Ticker Selection -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Tickers</label>
+                        <div class="flex flex-wrap gap-2 mb-2">
+                            <template x-for="ticker in searchConfig.tickers" :key="ticker">
+                                <span class="bg-indigo-500/30 text-indigo-300 px-3 py-1 rounded-full text-sm flex items-center">
+                                    <span x-text="ticker"></span>
+                                    <button @click="removeTicker(ticker)" class="ml-2 hover:text-red-400">×</button>
+                                </span>
+                            </template>
+                        </div>
+                        <div class="flex space-x-2">
+                            <select x-model="newTicker" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                                <option value="">Select ticker...</option>
+                                <template x-for="sym in symbols" :key="sym.symbol">
+                                    <option :value="sym.symbol" x-text="sym.symbol"></option>
+                                </template>
+                            </select>
+                            <button @click="addTicker()" class="bg-indigo-500 hover:bg-indigo-600 px-4 py-2 rounded-lg">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Target Configuration -->
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Target Column</label>
+                            <select x-model="searchConfig.target_col" 
+                                    class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                                <option value="close">Close</option>
+                                <option value="open">Open</option>
+                                <option value="high">High</option>
+                                <option value="low">Low</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Transform</label>
+                            <select x-model="searchConfig.target_transform" 
+                                    class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                                <option value="log_return">Log Return</option>
+                                <option value="pct_change">Pct Change</option>
+                                <option value="raw">Raw (not recommended)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Timeframe -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-300 mb-2">Timeframe</label>
+                        <select x-model="searchConfig.timeframe" 
+                                class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                            <option value="1m">1 Minute</option>
+                            <option value="5m">5 Minutes</option>
+                            <option value="15m">15 Minutes</option>
+                            <option value="1h">1 Hour</option>
+                            <option value="1d">1 Day</option>
+                        </select>
+                    </div>
+
+                    <!-- PBT-specific options -->
+                    <div x-show="searchType === 'pbt' || searchType === 'multi-pbt'" class="mb-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Population Size</label>
+                                <input type="number" x-model.number="searchConfig.population_size" 
+                                       class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white" 
+                                       min="5" max="100">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Generations</label>
+                                <input type="number" x-model.number="searchConfig.num_generations" 
+                                       class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white" 
+                                       min="1" max="50">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ASHA-specific options -->
+                    <div x-show="searchType === 'asha'" class="mb-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Num Samples</label>
+                                <input type="number" x-model.number="searchConfig.num_samples" 
+                                       class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white" 
+                                       min="10" max="500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Search Algorithm</label>
+                                <select x-model="searchConfig.search_alg" 
+                                        class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white">
+                                    <option value="random">Random</option>
+                                    <option value="bayesopt">Bayesian (skip_duplicate)</option>
+                                    <option value="optuna">Optuna</option>
+                                    <option value="hyperopt">HyperOpt</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bayesian-specific options -->
+                    <div x-show="searchType === 'bayesian'" class="mb-4">
+                        <div class="grid grid-cols-1 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-2">Num Samples</label>
+                                <input type="number" x-model.number="searchConfig.num_samples" 
+                                       class="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-white" 
+                                       min="10" max="500">
+                            </div>
+                            <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-3">
+                                <div class="flex items-center space-x-2 text-green-400">
+                                    <i class="fas fa-fingerprint"></i>
+                                    <span class="text-sm">skip_duplicate=True is automatically enabled</span>
+                                </div>
+                                <p class="text-xs text-gray-400 mt-1">Bayesian search hashes configs to avoid re-testing identical hyperparameters</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Resume Toggle (for all non-grid searches) -->
+                    <div x-show="searchType !== 'grid'" class="mb-4">
+                        <label class="flex items-center space-x-3 cursor-pointer">
+                            <input type="checkbox" x-model="searchConfig.resume" 
+                                   class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500">
+                            <div>
+                                <span class="text-sm font-medium text-gray-300">Resume Previous Experiment</span>
+                                <p class="text-xs text-gray-500">Continue crashed/stopped experiments without re-training completed trials</p>
+                            </div>
+                        </label>
+                    </div>
+
+                    <!-- Start Button -->
+                    <button @click="startSearch()" 
+                            :disabled="searchConfig.tickers.length === 0"
+                            class="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 
+                                   disabled:opacity-50 disabled:cursor-not-allowed
+                                   py-3 rounded-lg font-semibold text-lg transition">
+                        <i class="fas fa-play mr-2"></i>Start <span x-text="searchType.toUpperCase()"></span> Search
+                    </button>
+                </div>
+
+                <!-- Search Info Panel -->
+                <div class="bg-gray-800 rounded-xl p-6">
+                    <h2 class="text-xl font-bold mb-4">
+                        <i class="fas fa-info-circle mr-2 text-blue-400"></i>Search Information
+                    </h2>
+                    
+                    <div x-show="searchType === 'grid'" class="space-y-4">
+                        <div class="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                            <h3 class="font-semibold text-blue-300 mb-2"><i class="fas fa-th mr-2"></i>Grid Search</h3>
+                            <p class="text-sm text-gray-300">
+                                Exhaustively tries every combination of hyperparameters. Best for small search spaces
+                                where you want to guarantee finding the optimal configuration.
+                            </p>
+                            <ul class="mt-2 text-xs text-gray-400 list-disc list-inside">
+                                <li>Guaranteed to find the best combination in the grid</li>
+                                <li>Can be slow for large grids (exponential combinations)</li>
+                                <li>Good for final tuning after narrowing the search space</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <div x-show="searchType === 'pbt'" class="space-y-4">
+                        <div class="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+                            <h3 class="font-semibold text-green-300 mb-2"><i class="fas fa-dna mr-2"></i>Population-Based Training</h3>
+                            <p class="text-sm text-gray-300">
+                                <strong>The multi-generational approach.</strong> Evolves a population of models over time.
+                                Poor performers are replaced with mutated clones of the winners.
+                            </p>
+                            <ul class="mt-2 text-xs text-gray-400 list-disc list-inside">
+                                <li>Adapts hyperparameters during training (not just fixed)</li>
+                                <li>Finds hyperparameters robust to changing market regimes</li>
+                                <li>Used by OpenAI to train ChatGPT</li>
+                                <li>Best for finding generalizable trading strategies</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <div x-show="searchType === 'asha'" class="space-y-4">
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+                            <h3 class="font-semibold text-yellow-300 mb-2"><i class="fas fa-filter mr-2"></i>ASHA (Early Stopping)</h3>
+                            <p class="text-sm text-gray-300">
+                                Aggressively stops underperforming trials early, allowing more resources
+                                for promising configurations.
+                            </p>
+                            <ul class="mt-2 text-xs text-gray-400 list-disc list-inside">
+                                <li>Efficiently explores large search spaces</li>
+                                <li>Kills bad trials early (saves compute)</li>
+                                <li>Optuna/HyperOpt uses Bayesian optimization for smarter sampling</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <div x-show="searchType === 'multi-pbt'" class="space-y-4">
+                        <div class="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4">
+                            <h3 class="font-semibold text-purple-300 mb-2"><i class="fas fa-globe mr-2"></i>Multi-Ticker PBT</h3>
+                            <p class="text-sm text-gray-300">
+                                Finds hyperparameters that work well across <strong>all</strong> selected tickers,
+                                not just optimized for one.
+                            </p>
+                            <ul class="mt-2 text-xs text-gray-400 list-disc list-inside">
+                                <li>Prevents overfitting to a single ticker</li>
+                                <li>Each trial trains on ALL tickers simultaneously</li>
+                                <li>Optimizes for average + minimum Sharpe across tickers</li>
+                                <li>Ideal for building universal trading strategies</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <!-- Ray Dashboard Link -->
+                    <div class="mt-6 p-4 bg-gray-700 rounded-lg">
+                        <h3 class="font-semibold mb-2"><i class="fas fa-chart-area mr-2 text-cyan-400"></i>Real-Time Monitoring</h3>
+                        <p class="text-sm text-gray-300 mb-3">
+                            Watch experiments progress in real-time on the Ray Dashboard.
+                        </p>
+                        <a :href="rayDashboardUrl" target="_blank" 
+                           class="inline-block bg-cyan-500 hover:bg-cyan-600 px-4 py-2 rounded-lg text-sm transition">
+                            <i class="fas fa-external-link-alt mr-2"></i>Open Ray Dashboard
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Experiments Tab -->
+        <div x-show="activeTab === 'experiments'" x-cloak>
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-bold">
+                        <i class="fas fa-flask mr-2 text-indigo-400"></i>Experiments
+                    </h2>
+                    <button @click="refreshData()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">
+                        <i class="fas fa-sync-alt mr-2"></i>Refresh
+                    </button>
+                </div>
+                
+                <template x-if="experiments.length === 0">
+                    <div class="text-center py-12 text-gray-400">
+                        <i class="fas fa-flask text-4xl mb-4"></i>
+                        <p>No experiments yet. Start a search to see results here.</p>
+                    </div>
+                </template>
+                
+                <div class="space-y-4">
+                    <template x-for="exp in experiments" :key="exp.name">
+                        <div class="bg-gray-700 rounded-lg p-4 hover:bg-gray-600 transition cursor-pointer"
+                             @click="viewExperiment(exp.name)">
+                            <div class="flex items-center justify-between">
+                                <div>
+                                    <h3 class="font-semibold" x-text="exp.name"></h3>
+                                    <p class="text-sm text-gray-400">
+                                        <span x-text="exp.completed || exp.num_trials"></span> trials
+                                        <span x-show="exp.best_metric">
+                                            • Best Sharpe: <span class="text-green-400" x-text="exp.best_metric?.toFixed(4)"></span>
+                                        </span>
+                                    </p>
+                                </div>
+                                <div class="flex items-center space-x-3">
+                                    <button @click.stop="deployFromExperiment(exp.name)" 
+                                            class="bg-green-500/20 hover:bg-green-500/30 text-green-400 px-3 py-1 rounded text-sm">
+                                        <i class="fas fa-rocket mr-1"></i>Deploy
+                                    </button>
+                                    <i class="fas fa-chevron-right text-gray-500"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ensembles Tab -->
+        <div x-show="activeTab === 'ensembles'" x-cloak>
+            <div class="bg-gray-800 rounded-xl p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h2 class="text-xl font-bold">
+                        <i class="fas fa-layer-group mr-2 text-green-400"></i>Deployed Ensembles
+                    </h2>
+                </div>
+                
+                <template x-if="ensembles.length === 0">
+                    <div class="text-center py-12 text-gray-400">
+                        <i class="fas fa-layer-group text-4xl mb-4"></i>
+                        <p>No ensembles deployed yet. Deploy PBT survivors from an experiment.</p>
+                    </div>
+                </template>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <template x-for="ensemble in ensembles" :key="ensemble.name">
+                        <div class="bg-gray-700 rounded-lg p-4">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="font-semibold" x-text="ensemble.name"></h3>
+                                <span class="bg-green-500/20 text-green-400 px-2 py-1 rounded text-xs">Active</span>
+                            </div>
+                            <p class="text-sm text-gray-400 mb-3">
+                                Endpoint: <code class="bg-gray-800 px-2 py-1 rounded text-xs" x-text="ensemble.endpoint"></code>
+                            </p>
+                            <div class="flex space-x-2">
+                                <button @click="testEnsemble(ensemble.name)" 
+                                        class="flex-1 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 py-2 rounded text-sm">
+                                    <i class="fas fa-vial mr-1"></i>Test
+                                </button>
+                                <button @click="deleteEnsemble(ensemble.name)" 
+                                        class="bg-red-500/20 hover:bg-red-500/30 text-red-400 px-4 py-2 rounded text-sm">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Toast Notifications -->
+    <div class="fixed bottom-4 right-4 space-y-2" x-show="toast.show" x-cloak>
+        <div :class="toast.type === 'success' ? 'bg-green-600' : toast.type === 'error' ? 'bg-red-600' : 'bg-blue-600'"
+             class="px-6 py-3 rounded-lg shadow-lg flex items-center space-x-3">
+            <i :class="toast.type === 'success' ? 'fas fa-check-circle' : toast.type === 'error' ? 'fas fa-exclamation-circle' : 'fas fa-info-circle'"></i>
+            <span x-text="toast.message"></span>
+        </div>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                activeTab: 'search',
+                searchType: 'pbt',
+                rayDashboardUrl: '{{ ray_dashboard_url }}',
+                
+                status: {},
+                experiments: [],
+                ensembles: [],
+                symbols: [],
+                fingerprintStats: {},
+                
+                newTicker: '',
+                
+                searchConfig: {
+                    algorithm: 'elasticnet',
+                    tickers: ['AAPL'],
+                    target_col: 'close',
+                    target_transform: 'log_return',
+                    timeframe: '1m',
+                    population_size: 20,
+                    num_generations: 10,
+                    num_samples: 50,
+                    search_alg: 'random',
+                    resume: false
+                },
+                
+                toast: { show: false, message: '', type: 'info' },
+                
+                async init() {
+                    await this.refreshData();
+                    setInterval(() => this.refreshData(), 10000);
+                },
+                
+                async refreshData() {
+                    try {
+                        const [statusRes, expRes, ensRes, symRes, fpRes] = await Promise.all([
+                            fetch('/status'),
+                            fetch('/experiments'),
+                            fetch('/ensemble'),
+                            fetch('/symbols'),
+                            fetch('/fingerprint/stats')
+                        ]);
+                        
+                        this.status = await statusRes.json();
+                        this.experiments = (await expRes.json()).experiments || [];
+                        this.ensembles = (await ensRes.json()).ensembles || [];
+                        this.symbols = (await symRes.json()).symbols || [];
+                        this.fingerprintStats = await fpRes.json();
+                    } catch (e) {
+                        console.error('Failed to refresh data:', e);
+                    }
+                },
+                
+                addTicker() {
+                    if (this.newTicker && !this.searchConfig.tickers.includes(this.newTicker)) {
+                        this.searchConfig.tickers.push(this.newTicker);
+                        this.newTicker = '';
+                    }
+                },
+                
+                removeTicker(ticker) {
+                    this.searchConfig.tickers = this.searchConfig.tickers.filter(t => t !== ticker);
+                },
+                
+                async startSearch() {
+                    const endpoints = {
+                        'grid': '/search/grid',
+                        'pbt': '/search/pbt',
+                        'asha': '/search/asha',
+                        'bayesian': '/search/bayesian',
+                        'multi-pbt': '/search/multi-ticker-pbt'
+                    };
+                    
+                    const body = { ...this.searchConfig };
+                    
+                    if (this.searchType === 'grid') {
+                        // Add default param grid for elasticnet
+                        if (this.searchConfig.algorithm === 'elasticnet') {
+                            body.param_grid = {
+                                alpha: [0.0001, 0.001, 0.01, 0.1],
+                                l1_ratio: [0.1, 0.3, 0.5, 0.7, 0.9]
+                            };
+                        }
+                    }
+                    
+                    try {
+                        const res = await fetch(endpoints[this.searchType], {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body)
+                        });
+                        
+                        const result = await res.json();
+                        const resumeNote = body.resume ? ' (resuming)' : '';
+                        this.showToast(`Search started: ${this.searchType.toUpperCase()}${resumeNote}`, 'success');
+                        this.refreshData();
+                    } catch (e) {
+                        this.showToast('Failed to start search: ' + e.message, 'error');
+                    }
+                },
+                
+                async viewExperiment(name) {
+                    window.open(`/experiments/${name}`, '_blank');
+                },
+                
+                async deployFromExperiment(name) {
+                    const ensembleName = prompt('Enter ensemble name:', `ensemble_${name}`);
+                    if (!ensembleName) return;
+                    
+                    try {
+                        const res = await fetch('/ensemble/deploy-pbt-survivors', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                ensemble_name: ensembleName,
+                                experiment_name: name,
+                                top_n: 5,
+                                voting: 'soft',
+                                threshold: 0.7
+                            })
+                        });
+                        
+                        const result = await res.json();
+                        if (result.error) {
+                            this.showToast(result.error, 'error');
+                        } else {
+                            this.showToast(`Ensemble ${ensembleName} deployed!`, 'success');
+                            this.refreshData();
+                        }
+                    } catch (e) {
+                        this.showToast('Failed to deploy: ' + e.message, 'error');
+                    }
+                },
+                
+                async testEnsemble(name) {
+                    this.showToast('Testing ensemble... (check console for results)', 'info');
+                    console.log(`Test ensemble ${name} at endpoint /ensemble/${name}/predict`);
+                },
+                
+                async deleteEnsemble(name) {
+                    if (!confirm(`Delete ensemble "${name}"?`)) return;
+                    
+                    try {
+                        await fetch(`/ensemble/${name}`, { method: 'DELETE' });
+                        this.showToast(`Ensemble ${name} deleted`, 'success');
+                        this.refreshData();
+                    } catch (e) {
+                        this.showToast('Failed to delete: ' + e.message, 'error');
+                    }
+                },
+                
+                showToast(message, type = 'info') {
+                    this.toast = { show: true, message, type };
+                    setTimeout(() => { this.toast.show = false; }, 3000);
+                }
+            };
+        }
+    </script>
+</body>
+</html>
