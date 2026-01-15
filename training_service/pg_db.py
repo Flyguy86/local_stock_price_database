@@ -200,18 +200,21 @@ class TrainingDB:
         return await get_pool()
     
     async def list_models(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """List all models with metadata."""
+        """List all models with metadata including grid search info."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             query = """
                 SELECT 
-                    id, name, algorithm, symbol, status, metrics, created_at,
-                    error_message, data_options, timeframe, target_col,
-                    parent_model_id, group_id, target_transform,
-                    columns_initial, columns_remaining, fingerprint,
-                    context_symbols, cv_folds, cv_strategy
-                FROM models
-                ORDER BY created_at DESC
+                    m.id, m.name, m.algorithm, m.symbol, m.status, m.metrics, m.created_at,
+                    m.error_message, m.data_options, m.timeframe, m.target_col,
+                    m.parent_model_id, m.group_id, m.target_transform,
+                    m.columns_initial, m.columns_remaining, m.fingerprint,
+                    m.context_symbols, m.cv_folds, m.cv_strategy,
+                    COALESCE(m.is_grid_member, FALSE) as is_grid_member,
+                    m.hyperparameters,
+                    (SELECT COUNT(*) FROM models c WHERE c.parent_model_id = m.id) as grid_children_count
+                FROM models m
+                ORDER BY m.created_at DESC
             """
             if limit is not None:
                 rows = await conn.fetch(query + " LIMIT $1", limit)

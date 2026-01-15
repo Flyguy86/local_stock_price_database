@@ -54,6 +54,10 @@
         .badge.completed { background: rgba(16, 185, 129, 0.2); color: #34d399; }
         .badge.failed { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
         .badge.running { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        .badge.grid-parent { background: rgba(139, 92, 246, 0.3); color: #a78bfa; border: 1px solid #8b5cf6; }
+        .badge.grid-child { background: rgba(244, 114, 182, 0.2); color: #f472b6; font-size: 0.65rem; }
+        .grid-indicator { display: inline-flex; align-items: center; gap: 0.25rem; }
+        .grid-indicator .count { font-weight: 700; }
         
         pre { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; overflow: auto; }
         
@@ -103,6 +107,15 @@
                 <button class="secondary" onclick="closeReport()">Close</button>
             </div>
             <div id="report-content" style="max-height: 70vh; overflow-y: auto;"></div>
+        </dialog>
+
+        <!-- Grid Search Details Modal -->
+        <dialog id="grid-modal">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:0.5rem">
+                <h2 style="margin:0; border:none;" id="grid-title">🔍 Grid Search Details</h2>
+                <button class="secondary" onclick="closeGridModal()">Close</button>
+            </div>
+            <div id="grid-content" style="max-height: 70vh; overflow-y: auto;"></div>
         </dialog>
         
         <!-- ELASTIC NET -->
@@ -515,6 +528,7 @@
                         <th>Symbol</th>
                         <th>TF</th>
                         <th>Status</th>
+                        <th>Grid</th>
                         <th>Metrics</th>
                         <th>Created</th>
                         <th>Actions</th>

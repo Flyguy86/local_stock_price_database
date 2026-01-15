@@ -3,6 +3,151 @@ const modelsCache = {};
 const SECTIONS = ['enet', 'xgb', 'lgbm'];
 let featureMap = {};
 
+/**
+ * Get grid search display info for a model.
+ * Shows if model is a grid parent (with child count) or grid child (with alpha/l1_ratio).
+ */
+function getGridInfo(model, allModels) {
+    // Check if this is a grid parent (has children)
+    const childCount = model.grid_children_count || 0;
+    if (childCount > 0) {
+        return `<span class="badge grid-parent grid-indicator" style="cursor:pointer" onclick="showGridDetails('${model.id}')" title="Click to see grid search details">🔍 <span class="count">${childCount}</span> children ✓</span>`;
+    }
+    
+    // Check if this is a grid child
+    if (model.is_grid_member && model.parent_model_id) {
+        // Try to get hyperparameters to show alpha/l1_ratio
+        let paramStr = '';
+        try {
+            let hp = model.hyperparameters;
+            if (typeof hp === 'string') hp = JSON.parse(hp);
+            if (hp) {
+                const parts = [];
+                if (hp.alpha !== undefined) parts.push(`α=${hp.alpha}`);
+                if (hp.l1_ratio !== undefined) parts.push(`L1=${hp.l1_ratio}`);
+                paramStr = parts.join(' ');
+            }
+        } catch(e) {}
+        
+        return `<span class="badge grid-child" style="cursor:pointer" onclick="showGridDetails('${model.parent_model_id}')" title="Click to see parent grid">👶 ${paramStr || 'child'}</span>`;
+    }
+    
+    return '-';
+}
+
+/**
+ * Show grid search details in a modal.
+ * Displays parent model info and all child models in a table.
+ */
+async function showGridDetails(parentId) {
+    const parent = modelsCache[parentId];
+    if (!parent) {
+        alert('Parent model not found in cache');
+        return;
+    }
+    
+    // Find all children of this parent
+    const children = Object.values(modelsCache).filter(m => m.parent_model_id === parentId);
+    children.sort((a, b) => {
+        // Sort by hyperparameters (alpha, l1_ratio)
+        try {
+            let hpA = typeof a.hyperparameters === 'string' ? JSON.parse(a.hyperparameters) : a.hyperparameters;
+            let hpB = typeof b.hyperparameters === 'string' ? JSON.parse(b.hyperparameters) : b.hyperparameters;
+            if (!hpA || !hpB) return 0;
+            if (hpA.alpha !== hpB.alpha) return (hpA.alpha || 0) - (hpB.alpha || 0);
+            return (hpA.l1_ratio || 0) - (hpB.l1_ratio || 0);
+        } catch(e) { return 0; }
+    });
+    
+    // Build the modal content
+    let html = `
+        <div style="margin-bottom:1rem; padding:0.75rem; background:rgba(139,92,246,0.1); border-radius:6px; border:1px solid rgba(139,92,246,0.3)">
+            <h3 style="margin:0 0 0.5rem 0; color:#a78bfa">📊 Parent Model</h3>
+            <div style="display:grid; grid-template-columns:auto 1fr; gap:0.25rem 1rem; font-size:0.85rem">
+                <span style="color:var(--text-muted)">ID:</span><span>${parent.id}</span>
+                <span style="color:var(--text-muted)">Name:</span><span>${parent.name}</span>
+                <span style="color:var(--text-muted)">Symbol:</span><span>${parent.symbol}</span>
+                <span style="color:var(--text-muted)">Algorithm:</span><span>${parent.algorithm}</span>
+                <span style="color:var(--text-muted)">Status:</span><span class="badge ${parent.status}">${parent.status}</span>
+            </div>
+        </div>
+    `;
+    
+    // Grid search verification status
+    const completedChildren = children.filter(c => c.status === 'completed').length;
+    const failedChildren = children.filter(c => c.status === 'failed').length;
+    const totalChildren = children.length;
+    
+    const isSuccess = parent.status === 'completed' && completedChildren === totalChildren && totalChildren > 0;
+    const hasIssues = failedChildren > 0 || parent.status === 'failed';
+    
+    html += `
+        <div style="margin-bottom:1rem; padding:0.75rem; background:${isSuccess ? 'rgba(16,185,129,0.1)' : hasIssues ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)'}; border-radius:6px; border:1px solid ${isSuccess ? 'rgba(16,185,129,0.3)' : hasIssues ? 'rgba(239,68,68,0.3)' : 'rgba(59,130,246,0.3)'}">
+            <h3 style="margin:0 0 0.5rem 0; color:${isSuccess ? '#34d399' : hasIssues ? '#fca5a5' : '#60a5fa'}">${isSuccess ? '✅ Grid Search Verified' : hasIssues ? '❌ Grid Search Has Issues' : '⏳ Grid Search In Progress'}</h3>
+            <div style="font-size:0.85rem">
+                <span style="color:var(--text-muted)">Total Children:</span> <strong>${totalChildren}</strong><br>
+                <span style="color:var(--text-muted)">Completed:</span> <strong style="color:#34d399">${completedChildren}</strong><br>
+                ${failedChildren > 0 ? `<span style="color:var(--text-muted)">Failed:</span> <strong style="color:#fca5a5">${failedChildren}</strong><br>` : ''}
+            </div>
+        </div>
+    `;
+    
+    // Children table
+    if (children.length > 0) {
+        html += `
+            <h3 style="margin:0 0 0.5rem 0">👶 Child Models (${children.length})</h3>
+            <div style="max-height:300px; overflow-y:auto">
+                <table style="width:100%; font-size:0.8rem">
+                    <thead>
+                        <tr>
+                            <th>Alpha (α)</th>
+                            <th>L1 Ratio</th>
+                            <th>Status</th>
+                            <th>R² Score</th>
+                            <th>ID</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+        
+        for (const child of children) {
+            let hp = {};
+            try { hp = typeof child.hyperparameters === 'string' ? JSON.parse(child.hyperparameters) : (child.hyperparameters || {}); } catch(e){}
+            
+            let r2 = '-';
+            try {
+                let metrics = typeof child.metrics === 'string' ? JSON.parse(child.metrics) : child.metrics;
+                if (metrics) {
+                    r2 = metrics.r2 || metrics.R2 || metrics.test_r2 || metrics.cv_mean_r2 || '-';
+                    if (typeof r2 === 'number') r2 = r2.toFixed(4);
+                }
+            } catch(e){}
+            
+            const statusClass = child.status === 'completed' ? 'completed' : child.status === 'failed' ? 'failed' : 'running';
+            
+            html += `
+                <tr>
+                    <td>${hp.alpha !== undefined ? hp.alpha : '-'}</td>
+                    <td>${hp.l1_ratio !== undefined ? hp.l1_ratio : '-'}</td>
+                    <td><span class="badge ${statusClass}">${child.status}</span></td>
+                    <td>${r2}</td>
+                    <td><span class="badge" title="${child.id}">${child.id.substring(0,8)}</span></td>
+                </tr>
+            `;
+        }
+        
+        html += `</tbody></table></div>`;
+    } else {
+        html += `<p style="color:var(--text-muted)">No child models found yet. Grid search may still be running.</p>`;
+    }
+    
+    $('grid-title').innerText = `🔍 Grid Search: ${parent.name}`;
+    $('grid-content').innerHTML = html;
+    $('grid-modal').showModal();
+}
+
+function closeGridModal() { $('grid-modal').close(); }
+
 function load() {
     console.log("Dashboard load() started");
     loadOptions();
@@ -275,6 +420,7 @@ async function loadModels() {
 
         tbody.innerHTML = models.map(m => {
             const statusClass = m.status === 'failed' ? 'failed' : (m.status==='completed'?'completed':'running');
+            const gridInfo = getGridInfo(m, models);
             return `
             <tr>
                 <td><span class="badge" title="${m.id}">${m.id.substring(0,8)}</span></td>
@@ -283,6 +429,7 @@ async function loadModels() {
                 <td>${m.symbol}</td>
                 <td>${m.timeframe||'-'}</td>
                 <td><span class="badge ${statusClass}">${m.status}</span></td>
+                <td>${gridInfo}</td>
                 <td>${m.metrics && m.metrics.length > 5 ? `<button onclick="showReport('${m.id}')" class="secondary">Report</button>` : '-'}</td>
                 <td>${m.created_at.split('T')[1].split('.')[0]}</td>
                 <td>

@@ -1,6 +1,9 @@
 """
 Synchronous wrapper around async PostgreSQL operations.
 Used by trainer.py which runs in separate processes.
+
+IMPORTANT: Each subprocess must get its own fresh instance.
+The global `db` at module level is recreated per-process.
 """
 import asyncio
 import json
@@ -13,6 +16,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("training.sync_db")
 
+# Track the PID to detect when we're in a new process
+_init_pid = os.getpid()
+
 # PostgreSQL URL from environment (for process workers)
 POSTGRES_URL = os.environ.get(
     "POSTGRES_URL",
@@ -24,12 +30,17 @@ class SyncDBWrapper:
     """
     Synchronous wrapper for PostgreSQL operations.
     Each process worker creates its own connection pool.
+    
+    IMPORTANT: The connection pool is tied to an event loop. We maintain
+    a persistent event loop per instance to avoid invalidating connections.
     """
     
     def __init__(self, postgres_url: Optional[str] = None):
         self._pool = None
         self._pool_lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db_async")
+        self._executor = None  # Created lazily
+        self._loop = None  # Persistent event loop for this instance
+        self._init_pid = os.getpid()  # Track which process created this instance
         # Use provided URL, or check env at init time (not module load time)
         self._postgres_url = postgres_url or os.environ.get(
             "POSTGRES_URL",
@@ -52,12 +63,40 @@ class SyncDBWrapper:
             schema='pg_catalog'
         )
     
+    def _check_forked_process(self):
+        """
+        Check if we're in a forked subprocess and reset state if so.
+        
+        When Python forks a process, the child inherits the parent's memory
+        including any connection pools and event loops, which become invalid.
+        We detect this by comparing the current PID to the PID at init time.
+        """
+        current_pid = os.getpid()
+        if current_pid != self._init_pid:
+            log.debug(f"Detected forked process (init PID {self._init_pid} -> current {current_pid}), resetting state")
+            # Reset all state for the new process
+            self._pool = None
+            self._loop = None  # Must reset - old loop is invalid in new process
+            self._pool_lock = threading.Lock()
+            self._executor = None
+            self._init_pid = current_pid
+    
+    def _get_executor(self):
+        """Get or create the thread pool executor."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="db_async")
+        return self._executor
+    
     async def _get_or_create_pool(self):
         """Get or create connection pool (async version)."""
+        # Check for forked process before accessing pool
+        self._check_forked_process()
+        
         if self._pool is None:
             with self._pool_lock:
                 if self._pool is None:  # Double-check locking
                     import asyncpg
+                    log.debug(f"Creating new connection pool for PID {os.getpid()}")
                     self._pool = await asyncpg.create_pool(
                         self._postgres_url,  # Use instance URL, not module-level
                         min_size=1,
@@ -68,38 +107,45 @@ class SyncDBWrapper:
                     )
         return self._pool
     
+    def _get_event_loop(self):
+        """
+        Get or create a persistent event loop for this instance.
+        
+        The event loop must persist across calls because the connection pool
+        is tied to it. Closing the loop would invalidate all pool connections.
+        """
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+            # Don't set as current thread's event loop to avoid conflicts
+        return self._loop
+    
     def _execute_async(self, coro):
         """
         Execute async operation safely, handling running event loops.
         
-        If an event loop is already running in this thread, we run the
-        coroutine in a separate thread with its own event loop.
+        CRITICAL: We use a persistent event loop because the asyncpg pool
+        is tied to the loop that created it. Closing the loop between calls
+        would invalidate the pool connections.
         """
+        # Check for forked process first
+        self._check_forked_process()
+        
+        # Get our persistent event loop (creates one if needed)
+        loop = self._get_event_loop()
+        
         try:
-            # Check if there's a running event loop
-            loop = asyncio.get_running_loop()
-            # Event loop is running - execute in separate thread
+            # Check if there's already a running event loop in this thread
+            asyncio.get_running_loop()
+            # Event loop is running - must use thread with OUR loop
+            executor = self._get_executor()
+            
             def run_in_thread():
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    return new_loop.run_until_complete(coro)
-                finally:
-                    new_loop.close()
+                return loop.run_until_complete(coro)
             
-            future = self._executor.submit(run_in_thread)
-            return future.result()
+            future = executor.submit(run_in_thread)
+            return future.result(timeout=60)
         except RuntimeError:
-            # No running event loop - safe to run directly
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
+            # No running event loop in this thread - run directly on our loop
             return loop.run_until_complete(coro)
     
     def update_model_status(
@@ -252,21 +298,37 @@ class SyncDBWrapper:
         return self._execute_async(_get())
     
     def close(self):
-        """Cleanup connection pool."""
+        """Cleanup connection pool and event loop."""
+        # Close pool first (while loop is still running)
         if self._pool:
-            async def _close():
+            async def _close_pool():
                 await self._pool.close()
             
             try:
-                self._execute_async(_close())
+                if self._loop and not self._loop.is_closed():
+                    self._loop.run_until_complete(_close_pool())
             except Exception as e:
                 log.warning(f"Error closing pool: {e}")
+            finally:
+                self._pool = None
         
+        # Close event loop
+        if self._loop and not self._loop.is_closed():
+            try:
+                self._loop.close()
+            except:
+                pass
+            finally:
+                self._loop = None
+        
+        # Shutdown executor
         if self._executor:
             try:
                 self._executor.shutdown(wait=False)
             except:
                 pass
+            finally:
+                self._executor = None
     
     def __del__(self):
         """Cleanup on deletion."""
@@ -276,5 +338,29 @@ class SyncDBWrapper:
             pass
 
 
-# Global instance for trainer.py to import (created per-process)
-db = SyncDBWrapper()
+def _get_db():
+    """
+    Get or create a SyncDBWrapper instance for the current process.
+    
+    This function ensures each process gets its own fresh instance,
+    avoiding issues with inherited state from forked processes.
+    """
+    global _db_instance, _db_instance_pid
+    
+    current_pid = os.getpid()
+    
+    # Check if we need a new instance (first call or forked process)
+    if '_db_instance' not in globals() or _db_instance_pid != current_pid:
+        log.debug(f"Creating new SyncDBWrapper for process {current_pid}")
+        _db_instance = SyncDBWrapper()
+        _db_instance_pid = current_pid
+    
+    return _db_instance
+
+# Initialize for module-level access
+_db_instance_pid = os.getpid()
+_db_instance = SyncDBWrapper()
+
+# Global instance for trainer.py to import
+# Note: The instance will auto-reset its state when used in a forked process
+db = _db_instance
