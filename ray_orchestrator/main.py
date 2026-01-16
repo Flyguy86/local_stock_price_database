@@ -124,8 +124,8 @@ class WalkForwardPreprocessRequest(BaseModel):
     windows: list[int] = [50, 200]  # SMA windows
     resampling_timeframes: Optional[list[str]] = None  # e.g., ["5min", "15min"]
     output_base_path: str = "/app/data/walk_forward_folds"
-    num_gpus: float = 0.0  # Set to 1.0 for GPU acceleration
-    actor_pool_size: int = 2
+    num_gpus: float = 0.0  # Set to 1.0+ for GPU acceleration
+    actor_pool_size: Optional[int] = None  # None = auto-detect all CPUs, or specify manually
 
 
 class WalkForwardTrainRequest(BaseModel):
@@ -208,7 +208,7 @@ async def run_streaming_preprocess(request: StreamingPreprocessRequest, backgrou
         try:
             # Create pipeline
             preprocessor = create_preprocessing_pipeline(
-                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
+                parquet_dir=str(settings.data.parquet_dir)
             )
             
             # Run preprocessing
@@ -237,6 +237,87 @@ async def run_streaming_preprocess(request: StreamingPreprocessRequest, backgrou
         "symbols": request.symbols or "all",
         "output_path": request.output_path
     }
+
+
+@app.get("/folds/list/{symbol}")
+async def list_available_folds(symbol: str):
+    """
+    List available pre-processed walk-forward folds for a symbol.
+    
+    Returns fold metadata including date ranges and row counts.
+    Models MUST use these folds for training.
+    """
+    from .data import get_available_folds
+    
+    fold_ids = get_available_folds(symbol)
+    
+    if not fold_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No walk-forward folds found for {symbol}. "
+                   f"Run preprocessing first: POST /streaming/walk_forward"
+        )
+    
+    folds_info = []
+    fold_base_dir = settings.data.walk_forward_folds_dir
+    
+    for fold_id in fold_ids:
+        fold_dir = fold_base_dir / symbol / f"fold_{fold_id:03d}"
+        
+        # Get metadata if available
+        metadata_file = fold_dir / "metadata.json"
+        if metadata_file.exists():
+            import json
+            with open(metadata_file) as f:
+                metadata = json.load(f)
+        else:
+            metadata = {"fold_id": fold_id}
+        
+        folds_info.append(metadata)
+    
+    return {
+        "symbol": symbol,
+        "num_folds": len(fold_ids),
+        "folds": folds_info,
+        "base_dir": str(fold_base_dir)
+    }
+
+
+@app.get("/folds/summary")
+async def get_folds_summary():
+    """
+    Get summary of all available walk-forward folds across all symbols.
+    
+    Use this to verify preprocessing has been run before training.
+    """
+    fold_base_dir = settings.data.walk_forward_folds_dir
+    
+    if not fold_base_dir.exists():
+        return {
+            "status": "no_folds",
+            "message": "No walk-forward folds directory found. Run preprocessing first.",
+            "required_action": "POST /streaming/walk_forward"
+        }
+    
+    from .data import get_available_symbols
+    
+    # Check which symbols have raw data
+    symbols_with_data = get_available_symbols()
+    
+    # Check which symbols have processed folds
+    symbols_with_folds = []
+    for symbol_dir in fold_base_dir.iterdir():
+        if symbol_dir.is_dir():
+            symbols_with_folds.append(symbol_dir.name)
+    
+    summary = {
+        "total_symbols_with_data": len(symbols_with_data),
+        "total_symbols_with_folds": len(symbols_with_folds),
+        "symbols_needing_preprocessing": list(set(symbols_with_data) - set(symbols_with_folds)),
+        "symbols_ready_for_training": symbols_with_folds,
+    }
+    
+    return summary
 
 
 @app.get("/streaming/status")
@@ -320,7 +401,7 @@ async def preview_streaming_data(
     Useful for checking data quality and schema.
     """
     try:
-        loader = BarDataLoader(parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet"))
+        loader = BarDataLoader(parquet_dir=str(settings.data.parquet_dir))
         ds = loader.load_all_bars(symbols=symbols)
         
         # Get sample rows
@@ -353,7 +434,17 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
     The SMA at the start of each Test period does NOT know what happened in
     previous folds, eliminating look-ahead bias.
     """
+    # Auto-detect CPU count if not specified
+    import os
+    try:
+        cpu_count = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cpu_count = os.cpu_count() or 4
+    
+    actor_pool_size = request.actor_pool_size if request.actor_pool_size is not None else cpu_count
+    
     log.info(f"Starting walk-forward preprocessing: {request.symbols} from {request.start_date} to {request.end_date}")
+    log.info(f"Using {actor_pool_size} parallel actors (CPUs available: {cpu_count})")
     
     def run_preprocessing():
         try:
@@ -361,7 +452,7 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
             
             # Create pipeline
             preprocessor = create_preprocessing_pipeline(
-                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
+                parquet_dir=str(settings.data.parquet_dir)
             )
             
             # Process folds
@@ -377,7 +468,7 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
                 windows=request.windows,
                 resampling_timeframes=request.resampling_timeframes,
                 num_gpus=request.num_gpus,
-                actor_pool_size=request.actor_pool_size
+                actor_pool_size=actor_pool_size
             ):
                 fold_count += 1
                 log.info(f"Processing {fold}")

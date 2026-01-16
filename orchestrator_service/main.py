@@ -262,18 +262,18 @@ async def api_stats():
 # ============================================
 # Direct Data Access (reads mounted /app/data)
 # ============================================
-FEATURES_PARQUET_DIR = Path("/app/data/features_parquet")
+PARQUET_DIR = Path("/app/data/parquet")
 
 
 def _get_options_from_parquet() -> list:
     """Read options directly from mounted parquet files."""
     try:
-        if not FEATURES_PARQUET_DIR.exists():
-            log.warning(f"Features parquet dir not found: {FEATURES_PARQUET_DIR}")
+        if not PARQUET_DIR.exists():
+            log.warning(f"Parquet dir not found: {PARQUET_DIR}")
             return []
         
         # Get first symbol directory
-        symbol_dirs = [d for d in FEATURES_PARQUET_DIR.iterdir() if d.is_dir()]
+        symbol_dirs = [d for d in PARQUET_DIR.iterdir() if d.is_dir()]
         if not symbol_dirs:
             log.warning("No symbol directories in parquet")
             return []
@@ -313,10 +313,10 @@ def _get_options_from_parquet() -> list:
 def _get_symbols_from_parquet() -> list:
     """List symbols directly from mounted parquet directory."""
     try:
-        if not FEATURES_PARQUET_DIR.exists():
+        if not PARQUET_DIR.exists():
             return []
         
-        symbols = sorted([d.name for d in FEATURES_PARQUET_DIR.iterdir() if d.is_dir()])
+        symbols = sorted([d.name for d in PARQUET_DIR.iterdir() if d.is_dir()])
         log.info(f"Found symbols from parquet: {symbols}")
         return symbols
         
@@ -341,7 +341,7 @@ async def get_feature_symbols(options: Optional[str] = None):
 def _get_feature_columns_from_parquet(symbol: str) -> list:
     """Read feature columns directly from parquet files for a symbol."""
     try:
-        symbol_dir = FEATURES_PARQUET_DIR / symbol
+        symbol_dir = PARQUET_DIR / symbol
         if not symbol_dir.exists():
             log.warning(f"Symbol directory not found: {symbol_dir}")
             return []

@@ -85,8 +85,52 @@ See **[Complete Test Guide](tests/COMPLETE_TEST_GUIDE.md)** for detailed documen
   - **Scalability**: Up to CPU_COUNT simultaneous training jobs
 - **Orchestration**: Agents (historical backfill, live updater, feature builder) coordinated via lightweight task queue, with idempotent jobs keyed by symbol/date.
 - **Interfaces**: REST API + web UI (FastAPI + Streamlit/React) for ingest queueing, status, browsing bars/features.
-- **Logging/Monitoring**: JSON logs (timestamp, agent, symbol, stage, message) stored centrally, surfacing heartbeats/progress bars in UI.
+- **Logging/Monitoring**: 
+  - JSON logs (timestamp, agent, symbol, stage, message) stored centrally
+  - TensorBoard integration for training metrics visualization
+  - Ray Dashboard for distributed training monitoring
+  - Progress bars and heartbeats surfaced in UI
 - **Deployment**: Docker Compose with PostgreSQL 15-alpine; runnable in Codespaces/devcontainer.
+
+## Monitoring & Visualization
+
+### TensorBoard (Training Metrics) ✨
+The training service now logs comprehensive metrics to TensorBoard for real-time visualization:
+
+**Start TensorBoard:**
+```bash
+# Option 1: Use the startup script
+./start_tensorboard.sh
+
+# Option 2: Manual start
+tensorboard --logdir=/app/data/tensorboard_logs --host=0.0.0.0 --port=6006
+
+# Then open in browser
+http://localhost:6006
+```
+
+**Metrics Logged:**
+- **Grid Search**: CV scores for all hyperparameter combinations
+- **Regression Models**: R², MSE, RMSE, MAE
+- **Classification Models**: Accuracy, Precision, Recall, F1-Score
+- **Model Metadata**: Algorithm, symbol, target column
+
+**Location:** Logs are saved to `/app/data/tensorboard_logs/{symbol}_{algorithm}_{id}/`
+
+### Ray Dashboard (Distributed Training)
+Monitor Ray orchestrator jobs, resource utilization, and task execution:
+```bash
+# Already running on port 8265
+http://localhost:8265
+```
+
+Shows: Job status, CPU/memory usage, task timeline, actor states
+
+### Training Service Web UI
+View model metadata, feature importance, and simulation results:
+```bash
+http://localhost:8001
+```
 
 ## Ingestion Requirements
 - Always fetch 1-min bars from Alpaca; compute 5-min+ locally.

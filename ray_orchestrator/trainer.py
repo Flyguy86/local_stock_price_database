@@ -1,8 +1,17 @@
 """
 Walk-forward training pipeline using Ray Tune.
 
-Integrates the streaming preprocessing folds with hyperparameter tuning,
-ensuring each trial is evaluated across multiple time-based folds.
+CRITICAL: All training must use pre-processed walk-forward folds from
+/app/data/walk_forward_folds/ to ensure proper feature calculation isolation.
+
+Each fold has features calculated ONLY on its training window to prevent
+look-ahead bias. Direct loading of raw parquet data is prohibited for training.
+
+Workflow:
+1. Generate folds: POST /streaming/walk_forward (one-time preprocessing)
+2. Load folds: Use load_fold_from_disk() in data.py
+3. Train models: Ray Tune evaluates across all folds
+4. Deploy: Best model from cross-fold validation
 """
 
 import logging
@@ -180,6 +189,7 @@ class WalkForwardTrainer:
                 n_estimators=config.get("n_estimators", 100),
                 max_depth=config.get("max_depth", 10),
                 min_samples_split=config.get("min_samples_split", 2),
+                n_jobs=-1,  # Use all available CPU cores
                 random_state=42
             )
         elif algorithm == "xgboost":
@@ -189,6 +199,7 @@ class WalkForwardTrainer:
                 learning_rate=config.get("learning_rate", 0.1),
                 subsample=config.get("subsample", 0.8),
                 colsample_bytree=config.get("colsample_bytree", 0.8),
+                nthread=-1,  # Use all available CPU cores
                 random_state=42
             )
         elif algorithm == "lightgbm":
@@ -198,6 +209,7 @@ class WalkForwardTrainer:
                 learning_rate=config.get("learning_rate", 0.1),
                 subsample=config.get("subsample", 0.8),
                 colsample_bytree=config.get("colsample_bytree", 0.8),
+                n_jobs=-1,  # Use all available CPU cores
                 random_state=42,
                 verbosity=-1  # Suppress warnings
             )

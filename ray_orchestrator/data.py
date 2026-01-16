@@ -1,8 +1,11 @@
 """
 Data loading utilities for Ray Orchestrator.
 
-Uses Ray Data for streaming large datasets without memory overflow.
-Integrates with DuckDB/Parquet feature storage.
+IMPORTANT: All model training must use walk-forward pre-processed folds
+from /app/data/walk_forward_folds/ to ensure proper feature isolation
+and prevent look-ahead bias.
+
+Direct raw parquet loading is ONLY for fold generation, not training.
 """
 
 import logging
@@ -22,6 +25,88 @@ from .config import settings
 log = logging.getLogger("ray_orchestrator.data")
 
 
+def load_fold_from_disk(
+    fold_id: int,
+    symbol: str,
+    fold_base_dir: Optional[str] = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load a pre-processed walk-forward fold from disk.
+    
+    This is the REQUIRED method for all model training to ensure proper
+    feature calculation isolation and prevent look-ahead bias.
+    
+    Args:
+        fold_id: Fold number (0-indexed)
+        symbol: Trading symbol
+        fold_base_dir: Base directory containing folds (defaults to config)
+        
+    Returns:
+        Tuple of (train_df, test_df) with pre-calculated features
+        
+    Raises:
+        FileNotFoundError: If fold doesn't exist (must run preprocessing first)
+    """
+    if fold_base_dir is None:
+        fold_base_dir = str(settings.data.walk_forward_folds_dir)
+    
+    fold_dir = Path(fold_base_dir) / symbol / f"fold_{fold_id:03d}"
+    
+    if not fold_dir.exists():
+        raise FileNotFoundError(
+            f"Fold {fold_id} not found for {symbol} at {fold_dir}. "
+            f"Run walk-forward preprocessing first: POST /streaming/walk_forward"
+        )
+    
+    train_path = fold_dir / "train"
+    test_path = fold_dir / "test"
+    
+    if not train_path.exists() or not test_path.exists():
+        raise FileNotFoundError(
+            f"Incomplete fold at {fold_dir}. Expected train/ and test/ subdirectories."
+        )
+    
+    # Load using DuckDB for efficient parquet reading
+    train_df = duckdb.query(f"SELECT * FROM read_parquet('{train_path}/**/*.parquet')").df()
+    test_df = duckdb.query(f"SELECT * FROM read_parquet('{test_path}/**/*.parquet')").df()
+    
+    log.info(f"Loaded fold {fold_id} for {symbol}: train={len(train_df)} rows, test={len(test_df)} rows")
+    
+    return train_df, test_df
+
+
+def get_available_folds(symbol: str, fold_base_dir: Optional[str] = None) -> list[int]:
+    """
+    Get list of available pre-processed folds for a symbol.
+    
+    Args:
+        symbol: Trading symbol
+        fold_base_dir: Base directory containing folds
+        
+    Returns:
+        List of fold IDs available for this symbol
+    """
+    if fold_base_dir is None:
+        fold_base_dir = str(settings.data.walk_forward_folds_dir)
+    
+    symbol_dir = Path(fold_base_dir) / symbol
+    
+    if not symbol_dir.exists():
+        log.warning(f"No folds found for {symbol} in {fold_base_dir}")
+        return []
+    
+    fold_ids = []
+    for fold_path in symbol_dir.iterdir():
+        if fold_path.is_dir() and fold_path.name.startswith("fold_"):
+            try:
+                fold_id = int(fold_path.name.split("_")[1])
+                fold_ids.append(fold_id)
+            except (IndexError, ValueError):
+                continue
+    
+    return sorted(fold_ids)
+
+
 def get_available_symbols() -> list[str]:
     """
     Get list of available symbols from parquet directory (Hive partitioned).
@@ -29,8 +114,7 @@ def get_available_symbols() -> list[str]:
     Returns:
         List of ticker symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
     """
-    # Read from the actual parquet data directory (not old features_parquet)
-    parquet_dir = settings.data.features_parquet_dir.parent / "parquet"
+    parquet_dir = settings.data.parquet_dir
     
     if not parquet_dir.exists():
         log.warning(f"Parquet directory not found: {parquet_dir}")
@@ -54,14 +138,13 @@ def get_symbol_date_range(symbol: str) -> tuple[str, str]:
     Returns:
         Tuple of (start_date, end_date) in YYYY-MM-DD format
     """
-    # Read from actual parquet data directory
-    parquet_dir = settings.data.features_parquet_dir.parent / "parquet" / symbol
+    symbol_dir = settings.data.parquet_dir / symbol
     
-    if not parquet_dir.exists():
+    if not symbol_dir.exists():
         return ("", "")
     
     dates = []
-    for path in parquet_dir.iterdir():
+    for path in symbol_dir.iterdir():
         if path.is_dir() and path.name.startswith("dt="):
             date = path.name.replace("dt=", "")
             dates.append(date)
@@ -80,10 +163,15 @@ def load_symbol_data_pandas(
     timeframe: str = "1m"
 ) -> pd.DataFrame:
     """
-    Load feature data for a symbol using DuckDB.
+    Load raw bar data for a symbol using DuckDB.
     
-    This is the traditional pandas-based loader for single trials.
-    For distributed loading, use load_symbol_data_ray().
+    **DEPRECATED FOR TRAINING**: This loads raw bars without proper feature
+    isolation. For model training, use load_fold_from_disk() instead.
+    
+    This function should ONLY be used for:
+    - Generating walk-forward folds (preprocessing step)
+    - Data exploration and visualization
+    - Non-ML analytics
     
     Args:
         symbol: Ticker symbol
@@ -92,9 +180,15 @@ def load_symbol_data_pandas(
         timeframe: Resample timeframe (1m, 5m, 15m, 1h, 1d)
         
     Returns:
-        DataFrame with features
+        DataFrame with raw OHLCV data (no features)
     """
-    parquet_path = settings.data.features_parquet_dir / symbol
+    log.warning(
+        f"load_symbol_data_pandas() called for {symbol}. "
+        f"This loads RAW data without feature isolation. "
+        f"For training, use load_fold_from_disk() with pre-processed folds."
+    )
+    
+    parquet_path = settings.data.parquet_dir / symbol
     
     if not parquet_path.exists():
         log.warning(f"No data found for symbol: {symbol}")
@@ -235,7 +329,7 @@ def create_ray_dataset(
     Returns:
         Ray Dataset that can be streamed to workers
     """
-    parquet_path = settings.data.features_parquet_dir / symbol
+    parquet_path = settings.data.parquet_dir / symbol
     
     if not parquet_path.exists():
         log.warning(f"No data found for symbol: {symbol}")

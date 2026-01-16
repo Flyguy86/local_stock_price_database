@@ -3,7 +3,8 @@ Configuration for Ray Orchestrator.
 
 Environment variables:
 - RAY_ADDRESS: Ray cluster address (default: local)
-- FEATURES_PARQUET_DIR: Path to feature parquet files
+- SOURCE_DUCKDB_PATH: Path to source DuckDB with bars
+- PARQUET_DIR: Path to raw parquet files
 - MODELS_DIR: Path to save model artifacts
 - DATABASE_URL: PostgreSQL connection string for metadata
 - RAY_DASHBOARD_PORT: Port for Ray dashboard (default: 8265)
@@ -15,6 +16,12 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+# Detect available CPU cores
+try:
+    CPU_COUNT = len(os.sched_getaffinity(0))
+except AttributeError:
+    CPU_COUNT = os.cpu_count() or 4
+
 
 class RaySettings(BaseSettings):
     """Ray cluster and resource settings."""
@@ -24,10 +31,14 @@ class RaySettings(BaseSettings):
     ray_dashboard_port: int = 8265
     ray_namespace: str = "trading_bot"
     
-    # Resource allocation
+    # Resource allocation (auto-detect CPUs)
     num_cpus_per_trial: float = 1.0
     num_gpus_per_trial: float = 0.0
-    max_concurrent_trials: int = 8
+    max_concurrent_trials: int = CPU_COUNT  # Use all available CPUs
+    
+    # Preprocessing parallelism (defaults to all CPUs)
+    preprocessing_concurrency: int = CPU_COUNT  # Number of parallel preprocessing actors
+    preprocessing_batch_size: int = 10000  # Rows per batch
     
     # Fault tolerance
     max_failures: int = 3
@@ -40,8 +51,14 @@ class RaySettings(BaseSettings):
 class DataSettings(BaseSettings):
     """Data paths and loading settings."""
     
-    features_parquet_dir: Path = Path("/app/data/features_parquet")
+    # Source data (raw OHLCV bars)
+    parquet_dir: Path = Path("/app/data/parquet")
     source_duckdb_path: Path = Path("/app/data/duckdb/local.db")
+    
+    # Pre-processed walk-forward folds (REQUIRED for training)
+    walk_forward_folds_dir: Path = Path("/app/data/walk_forward_folds")
+    
+    # Model outputs
     models_dir: Path = Path("/app/data/models/ray")
     checkpoints_dir: Path = Path("/app/data/ray_checkpoints")
     
@@ -55,6 +72,7 @@ class DataSettings(BaseSettings):
         """Create directories if they don't exist."""
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        self.walk_forward_folds_dir.mkdir(parents=True, exist_ok=True)
 
 
 class TuneSettings(BaseSettings):

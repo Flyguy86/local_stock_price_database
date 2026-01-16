@@ -11,3 +11,4 @@ numpy>=1.26
 shap>=0.40.0
 xgboost>=2.0.0
 lightgbm>=4.0.0
+tensorboard>=2.15.0

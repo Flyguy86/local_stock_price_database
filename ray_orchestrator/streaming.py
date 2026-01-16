@@ -75,13 +75,17 @@ class BarDataLoader:
                 # Build WHERE clause for specific symbols
                 symbol_list = "','".join(symbols)
                 query = f"""
-                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', hive_partitioning=true)
+                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', 
+                    hive_partitioning=true, 
+                    union_by_name=true)
                 WHERE symbol IN ('{symbol_list}')
                 """
             else:
                 # Load all symbols
                 query = f"""
-                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', hive_partitioning=true)
+                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', 
+                    hive_partitioning=true,
+                    union_by_name=true)
                 """
             
             log.info(f"Loading data with DuckDB query: {query}")
@@ -278,13 +282,25 @@ class StreamingPreprocessor:
             return ds
         
         # Filter by date range
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
+        # Market data is in US/Eastern timezone (NYSE hours)
+        start_dt = pd.to_datetime(start_date).tz_localize('US/Eastern')
+        end_dt = pd.to_datetime(end_date).tz_localize('US/Eastern') + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         
         def filter_dates(batch: pd.DataFrame) -> pd.DataFrame:
             if batch.empty:
                 return batch
-            batch['ts'] = pd.to_datetime(batch['ts'])
+            # Ensure ts column is datetime
+            if not pd.api.types.is_datetime64_any_dtype(batch['ts']):
+                batch['ts'] = pd.to_datetime(batch['ts'])
+            
+            # Convert to US/Eastern if it's in a different timezone or naive
+            if batch['ts'].dt.tz is None:
+                # Assume naive timestamps are already in Eastern time
+                batch['ts'] = batch['ts'].dt.tz_localize('US/Eastern')
+            elif str(batch['ts'].dt.tz) != 'US/Eastern':
+                # Convert from other timezones to Eastern
+                batch['ts'] = batch['ts'].dt.tz_convert('US/Eastern')
+            
             mask = (batch['ts'] >= start_dt) & (batch['ts'] <= end_dt)
             filtered = batch[mask]
             log.debug(f"Filtered {len(batch)} rows to {len(filtered)} rows for date range {start_date} to {end_date}")
@@ -660,8 +676,8 @@ class StreamingPreprocessor:
         
         # Process train data
         if fold.train_ds:
-            if num_gpus > 0 and actor_pool_size > 1:
-                # Use concurrency for GPU acceleration (Ray 2.9+)
+            if num_gpus > 0:
+                # GPU acceleration with concurrency
                 fold.train_ds = fold.train_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
@@ -669,8 +685,18 @@ class StreamingPreprocessor:
                     concurrency=actor_pool_size,
                     num_gpus=num_gpus
                 )
+                log.info(f"Using {actor_pool_size} GPU actors for train data")
+            elif actor_pool_size > 1:
+                # CPU parallelism (no GPU)
+                fold.train_ds = fold.train_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000,
+                    concurrency=actor_pool_size
+                )
+                log.info(f"Using {actor_pool_size} CPU actors for train data")
             else:
-                # Simple CPU processing
+                # Single-threaded CPU processing
                 fold.train_ds = fold.train_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
@@ -680,8 +706,8 @@ class StreamingPreprocessor:
         
         # Process test data (separate calculation, no leakage!)
         if fold.test_ds:
-            if num_gpus > 0 and actor_pool_size > 1:
-                # Use concurrency for GPU acceleration (Ray 2.9+)
+            if num_gpus > 0:
+                # GPU acceleration with concurrency
                 fold.test_ds = fold.test_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
@@ -689,8 +715,18 @@ class StreamingPreprocessor:
                     concurrency=actor_pool_size,
                     num_gpus=num_gpus
                 )
+                log.info(f"Using {actor_pool_size} GPU actors for test data")
+            elif actor_pool_size > 1:
+                # CPU parallelism (no GPU)
+                fold.test_ds = fold.test_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000,
+                    concurrency=actor_pool_size
+                )
+                log.info(f"Using {actor_pool_size} CPU actors for test data")
             else:
-                # Simple CPU processing
+                # Single-threaded CPU processing
                 fold.test_ds = fold.test_ds.map_batches(
                     process_batch,
                     batch_format="pandas",

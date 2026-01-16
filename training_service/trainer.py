@@ -24,6 +24,11 @@ try:
     import shap
 except ImportError:
     shap = None
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    SummaryWriter = None
+    log.warning("TensorBoard not available - install tensorboard for visualization support")
 
 from sklearn.metrics import (
     mean_squared_error, accuracy_score, mean_absolute_error, r2_score,
@@ -137,6 +142,7 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
         
         # Build comprehensive metrics dict (same as parent model)
         metrics = {
+
             "cv_score": float(all_scores[idx]),
             "grid_search_rank": idx + 1,
             "num_features": len(feature_cols_used)
@@ -289,6 +295,17 @@ def train_model_task(
     save_all_grid_models: bool = False
 ):
     model_path = str(settings.models_dir / f"{training_id}.joblib")
+    
+    # Initialize TensorBoard writer
+    writer = None
+    if SummaryWriter:
+        try:
+            tensorboard_dir = settings.data_dir / "tensorboard_logs" / f"{symbol}_{algorithm}_{training_id[:8]}"
+            tensorboard_dir.mkdir(parents=True, exist_ok=True)
+            writer = SummaryWriter(log_dir=str(tensorboard_dir))
+            log.info(f"TensorBoard logging enabled: {tensorboard_dir}")
+        except Exception as tb_err:
+            log.warning(f"Failed to initialize TensorBoard writer: {tb_err}")
     
     try:
         log.info(f"Starting training {training_id} for {symbol} using {algorithm} at {timeframe}. TargetTransform: {target_transform}")
@@ -839,6 +856,21 @@ def train_model_task(
             
             grid_search.fit(X_train, y_train)
             
+            # Log grid search results to TensorBoard
+            if writer:
+                try:
+                    cv_results = grid_search.cv_results_
+                    for idx, (params_set, mean_score) in enumerate(zip(cv_results['params'], cv_results['mean_test_score'])):
+                        alpha = params_set.get('model__alpha', 0)
+                        l1_ratio = params_set.get('model__l1_ratio', 0)
+                        writer.add_scalar('GridSearch/CV_Score', -mean_score, idx)
+                        writer.add_scalars('GridSearch/ElasticNet', {
+                            f'alpha_{alpha:.4f}_l1_{l1_ratio:.2f}': -mean_score
+                        }, idx)
+                    log.info(f"Logged {len(cv_results['params'])} grid search results to TensorBoard")
+                except Exception as tb_err:
+                    log.warning(f"Failed to log grid search to TensorBoard: {tb_err}")
+            
             # --- SAVE ALL GRID MODELS (if requested) ---
             if save_all_grid_models:
                 log.info(f"save_all_grid_models=True: Saving ALL {len(grid_search.cv_results_['params'])} models from grid search")
@@ -1133,6 +1165,19 @@ def train_model_task(
                 
                 log.info(f"Regression Metrics - R²: {r2:.4f}, MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}")
                 
+                # Log regression metrics to TensorBoard
+                if writer:
+                    try:
+                        writer.add_scalar('Metrics/R2_Score', r2, 0)
+                        writer.add_scalar('Metrics/MSE', mse, 0)
+                        writer.add_scalar('Metrics/RMSE', rmse, 0)
+                        writer.add_scalar('Metrics/MAE', mae, 0)
+                        writer.add_text('Model/Algorithm', algorithm)
+                        writer.add_text('Model/Symbol', symbol)
+                        writer.add_text('Model/Target', target_col)
+                    except Exception as tb_err:
+                        log.warning(f"Failed to log regression metrics to TensorBoard: {tb_err}")
+                
                 # --- PRICE RECONSTRUCTION METRIC ---
                 # User wants to verify RMSE in Price units ($) even if we trained on Log Returns
                 try:
@@ -1185,6 +1230,19 @@ def train_model_task(
                 metrics["precision"] = float(precision)
                 metrics["recall"] = float(recall)
                 metrics["f1_score"] = float(f1)
+                
+                # Log classification metrics to TensorBoard
+                if writer:
+                    try:
+                        writer.add_scalar('Metrics/Accuracy', acc, 0)
+                        writer.add_scalar('Metrics/Precision', precision, 0)
+                        writer.add_scalar('Metrics/Recall', recall, 0)
+                        writer.add_scalar('Metrics/F1_Score', f1, 0)
+                        writer.add_text('Model/Algorithm', algorithm)
+                        writer.add_text('Model/Symbol', symbol)
+                        writer.add_text('Model/Target', target_col)
+                    except Exception as tb_err:
+                        log.warning(f"Failed to log classification metrics to TensorBoard: {tb_err}")
                 
                 # Confusion Matrix - convert to list for JSON serialization
                 conf_matrix = confusion_matrix(y_test, preds)
@@ -1472,6 +1530,15 @@ def train_model_task(
         )
         log.info(f"Training {training_id} completed. Metrics: {metrics}")
         
+        # Close TensorBoard writer
+        if writer:
+            try:
+                writer.flush()
+                writer.close()
+                log.info("TensorBoard writer closed successfully")
+            except Exception as tb_err:
+                log.warning(f"Error closing TensorBoard writer: {tb_err}")
+        
     except Exception as e:
         log.exception(f"Training {training_id} failed")
         db.update_model_status(
@@ -1479,6 +1546,12 @@ def train_model_task(
             status="failed", 
             error=str(e)
         )
+        # Close TensorBoard writer on failure
+        if writer:
+            try:
+                writer.close()
+            except:
+                pass
 
 def start_training(symbol: str, algorithm: str, target_col: str = "close", params: dict = None, data_options: str = None, timeframe: str = "1m", parent_model_id: str = None, group_id: str = None, target_transform: str = "none"):
     if params is None:
