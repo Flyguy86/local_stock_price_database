@@ -293,7 +293,6 @@ class WalkForwardTrainer:
         
         # CRITICAL: Force cleanup of preprocessing actors to free CPUs for training
         import gc
-        import ray
         gc.collect()  # Python garbage collection
         log.info("Preprocessing complete - forcing actor cleanup to free CPUs for training")
         
@@ -304,7 +303,46 @@ class WalkForwardTrainer:
                 f"Use the /streaming/status endpoint to see available date ranges."
             )
         
-        # Check if all folds are empty
+        # PRE-VALIDATE ALL FOLDS: Fail-fast before starting expensive training
+        log.info("Validating all folds have sufficient data...")
+        validation_errors = []
+        
+        for fold in self.folds:
+            try:
+                train_count = fold.train_ds.count()
+                test_count = fold.test_ds.count()
+                
+                if train_count == 0:
+                    validation_errors.append(
+                        f"Fold {fold.fold_id} has ZERO training data "
+                        f"(train: {fold.train_start} to {fold.train_end})"
+                    )
+                elif train_count < 100:  # Minimum threshold for meaningful training
+                    log.warning(
+                        f"Fold {fold.fold_id} has only {train_count} training rows "
+                        f"(train: {fold.train_start} to {fold.train_end}) - may not be enough"
+                    )
+                
+                if test_count == 0:
+                    validation_errors.append(
+                        f"Fold {fold.fold_id} has ZERO test data "
+                        f"(test: {fold.test_start} to {fold.test_end})"
+                    )
+                    
+                log.info(f"✓ Fold {fold.fold_id} validated: train={train_count:,} rows, test={test_count:,} rows")
+                    
+            except Exception as e:
+                validation_errors.append(f"Fold {fold.fold_id} validation failed: {e}")
+        
+        # Fail fast if any validation errors
+        if validation_errors:
+            error_msg = "Fold validation failed:\\n" + "\\n".join(f"  - {err}" for err in validation_errors)
+            error_msg += f"\\n\\nCheck parquet data exists for date range {start_date} to {end_date}"
+            raise ValueError(error_msg)
+        
+        log.info(f"✓ All {len(self.folds)} folds validated successfully")
+        
+        # Legacy empty fold check (should be caught above now)
         empty_folds = 0
         for fold in self.folds:
             try:

@@ -29,6 +29,7 @@ psycopg2-binary>=2.9.0
 
 # Visualization (for Ray Dashboard integration)
 tensorboard>=2.15.0
+tqdm>=4.66.0  # Progress bars for Ray Data operations
 
 # Settings
 pydantic>=2.0.0

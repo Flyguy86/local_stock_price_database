@@ -177,6 +177,23 @@ class StreamingPreprocessor:
         Returns:
             List of Fold objects with date ranges
         """
+        from datetime import datetime, timedelta
+        
+        # VALIDATION: Never allow training on current month data
+        # Stop at last day of previous month to ensure complete data
+        now = datetime.now()
+        max_allowed_date = (now.replace(day=1) - timedelta(days=1)).date()  # Last day of previous month
+        requested_end = pd.Timestamp(end_date).date()
+        
+        if requested_end > max_allowed_date:
+            raise ValueError(
+                f"Cannot train on current month or future data. "
+                f"Requested end_date: {end_date}, "
+                f"Max allowed (last month): {max_allowed_date.strftime('%Y-%m-%d')}"
+            )
+        
+        log.info(f"Date validation passed: end_date={end_date}, max_allowed={max_allowed_date}")
+        
         folds = []
         fold_id = 1
         
@@ -333,6 +350,15 @@ class StreamingPreprocessor:
         """
         GPU-accelerated indicator calculation with strict no-look-ahead.
         
+        IMPORTANT: All indicators are calculated on BARS (rows), not calendar days.
+        - 200-bar SMA = 200 data points (e.g., 200 minutes for 1-min data)
+        - For 1-min data: 200 bars = ~3.3 hours of trading
+        - For daily data: 200 bars = 200 trading days
+        
+        This ensures indicators work correctly regardless of timeframe.
+        With walk-forward folds (2-3 months of 1-min data), we have plenty
+        of bars (~40,000 per month) for any indicator window.
+        
         This function is designed to run on a SINGLE fold's data, ensuring
         that SMAs reset at the beginning of each fold and cannot peek across splits.
         
@@ -349,7 +375,7 @@ class StreamingPreprocessor:
         
         Args:
             batch: DataFrame with OHLCV data
-            windows: SMA/EMA window sizes (default: [50, 200])
+            windows: SMA/EMA window sizes in BARS (default: [50, 200])
             resampling_timeframes: Multi-timeframe aggregations (5min, 15min, etc.)
             drop_warmup: Drop rows where indicators are NaN (warm-up period)
             
@@ -635,7 +661,7 @@ class StreamingPreprocessor:
             on='ts',
             how='left'
         )
-        batch[[f'close_{timeframe}', f'sma50_{timeframe}']] = batch[[f'close_{timeframe}', f'sma50_{timeframe}']].fillna(method='ffill')
+        batch[[f'close_{timeframe}', f'sma50_{timeframe}']] = batch[[f'close_{timeframe}', f'sma50_{timeframe}']].ffill()
         
         return batch
     
@@ -990,6 +1016,24 @@ class StreamingPreprocessor:
                 symbols=symbols,
                 context_symbols=context_symbols
             )
+            
+            # Validate fold has data before processing
+            try:
+                train_count = fold.train_ds.count() if fold.train_ds else 0
+                test_count = fold.test_ds.count() if fold.test_ds else 0
+                
+                if train_count == 0 or test_count == 0:
+                    raise ValueError(
+                        f"Fold {fold.fold_id} has no data:\n"
+                        f"  Train: {fold.train_start} to {fold.train_end} ({train_count} rows)\n"
+                        f"  Test: {fold.test_start} to {fold.test_end} ({test_count} rows)\n"
+                        f"  Check that parquet files exist for these dates in {self.loader.parquet_dir}"
+                    )
+                
+                log.info(f"Fold {fold.fold_id} validation passed: train={train_count:,} rows, test={test_count:,} rows")
+            except Exception as e:
+                log.error(f"Failed to validate {fold}: {e}")
+                raise
             
             # Calculate indicators with GPU
             fold = self.process_fold_with_gpu(
