@@ -245,11 +245,14 @@ class StreamingPreprocessor:
             return ds
         
         # Filter by date range
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        
         def filter_dates(batch: pd.DataFrame) -> pd.DataFrame:
             if batch.empty:
                 return batch
             batch['ts'] = pd.to_datetime(batch['ts'])
-            mask = (batch['ts'] >= start_date) & (batch['ts'] <= end_date)
+            mask = (batch['ts'] >= start_dt) & (batch['ts'] <= end_dt)
             filtered = batch[mask]
             log.debug(f"Filtered {len(batch)} rows to {len(filtered)} rows for date range {start_date} to {end_date}")
             return filtered
