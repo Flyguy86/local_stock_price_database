@@ -420,30 +420,30 @@
                 const response = await fetch('/streaming/status');
                 const data = await response.json();
                 
-                if (data.data_sources && data.data_sources.sample_files) {
-                    // Extract unique symbols from file paths
-                    const files = data.data_sources.sample_files;
-                    const symbols = new Set();
+                if (data.data_sources && data.data_sources.symbols) {
+                    // Extract symbols with date ranges
+                    const symbols = data.data_sources.symbols;
                     
-                    files.forEach(file => {
-                        // Extract symbol from path like /app/data/parquet/AAPL/2024-01-01.parquet
-                        const match = file.match(/\/parquet\/([A-Z]+)\//);
-                        if (match) {
-                            symbols.add(match[1]);
-                        }
-                    });
+                    availableSymbols = symbols.map(s => s.symbol).sort();
                     
-                    availableSymbols = Array.from(symbols).sort();
+                    // Find overall date range across all symbols
+                    if (symbols.length > 0) {
+                        dateRange.start = symbols.reduce((min, s) => 
+                            !min || s.date_range.start < min ? s.date_range.start : min, null);
+                        dateRange.end = symbols.reduce((max, s) => 
+                            !max || s.date_range.end > max ? s.date_range.end : max, null);
+                    }
                 }
                 
-                // Get date ranges (placeholder - we'll enhance this)
-                // For now, use reasonable defaults
-                const today = new Date();
-                const sixMonthsAgo = new Date(today);
-                sixMonthsAgo.setMonth(today.getMonth() - 6);
-                
-                dateRange.start = sixMonthsAgo.toISOString().split('T')[0];
-                dateRange.end = today.toISOString().split('T')[0];
+                // Fallback to reasonable defaults if no data
+                if (!dateRange.start || !dateRange.end) {
+                    const today = new Date();
+                    const sixMonthsAgo = new Date(today);
+                    sixMonthsAgo.setMonth(today.getMonth() - 6);
+                    
+                    dateRange.start = sixMonthsAgo.toISOString().split('T')[0];
+                    dateRange.end = today.toISOString().split('T')[0];
+                }
                 
                 populateSymbols();
                 populateDates();

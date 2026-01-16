@@ -240,7 +240,7 @@ async def run_streaming_preprocess(request: StreamingPreprocessRequest, backgrou
 
 @app.get("/streaming/status")
 async def get_streaming_status():
-    """Get status of Ray Data streaming jobs."""
+    """Get status of Ray Data streaming jobs with symbol and date information."""
     if not ray.is_initialized():
         return {"error": "Ray not initialized"}
     
@@ -256,9 +256,40 @@ async def get_streaming_status():
         loader = BarDataLoader(parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet"))
         files = loader._discover_parquet_files()
         
+        # Extract symbols and date ranges from files
+        symbols_info = {}
+        for file_path in files:
+            # Parse /app/data/parquet/AAPL/2024-01-15.parquet
+            try:
+                parts = Path(file_path).parts
+                if 'parquet' in parts:
+                    idx = parts.index('parquet')
+                    if len(parts) > idx + 2:
+                        symbol = parts[idx + 1]
+                        date_str = parts[idx + 2].replace('.parquet', '')
+                        
+                        if symbol not in symbols_info:
+                            symbols_info[symbol] = {
+                                'symbol': symbol,
+                                'file_count': 0,
+                                'date_range': {'start': date_str, 'end': date_str}
+                            }
+                        
+                        symbols_info[symbol]['file_count'] += 1
+                        
+                        # Update date range
+                        if date_str < symbols_info[symbol]['date_range']['start']:
+                            symbols_info[symbol]['date_range']['start'] = date_str
+                        if date_str > symbols_info[symbol]['date_range']['end']:
+                            symbols_info[symbol]['date_range']['end'] = date_str
+            except Exception as e:
+                log.debug(f"Error parsing file path {file_path}: {e}")
+                continue
+        
         stats["data_sources"] = {
             "total_parquet_files": len(files),
-            "sample_files": files[:10] if files else []
+            "sample_files": files[:10] if files else [],
+            "symbols": list(symbols_info.values())
         }
         
         return stats
