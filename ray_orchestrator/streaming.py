@@ -234,11 +234,25 @@ class StreamingPreprocessor:
         """Load data for specific date range."""
         ds = self.loader.load_all_bars(symbols=symbols)
         
+        # Check if dataset is empty
+        try:
+            count = ds.count()
+            if count == 0:
+                log.warning(f"No data found for symbols {symbols}")
+                return ds
+        except Exception as e:
+            log.warning(f"Error checking dataset: {e}")
+            return ds
+        
         # Filter by date range
         def filter_dates(batch: pd.DataFrame) -> pd.DataFrame:
+            if batch.empty:
+                return batch
             batch['ts'] = pd.to_datetime(batch['ts'])
             mask = (batch['ts'] >= start_date) & (batch['ts'] <= end_date)
-            return batch[mask]
+            filtered = batch[mask]
+            log.debug(f"Filtered {len(batch)} rows to {len(filtered)} rows for date range {start_date} to {end_date}")
+            return filtered
         
         return ds.map_batches(filter_dates, batch_format="pandas")
     
@@ -290,6 +304,11 @@ class StreamingPreprocessor:
         Returns:
             DataFrame with calculated indicators
         """
+        # Handle empty batches
+        if batch.empty:
+            log.debug("Empty batch received, returning as-is")
+            return batch
+        
         # Ensure timestamp is datetime
         batch['ts'] = pd.to_datetime(batch['ts'])
         batch = batch.sort_values('ts')
@@ -594,36 +613,53 @@ class StreamingPreprocessor:
         """
         log.info(f"Processing {fold} with GPU acceleration")
         
+        # Create a wrapper function for map_batches
+        def process_batch(batch):
+            return self.calculate_indicators_gpu(
+                batch,
+                windows=windows,
+                resampling_timeframes=resampling_timeframes,
+                drop_warmup=True
+            )
+        
         # Process train data
         if fold.train_ds:
-            fold.train_ds = fold.train_ds.map_batches(
-                lambda batch: self.calculate_indicators_gpu(
-                    batch,
-                    windows=windows,
-                    resampling_timeframes=resampling_timeframes,
-                    drop_warmup=True
-                ),
-                batch_format="pandas",
-                batch_size=10000,
-                compute=ray.data.ActorPoolStrategy(size=actor_pool_size),
-                num_gpus=num_gpus
-            )
+            if num_gpus > 0 and actor_pool_size > 1:
+                # Use concurrency for GPU acceleration (Ray 2.9+)
+                fold.train_ds = fold.train_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000,
+                    concurrency=actor_pool_size,
+                    num_gpus=num_gpus
+                )
+            else:
+                # Simple CPU processing
+                fold.train_ds = fold.train_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000
+                )
             log.info(f"Processed train data for {fold}")
         
         # Process test data (separate calculation, no leakage!)
         if fold.test_ds:
-            fold.test_ds = fold.test_ds.map_batches(
-                lambda batch: self.calculate_indicators_gpu(
-                    batch,
-                    windows=windows,
-                    resampling_timeframes=resampling_timeframes,
-                    drop_warmup=True
-                ),
-                batch_format="pandas",
-                batch_size=10000,
-                compute=ray.data.ActorPoolStrategy(size=actor_pool_size),
-                num_gpus=num_gpus
-            )
+            if num_gpus > 0 and actor_pool_size > 1:
+                # Use concurrency for GPU acceleration (Ray 2.9+)
+                fold.test_ds = fold.test_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000,
+                    concurrency=actor_pool_size,
+                    num_gpus=num_gpus
+                )
+            else:
+                # Simple CPU processing
+                fold.test_ds = fold.test_ds.map_batches(
+                    process_batch,
+                    batch_format="pandas",
+                    batch_size=10000
+                )
             log.info(f"Processed test data for {fold}")
         
         return fold

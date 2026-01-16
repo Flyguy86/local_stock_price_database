@@ -460,15 +460,11 @@
             const symbolGrid = document.getElementById('symbolGrid');
             const contextGrid = document.getElementById('contextSymbolGrid');
             
-            // Common symbols
-            const commonSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META'];
-            const contextSymbols = ['QQQ', 'SPY', 'VIX', 'DIA', 'IWM'];
+            // Use available symbols from parquet data
+            const allSymbols = availableSymbols.length > 0 ? availableSymbols : ['AAPL', 'MSFT', 'GOOGL'];
             
-            // Use available symbols if we have them, otherwise use common ones
-            const primarySymbols = availableSymbols.length > 0 ? availableSymbols : commonSymbols;
-            
-            // Populate primary symbols
-            primarySymbols.forEach(symbol => {
+            // Populate primary symbols - use all available symbols
+            allSymbols.forEach(symbol => {
                 const div = document.createElement('div');
                 div.className = 'symbol-item';
                 div.innerHTML = `
@@ -478,8 +474,8 @@
                 symbolGrid.appendChild(div);
             });
             
-            // Populate context symbols
-            contextSymbols.forEach(symbol => {
+            // Populate context symbols - use same list (all available symbols)
+            allSymbols.forEach(symbol => {
                 const div = document.createElement('div');
                 div.className = 'symbol-item';
                 div.innerHTML = `
