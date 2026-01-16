@@ -1,11 +1,11 @@
 services:
   # ============================================
-  # API - Ingestion Service
+  # API - Ingestion Service (Streamlined)
   # ============================================
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.api
     restart: unless-stopped
     environment:
       ALPACA_KEY_ID: ${ALPACA_KEY_ID:-}
@@ -13,26 +13,13 @@ services:
       ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://data.alpaca.markets}
     volumes:
       - ./data:/app/data
-      - .:/app  # Mount source code as volume
     ports:
       - "8600:8000"
-
-  feature_builder:
-    build:
-      context: .
-      dockerfile: Dockerfile.feature
-    restart: unless-stopped
-    environment:
-      SOURCE_DUCKDB_PATH: ${SOURCE_DUCKDB_PATH:-/app/data/duckdb/local.db}
-      DEST_DUCKDB_PATH: ${DEST_DUCKDB_PATH:-/app/data/duckdb/features.db}
-      DEST_PARQUET_DIR: ${DEST_PARQUET_DIR:-/app/data/features_parquet}
-      LOG_LEVEL: ${FEATURE_BUILDER_LOG_LEVEL:-INFO}
-    volumes:
-      - ./data:/app/data
-      - .:/app
-    command: ["uvicorn", "feature_service.web:app", "--host", "0.0.0.0", "--port", "8100"]
-    ports:
-      - "8500:8100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
 
   # ============================================
   # Ray Orchestrator - Distributed ML Training

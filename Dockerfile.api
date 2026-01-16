@@ -1,0 +1,40 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy only API requirements
+COPY requirements.txt .
+
+# Install Python dependencies (API-specific)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    fastapi==0.104.1 \
+    uvicorn[standard]==0.24.0 \
+    httpx==0.25.1 \
+    duckdb>=1.1.0 \
+    pyarrow==14.0.1 \
+    pandas==2.1.3 \
+    yfinance==0.2.32 \
+    python-dotenv==1.0.0 \
+    pydantic==2.5.0 \
+    pydantic-settings==2.1.0
+
+# Copy application code
+COPY app/ ./app/
+
+# Set environment
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

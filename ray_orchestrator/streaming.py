@@ -23,6 +23,7 @@ from ray.data import Dataset
 from ray.data.preprocessors import Chain
 import pandas as pd
 import numpy as np
+import duckdb
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class Fold:
 
 
 class BarDataLoader:
-    """Load and stream bar data using Ray Data."""
+    """Load and stream bar data using DuckDB to handle Hive-partitioned parquet files."""
     
     def __init__(self, parquet_dir: str = "/app/data/parquet"):
         self.parquet_dir = Path(parquet_dir)
@@ -55,7 +56,9 @@ class BarDataLoader:
         parallelism: int = 10
     ) -> Dataset:
         """
-        Load bar data for all or specific symbols using Ray Data.
+        Load bar data for all or specific symbols using DuckDB.
+        
+        Parquet files are in Hive partition format: Ticker/dt=YYYY-MM-DD/bars.parquet
         
         Args:
             symbols: List of ticker symbols to load. If None, loads all.
@@ -64,61 +67,72 @@ class BarDataLoader:
         Returns:
             Ray Dataset of bar data
         """
-        parquet_files = self._discover_parquet_files(symbols)
-        
-        if not parquet_files:
-            log.warning("No parquet files found")
-            return ray.data.from_items([])
-        
-        log.info(f"Loading {len(parquet_files)} parquet files")
-        
-        # Load data using Ray Data's read_parquet (streaming)
-        ds = ray.data.read_parquet(
-            parquet_files,
-            parallelism=parallelism,
-            ray_remote_args={"num_cpus": 1}
-        )
-        
-        log.info(f"Loaded dataset with {ds.count()} rows")
-        return ds
+        try:
+            # Use DuckDB in read-only mode to prevent accidental writes
+            con = duckdb.connect(":memory:", read_only=False)  # Memory DB can't be read-only
+            
+            if symbols:
+                # Build WHERE clause for specific symbols
+                symbol_list = "','".join(symbols)
+                query = f"""
+                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', hive_partitioning=true)
+                WHERE symbol IN ('{symbol_list}')
+                """
+            else:
+                # Load all symbols
+                query = f"""
+                SELECT * FROM read_parquet('{self.parquet_dir}/**/bars.parquet', hive_partitioning=true)
+                """
+            
+            log.info(f"Loading data with DuckDB query: {query}")
+            df = con.execute(query).fetchdf()
+            con.close()
+            
+            if df.empty:
+                log.warning(f"No data found for symbols {symbols}")
+                return ray.data.from_pandas(pd.DataFrame())
+            
+            log.info(f"Loaded {len(df)} rows for {df['symbol'].nunique()} symbols")
+            
+            # Convert to Ray Dataset
+            ds = ray.data.from_pandas(df)
+            return ds
+            
+        except Exception as e:
+            log.error(f"Error loading parquet data: {e}")
+            return ray.data.from_pandas(pd.DataFrame())
     
     def load_symbol(self, symbol: str, parallelism: int = 2) -> Dataset:
         """Load data for a single symbol."""
         return self.load_all_bars(symbols=[symbol], parallelism=parallelism)
     
     def _discover_parquet_files(self, symbols: Optional[List[str]] = None) -> List[str]:
-        """Discover all parquet files in the data directory."""
+        """
+        Discover all parquet files in Hive-partitioned structure.
+        
+        Structure: Ticker/dt=YYYY-MM-DD/bars.parquet
+        """
         if not self.parquet_dir.exists():
             log.error(f"Parquet directory DOES NOT EXIST: {self.parquet_dir}")
             log.error(f"Absolute path: {self.parquet_dir.absolute()}")
             return []
         
-        log.info(f"Searching for parquet files in: {self.parquet_dir.absolute()}")
+        log.info(f"Searching for Hive-partitioned parquet files in: {self.parquet_dir.absolute()}")
         
-        # Pattern: data/parquet/SYMBOL/YYYY-MM-DD.parquet
-        files = []
+        # Find all bars.parquet files
+        files = list(self.parquet_dir.rglob("bars.parquet"))
         
         if symbols:
-            # Load specific symbols
-            for symbol in symbols:
-                symbol_dir = self.parquet_dir / symbol
-                log.info(f"Checking symbol directory: {symbol_dir.absolute()} (exists={symbol_dir.exists()})")
-                if symbol_dir.exists():
-                    symbol_files = list(symbol_dir.glob("*.parquet"))
-                    log.info(f"Found {len(symbol_files)} files for {symbol}")
-                    files.extend([str(f) for f in symbol_files])
-                else:
-                    # Try case-insensitive search
-                    for child in self.parquet_dir.iterdir():
-                        if child.is_dir() and child.name.upper() == symbol.upper():
-                            log.info(f"Found case-insensitive match: {child.name} for {symbol}")
-                            symbol_files = list(child.glob("*.parquet"))
-                            log.info(f"Found {len(symbol_files)} files for {child.name}")
-                            files.extend([str(f) for f in symbol_files])
-                            break
+            # Filter by symbol directories
+            filtered_files = []
+            for file in files:
+                # Check if any parent directory matches a symbol
+                symbol_dir = file.parent.parent.name  # e.g., AAPL from AAPL/dt=2024-01-01/bars.parquet
+                if symbol_dir in symbols or symbol_dir.upper() in [s.upper() for s in symbols]:
+                    filtered_files.append(str(file))
+            files = filtered_files
         else:
-            # Load all symbols
-            files = [str(f) for f in self.parquet_dir.rglob("*.parquet")]
+            files = [str(f) for f in files]
         
         log.info(f"Total parquet files discovered: {len(files)}")
         if len(files) > 0:

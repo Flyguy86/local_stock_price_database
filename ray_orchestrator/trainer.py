@@ -302,6 +302,8 @@ class WalkForwardTrainer:
         # Step 4: Run tuning
         log.info(f"Running {num_samples} trials with {algorithm}")
         
+        # Maximize CPU usage by running multiple trials in parallel
+        # Each trial uses 1 CPU, so we can run as many concurrent trials as we have cores
         tuner = tune.Tuner(
             trainable,
             param_space=param_space,
@@ -309,10 +311,17 @@ class WalkForwardTrainer:
                 metric="test_rmse",
                 mode="min",
                 num_samples=num_samples,
+                max_concurrent_trials=0,  # 0 = unlimited (use all available CPUs)
             ),
             run_config=ray.train.RunConfig(
                 name=f"walk_forward_{algorithm}_{symbols[0]}",
                 storage_path=str(settings.data.checkpoints_dir),
+                # Limit checkpoint storage to save disk space
+                checkpoint_config=ray.train.CheckpointConfig(
+                    num_to_keep=1,  # Only keep best checkpoint
+                    checkpoint_score_attribute="test_rmse",
+                    checkpoint_score_order="min",
+                ),
             )
         )
         

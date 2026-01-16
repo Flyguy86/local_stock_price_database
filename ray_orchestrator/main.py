@@ -471,38 +471,50 @@ print(f"Best test R2: {{best.metrics['test_r2']:.4f}}")
 '''
         
         # Submit job
+        # No working_dir needed - code is already in the Docker container
+        # Just set PYTHONPATH to ensure imports work correctly
+        runtime_env = {
+            "env_vars": {
+                "PYTHONPATH": "/app"
+            }
+        }
+        
+        metadata = {
+            "symbols": str(request.symbols),
+            "algorithm": request.algorithm,
+            "date_range": f"{request.start_date} to {request.end_date}"
+        }
+        
+        # Write Python code to a temp file and execute it to avoid shell escaping issues
+        import tempfile
+        import base64
+        
+        # Base64 encode the Python code to avoid any escaping issues
+        encoded_code = base64.b64encode(entrypoint_code.encode()).decode()
+        
         job_id = client.submit_job(
-            entrypoint=f"python -c {entrypoint_code!r}",
-            runtime_env={{
-                "working_dir": "/app",
-                "env_vars": {{
-                    "PYTHONPATH": "/app"
-                }}
-            }},
-            metadata={{
-                "symbols": str(request.symbols),
-                "algorithm": request.algorithm,
-                "date_range": f"{{request.start_date}} to {{request.end_date}}"
-            }}
+            entrypoint=f'python -c "import base64; exec(base64.b64decode(\'{encoded_code}\').decode())"',
+            runtime_env=runtime_env,
+            metadata=metadata
         )
         
-        log.info(f"Training job submitted: {{job_id}}")
+        log.info(f"Training job submitted: {job_id}")
         
-        return {{
+        return {
             "status": "submitted",
             "job_id": job_id,
             "task": "walk_forward_training",
             "symbols": request.symbols,
             "algorithm": request.algorithm,
             "num_samples": request.num_samples,
-            "date_range": f"{{request.start_date}} to {{request.end_date}}",
-            "fold_config": {{
+            "date_range": f"{request.start_date} to {request.end_date}",
+            "fold_config": {
                 "train_months": request.train_months,
                 "test_months": request.test_months,
                 "step_months": request.step_months
-            }},
+            },
             "note": "Job submitted via Ray Job Submission API. View logs at Ray Dashboard."
-        }}
+        }
         
     except Exception as e:
         log.error(f"Failed to submit training job: {{e}}", exc_info=True)
