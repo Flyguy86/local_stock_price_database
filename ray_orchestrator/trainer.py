@@ -112,15 +112,24 @@ class WalkForwardTrainer:
         train_df = fold.train_ds.to_pandas() if fold.train_ds else pd.DataFrame()
         test_df = fold.test_ds.to_pandas() if fold.test_ds else pd.DataFrame()
         
+        log.info(f"Fold {fold.fold_id}: train_df shape={train_df.shape}, test_df shape={test_df.shape}")
+        
         if train_df.empty or test_df.empty:
             log.warning(f"Empty data in {fold}")
             return {"train_rmse": np.inf, "test_rmse": np.inf, "test_mae": np.inf, "test_r2": -np.inf}
+        
+        # Log data quality
+        log.info(f"Fold {fold.fold_id} columns: {list(train_df.columns)}")
+        log.info(f"Fold {fold.fold_id} dtypes:\n{train_df.dtypes}")
+        log.info(f"Fold {fold.fold_id} sample:\n{train_df.head(3)}")
         
         # Prepare features and target
         if feature_cols is None:
             # Auto-select numeric features (exclude target and metadata)
             exclude_cols = {'ts', 'symbol', target_col, 'open', 'high', 'low', 'volume', 'vwap', 'trade_count'}
             feature_cols = [c for c in train_df.columns if c not in exclude_cols and train_df[c].dtype in [np.float64, np.int64]]
+        
+        log.info(f"Fold {fold.fold_id} selected features ({len(feature_cols)}): {feature_cols[:10]}...")
         
         # Create target variable
         if target_transform == "log_return":
@@ -133,6 +142,9 @@ class WalkForwardTrainer:
             train_y = train_df[target_col]
             test_y = test_df[target_col]
         
+        log.info(f"Fold {fold.fold_id} target created: train_y={len(train_y)}, test_y={len(test_y)}")
+        log.info(f"Fold {fold.fold_id} train_y stats: min={train_y.min():.6f}, max={train_y.max():.6f}, mean={train_y.mean():.6f}")
+        
         # Align features with target (drop NaN rows)
         train_X = train_df[feature_cols].loc[train_y.index].dropna()
         train_y = train_y.loc[train_X.index]
@@ -140,8 +152,12 @@ class WalkForwardTrainer:
         test_X = test_df[feature_cols].loc[test_y.index].dropna()
         test_y = test_y.loc[test_X.index]
         
+        log.info(f"Fold {fold.fold_id} after alignment: train_X={train_X.shape}, test_X={test_X.shape}")
+        
         if len(train_X) == 0 or len(test_X) == 0:
-            log.warning(f"No valid data after preprocessing in {fold}")
+            log.error(f"No valid data after preprocessing in {fold}")
+            log.error(f"Original train_df had {len(train_df)} rows, train_y had {len(train_y)} rows")
+            log.error(f"Feature NaN counts:\n{train_df[feature_cols].isna().sum()}")
             return {"train_rmse": np.inf, "test_rmse": np.inf, "test_mae": np.inf, "test_r2": -np.inf}
         
         # Create model
@@ -158,6 +174,8 @@ class WalkForwardTrainer:
         test_rmse = np.sqrt(mean_squared_error(test_y, test_pred))
         test_mae = mean_absolute_error(test_y, test_pred)
         test_r2 = r2_score(test_y, test_pred)
+        
+        log.info(f"Fold {fold.fold_id} results: test_rmse={test_rmse:.6f}, test_r2={test_r2:.4f}")
         
         return {
             "train_rmse": train_rmse,
