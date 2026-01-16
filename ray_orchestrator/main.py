@@ -26,6 +26,8 @@ from .data import get_available_symbols, get_symbol_date_range
 from .tuner import orchestrator, SEARCH_SPACES
 from .ensemble import ensemble_manager
 from .fingerprint import fingerprint_db
+from .streaming import create_preprocessing_pipeline, BarDataLoader
+from .trainer import create_walk_forward_trainer
 
 # Configure logging
 logging.basicConfig(
@@ -98,6 +100,47 @@ class BayesianSearchRequest(BaseModel):
     """Request model for Bayesian Optimization search."""
     algorithm: str = "elasticnet"
     tickers: list[str] = ["AAPL"]
+
+
+class StreamingPreprocessRequest(BaseModel):
+    """Request model for streaming preprocessing."""
+    symbols: Optional[list[str]] = None  # None = all symbols
+    output_path: str = "/app/data/preprocessed_parquet"
+    market_hours_only: bool = True
+    rolling_windows: list[int] = [5, 10, 20]
+    partition_by: Optional[list[str]] = None
+
+
+class WalkForwardPreprocessRequest(BaseModel):
+    """Request model for walk-forward preprocessing with fold isolation."""
+    symbols: list[str]  # Primary symbols (e.g., ["AAPL"])
+    context_symbols: Optional[list[str]] = None  # Context symbols (e.g., ["QQQ", "VIX"])
+    start_date: str  # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
+    train_months: int = 3
+    test_months: int = 1
+    step_months: int = 1
+    windows: list[int] = [50, 200]  # SMA windows
+    resampling_timeframes: Optional[list[str]] = None  # e.g., ["5min", "15min"]
+    output_base_path: str = "/app/data/walk_forward_folds"
+    num_gpus: float = 0.0  # Set to 1.0 for GPU acceleration
+    actor_pool_size: int = 2
+
+
+class WalkForwardTrainRequest(BaseModel):
+    """Request model for walk-forward training with hyperparameter tuning."""
+    symbols: list[str]  # Primary symbols
+    context_symbols: Optional[list[str]] = None
+    start_date: str
+    end_date: str
+    train_months: int = 3
+    test_months: int = 1
+    step_months: int = 1
+    algorithm: str = "elasticnet"  # elasticnet, ridge, lasso, randomforest
+    param_space: Optional[dict] = None  # Custom search space
+    num_samples: int = 50  # Number of trials
+    windows: list[int] = [50, 200]
+    resampling_timeframes: Optional[list[str]] = None
     num_samples: int = 50
     target_col: str = "close"
     target_transform: str = "log_return"
@@ -144,6 +187,273 @@ class DeployPBTSurvivorsRequest(BaseModel):
 class PredictRequest(BaseModel):
     """Request model for ensemble prediction."""
     features: dict
+
+
+# ============================================================================
+# Streaming Preprocessing Endpoints
+# ============================================================================
+
+@app.post("/streaming/preprocess")
+async def run_streaming_preprocess(request: StreamingPreprocessRequest, background_tasks: BackgroundTasks):
+    """
+    Run streaming preprocessing on bar data using Ray Data.
+    
+    Transforms raw 1-minute bars into ML-ready features using Ray's
+    streaming engine for efficient parallel processing.
+    """
+    log.info(f"Starting streaming preprocessing for symbols: {request.symbols or 'ALL'}")
+    
+    def run_preprocessing():
+        try:
+            # Create pipeline
+            preprocessor = create_preprocessing_pipeline(
+                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
+            )
+            
+            # Run preprocessing
+            ds = preprocessor.create_training_pipeline(
+                symbols=request.symbols,
+                market_hours_only=request.market_hours_only,
+                rolling_windows=request.rolling_windows
+            )
+            
+            # Save results
+            preprocessor.save_processed_data(
+                ds,
+                output_path=request.output_path,
+                partition_by=request.partition_by or ["symbol"]
+            )
+            
+            log.info(f"Streaming preprocessing completed: {request.output_path}")
+        except Exception as e:
+            log.error(f"Streaming preprocessing failed: {e}", exc_info=True)
+    
+    background_tasks.add_task(run_preprocessing)
+    
+    return {
+        "status": "started",
+        "task": "streaming_preprocessing",
+        "symbols": request.symbols or "all",
+        "output_path": request.output_path
+    }
+
+
+@app.get("/streaming/status")
+async def get_streaming_status():
+    """Get status of Ray Data streaming jobs."""
+    if not ray.is_initialized():
+        return {"error": "Ray not initialized"}
+    
+    # Get Ray Data job stats
+    try:
+        stats = {
+            "ray_initialized": True,
+            "timestamp": datetime.utcnow().isoformat(),
+            "available_resources": ray.available_resources(),
+        }
+        
+        # List available data sources
+        loader = BarDataLoader(parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet"))
+        files = loader._discover_parquet_files()
+        
+        stats["data_sources"] = {
+            "total_parquet_files": len(files),
+            "sample_files": files[:10] if files else []
+        }
+        
+        return stats
+    except Exception as e:
+        log.error(f"Error getting streaming status: {e}")
+        return {"error": str(e)}
+
+
+@app.post("/streaming/preview")
+async def preview_streaming_data(
+    symbols: Optional[list[str]] = None,
+    limit: int = 100
+):
+    """
+    Preview raw bar data before preprocessing.
+    
+    Useful for checking data quality and schema.
+    """
+    try:
+        loader = BarDataLoader(parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet"))
+        ds = loader.load_all_bars(symbols=symbols)
+        
+        # Get sample rows
+        sample = ds.take(limit)
+        
+        return {
+            "status": "success",
+            "row_count": len(sample),
+            "total_estimated": ds.count(),
+            "sample_data": [dict(row) for row in sample[:10]],  # Show first 10
+            "schema": str(ds.schema()) if hasattr(ds, 'schema') else None
+        }
+    except Exception as e:
+        log.error(f"Error previewing data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/streaming/walk_forward")
+async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, background_tasks: BackgroundTasks):
+    """
+    Run walk-forward preprocessing with fold isolation for balanced backtesting.
+    
+    This is the RECOMMENDED approach for ML trading bots. Each fold calculates
+    indicators independently, ensuring no look-ahead bias across train/test splits.
+    
+    Example:
+        - Fold 1: Train Jan-Mar (SMA calculated on Jan-Mar only), Test Apr
+        - Fold 2: Train Feb-Apr (SMA calculated on Feb-Apr only), Test May
+        
+    The SMA at the start of each Test period does NOT know what happened in
+    previous folds, eliminating look-ahead bias.
+    """
+    log.info(f"Starting walk-forward preprocessing: {request.symbols} from {request.start_date} to {request.end_date}")
+    
+    def run_preprocessing():
+        try:
+            from pathlib import Path
+            
+            # Create pipeline
+            preprocessor = create_preprocessing_pipeline(
+                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
+            )
+            
+            # Process folds
+            fold_count = 0
+            for fold in preprocessor.create_walk_forward_pipeline(
+                symbols=request.symbols,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                train_months=request.train_months,
+                test_months=request.test_months,
+                step_months=request.step_months,
+                context_symbols=request.context_symbols,
+                windows=request.windows,
+                resampling_timeframes=request.resampling_timeframes,
+                num_gpus=request.num_gpus,
+                actor_pool_size=request.actor_pool_size
+            ):
+                fold_count += 1
+                log.info(f"Processing {fold}")
+                
+                # Save train data
+                if fold.train_ds:
+                    train_path = f"{request.output_base_path}/fold_{fold.fold_id}/train"
+                    fold.train_ds.write_parquet(train_path, try_create_dir=True)
+                    log.info(f"Saved train data to {train_path}")
+                
+                # Save test data
+                if fold.test_ds:
+                    test_path = f"{request.output_base_path}/fold_{fold.fold_id}/test"
+                    fold.test_ds.write_parquet(test_path, try_create_dir=True)
+                    log.info(f"Saved test data to {test_path}")
+            
+            log.info(f"Walk-forward preprocessing completed: {fold_count} folds processed")
+        except Exception as e:
+            log.error(f"Walk-forward preprocessing failed: {e}", exc_info=True)
+    
+    background_tasks.add_task(run_preprocessing)
+    
+    return {
+        "status": "started",
+        "task": "walk_forward_preprocessing",
+        "symbols": request.symbols,
+        "context_symbols": request.context_symbols,
+        "date_range": f"{request.start_date} to {request.end_date}",
+        "fold_config": {
+            "train_months": request.train_months,
+            "test_months": request.test_months,
+            "step_months": request.step_months
+        },
+        "output_base_path": request.output_base_path,
+        "note": "Each fold calculates indicators independently to prevent look-ahead bias"
+    }
+
+
+@app.post("/train/walk_forward")
+async def train_walk_forward(request: WalkForwardTrainRequest, background_tasks: BackgroundTasks):
+    """
+    Train models using walk-forward validation with hyperparameter tuning.
+    
+    This is the COMPLETE end-to-end training pipeline:
+    1. Generates walk-forward folds with proper date splits
+    2. Preprocesses each fold independently (no look-ahead)
+    3. Runs hyperparameter tuning across all folds
+    4. Reports average metrics across folds
+    
+    Each hyperparameter configuration is tested on ALL folds, ensuring
+    the model generalizes across different time periods.
+    
+    Example:
+        With 3-month train, 1-month test, 1-month step:
+        - Trial 1 (alpha=0.01): Avg test RMSE across 5 folds = 0.0234
+        - Trial 2 (alpha=0.1): Avg test RMSE across 5 folds = 0.0198
+        - Trial 3 (alpha=1.0): Avg test RMSE across 5 folds = 0.0156 (best!)
+    """
+    log.info(f"Starting walk-forward training: {request.symbols} with {request.algorithm}")
+    
+    def run_training():
+        try:
+            # Create trainer
+            trainer = create_walk_forward_trainer(
+                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
+            )
+            
+            # Run tuning
+            results = trainer.run_walk_forward_tuning(
+                symbols=request.symbols,
+                start_date=request.start_date,
+                end_date=request.end_date,
+                train_months=request.train_months,
+                test_months=request.test_months,
+                step_months=request.step_months,
+                algorithm=request.algorithm,
+                param_space=request.param_space,
+                num_samples=request.num_samples,
+                context_symbols=request.context_symbols,
+                windows=request.windows,
+                resampling_timeframes=request.resampling_timeframes
+            )
+            
+            # Log best result
+            best = results.get_best_result()
+            log.info(f"Training complete! Best config: {best.config}")
+            log.info(f"Best metrics: test_rmse={best.metrics['test_rmse']:.6f}, "
+                    f"test_r2={best.metrics['test_r2']:.4f}")
+            
+        except Exception as e:
+            log.error(f"Walk-forward training failed: {e}", exc_info=True)
+    
+    background_tasks.add_task(run_training)
+    
+    return {
+        "status": "started",
+        "task": "walk_forward_training",
+        "symbols": request.symbols,
+        "algorithm": request.algorithm,
+        "num_samples": request.num_samples,
+        "date_range": f"{request.start_date} to {request.end_date}",
+        "fold_config": {
+            "train_months": request.train_months,
+            "test_months": request.test_months,
+            "step_months": request.step_months
+        },
+        "note": "Each trial is evaluated across all folds to ensure temporal robustness"
+    }
+
+
+# ============================================================================
+# Dashboard UI
+# ============================================================================
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    """Serve the training dashboard UI."""
+    return templates.TemplateResponse("training_dashboard.html", {"request": request})
 
 
 # ============================================================================

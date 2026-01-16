@@ -120,8 +120,14 @@ class TuneOrchestrator:
     def init_ray(self):
         """Initialize Ray cluster connection."""
         if not ray.is_initialized():
+            # If ray_address is "auto" or empty, connect to local Ray instance
+            # (which should already be started by entrypoint.sh)
+            address = None
+            if settings.ray.ray_address and settings.ray.ray_address != "auto":
+                address = settings.ray.ray_address
+            
             ray.init(
-                address=settings.ray.ray_address if settings.ray.ray_address != "auto" else None,
+                address=address,
                 namespace=settings.ray.ray_namespace,
                 dashboard_host="0.0.0.0",
                 dashboard_port=settings.ray.ray_dashboard_port,

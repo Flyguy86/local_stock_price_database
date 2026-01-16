@@ -32,6 +32,9 @@ FROM base as production
 # Copy application code
 COPY ray_orchestrator /app/ray_orchestrator
 
+# Make entrypoint executable
+RUN chmod +x /app/ray_orchestrator/entrypoint.sh
+
 # Create data directories
 RUN mkdir -p /app/data/models/ray \
     /app/data/ray_checkpoints \
@@ -49,5 +52,5 @@ EXPOSE 8100 8265 8000 6379
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8100/health || exit 1
 
-# Default command: Start as Ray head + API
-CMD ["python", "-m", "ray_orchestrator.main"]
+# Default command: Start Ray head + API via entrypoint
+CMD ["/bin/bash", "/app/ray_orchestrator/entrypoint.sh"]

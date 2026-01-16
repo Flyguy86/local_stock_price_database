@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ray Orchestrator - Walk-Forward Training</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 30px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+        }
+        
+        .help-text {
+            font-size: 0.85em;
+            color: #888;
+            margin-top: 4px;
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        input[type="date"],
+        select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .symbol-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            background: white;
+        }
+        
+        .symbol-item {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .symbol-item:hover {
+            background: #e9ecef;
+        }
+        
+        .symbol-item input[type="checkbox"] {
+            margin-right: 8px;
+        }
+        
+        .algorithm-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+        
+        .algorithm-item {
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .algorithm-item:hover {
+            border-color: #667eea;
+            background: #f8f9fa;
+        }
+        
+        .algorithm-item input[type="radio"] {
+            margin-right: 8px;
+        }
+        
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        .windows-input {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .windows-input input {
+            flex: 1;
+        }
+        
+        .btn {
+            padding: 15px 40px;
+            font-size: 1.1em;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            width: 100%;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            display: none;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            display: block;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+            display: block;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .links {
+            margin-top: 30px;
+            padding: 20px;
+            background: #e9ecef;
+            border-radius: 8px;
+        }
+        
+        .links a {
+            display: inline-block;
+            margin-right: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        
+        .links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Ray Orchestrator - Walk-Forward Training</h1>
+        <p class="subtitle">Configure and launch ML training with proper walk-forward validation</p>
+        
+        <div id="loadingData" class="loading">
+            <div class="spinner"></div>
+            <p>Loading available symbols and date ranges...</p>
+        </div>
+        
+        <form id="trainingForm">
+            <!-- Symbol Selection -->
+            <div class="section">
+                <h2>📊 Trading Symbols</h2>
+                <div class="form-group">
+                    <label>Primary Symbols (Select one or more)</label>
+                    <div id="symbolGrid" class="symbol-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                    <div class="help-text">Select the symbols you want to trade</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Context Symbols (Optional)</label>
+                    <div id="contextSymbolGrid" class="symbol-grid">
+                        <!-- Populated dynamically -->
+                    </div>
+                    <div class="help-text">Add market context like QQQ, SPY, VIX for relative features</div>
+                </div>
+            </div>
+            
+            <!-- Date Range -->
+            <div class="section">
+                <h2>📅 Date Range</h2>
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="startDate">Start Date</label>
+                        <input type="date" id="startDate" name="start_date" required>
+                        <div class="help-text" id="startDateHelp">Earliest: Loading...</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="endDate">End Date</label>
+                        <input type="date" id="endDate" name="end_date" required>
+                        <div class="help-text" id="endDateHelp">Latest: Loading...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Fold Configuration -->
+            <div class="section">
+                <h2>🔄 Walk-Forward Fold Configuration</h2>
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="trainMonths">Training Window (months)</label>
+                        <input type="number" id="trainMonths" name="train_months" value="3" min="1" max="12">
+                        <div class="help-text">How many months to use for training</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="testMonths">Test Window (months)</label>
+                        <input type="number" id="testMonths" name="test_months" value="1" min="1" max="6">
+                        <div class="help-text">How many months to use for testing</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="stepMonths">Step Size (months)</label>
+                    <input type="number" id="stepMonths" name="step_months" value="1" min="1" max="6">
+                    <div class="help-text">How many months to step forward for each new fold</div>
+                </div>
+            </div>
+            
+            <!-- Algorithm Selection -->
+            <div class="section">
+                <h2>🤖 Algorithm Selection</h2>
+                <div class="algorithm-grid">
+                    <label class="algorithm-item">
+                        <input type="radio" name="algorithm" value="elasticnet" checked>
+                        <div>
+                            <strong>ElasticNet</strong>
+                            <div class="help-text">L1+L2 regularization, good for linear patterns</div>
+                        </div>
+                    </label>
+                    <label class="algorithm-item">
+                        <input type="radio" name="algorithm" value="ridge">
+                        <div>
+                            <strong>Ridge</strong>
+                            <div class="help-text">L2 regularization only</div>
+                        </div>
+                    </label>
+                    <label class="algorithm-item">
+                        <input type="radio" name="algorithm" value="lasso">
+                        <div>
+                            <strong>Lasso</strong>
+                            <div class="help-text">L1 regularization, feature selection</div>
+                        </div>
+                    </label>
+                    <label class="algorithm-item">
+                        <input type="radio" name="algorithm" value="randomforest">
+                        <div>
+                            <strong>Random Forest</strong>
+                            <div class="help-text">Non-linear, ensemble method</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Feature Configuration -->
+            <div class="section">
+                <h2>📈 Feature Configuration</h2>
+                <div class="form-group">
+                    <label for="windows">SMA/EMA Windows (comma-separated)</label>
+                    <input type="text" id="windows" name="windows" value="50, 200" placeholder="e.g., 50, 100, 200">
+                    <div class="help-text">Moving average window sizes (e.g., SMA-50, SMA-200)</div>
+                </div>
+                <div class="form-group">
+                    <label for="resamplingTimeframes">Multi-Timeframe Resampling (comma-separated, optional)</label>
+                    <input type="text" id="resamplingTimeframes" name="resampling_timeframes" value="5min, 15min" placeholder="e.g., 5min, 15min, 1H">
+                    <div class="help-text">Resample 1-min bars to higher timeframes for multi-scale features</div>
+                </div>
+            </div>
+            
+            <!-- Hyperparameter Tuning -->
+            <div class="section">
+                <h2>🎯 Hyperparameter Tuning</h2>
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="numSamples">Number of Trials</label>
+                        <input type="number" id="numSamples" name="num_samples" value="50" min="1" max="1000">
+                        <div class="help-text">How many hyperparameter configurations to test</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="numGpus">GPUs per Trial</label>
+                        <input type="number" id="numGpus" name="num_gpus" value="0" min="0" max="8" step="0.1">
+                        <div class="help-text">Set to 1.0 for GPU acceleration (requires GPU instance)</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Submit Button -->
+            <button type="submit" class="btn btn-primary" id="submitBtn">
+                🚀 Start Walk-Forward Training
+            </button>
+        </form>
+        
+        <div id="status" class="status"></div>
+        
+        <div class="links">
+            <h3 style="margin-bottom: 10px;">📊 Monitoring Links</h3>
+            <a href="http://localhost:8265" target="_blank">Ray Dashboard</a>
+            <a href="http://localhost:3000" target="_blank">Grafana</a>
+            <a href="http://localhost:9090" target="_blank">Prometheus</a>
+            <a href="/status" target="_blank">API Status</a>
+        </div>
+    </div>
+    
+    <script>
+        let availableSymbols = [];
+        let dateRange = { start: null, end: null };
+        
+        // Load available symbols and date ranges
+        async function loadData() {
+            document.getElementById('loadingData').style.display = 'block';
+            
+            try {
+                // Get streaming status to discover symbols
+                const response = await fetch('/streaming/status');
+                const data = await response.json();
+                
+                if (data.data_sources && data.data_sources.sample_files) {
+                    // Extract unique symbols from file paths
+                    const files = data.data_sources.sample_files;
+                    const symbols = new Set();
+                    
+                    files.forEach(file => {
+                        // Extract symbol from path like /app/data/parquet/AAPL/2024-01-01.parquet
+                        const match = file.match(/\/parquet\/([A-Z]+)\//);
+                        if (match) {
+                            symbols.add(match[1]);
+                        }
+                    });
+                    
+                    availableSymbols = Array.from(symbols).sort();
+                }
+                
+                // Get date ranges (placeholder - we'll enhance this)
+                // For now, use reasonable defaults
+                const today = new Date();
+                const sixMonthsAgo = new Date(today);
+                sixMonthsAgo.setMonth(today.getMonth() - 6);
+                
+                dateRange.start = sixMonthsAgo.toISOString().split('T')[0];
+                dateRange.end = today.toISOString().split('T')[0];
+                
+                populateSymbols();
+                populateDates();
+                
+            } catch (error) {
+                console.error('Error loading data:', error);
+                showStatus('error', 'Failed to load symbols. Please check if data is available.');
+            } finally {
+                document.getElementById('loadingData').style.display = 'none';
+            }
+        }
+        
+        function populateSymbols() {
+            const symbolGrid = document.getElementById('symbolGrid');
+            const contextGrid = document.getElementById('contextSymbolGrid');
+            
+            // Common symbols
+            const commonSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META'];
+            const contextSymbols = ['QQQ', 'SPY', 'VIX', 'DIA', 'IWM'];
+            
+            // Use available symbols if we have them, otherwise use common ones
+            const primarySymbols = availableSymbols.length > 0 ? availableSymbols : commonSymbols;
+            
+            // Populate primary symbols
+            primarySymbols.forEach(symbol => {
+                const div = document.createElement('div');
+                div.className = 'symbol-item';
+                div.innerHTML = `
+                    <input type="checkbox" id="sym_${symbol}" value="${symbol}">
+                    <label for="sym_${symbol}">${symbol}</label>
+                `;
+                symbolGrid.appendChild(div);
+            });
+            
+            // Populate context symbols
+            contextSymbols.forEach(symbol => {
+                const div = document.createElement('div');
+                div.className = 'symbol-item';
+                div.innerHTML = `
+                    <input type="checkbox" id="ctx_${symbol}" value="${symbol}">
+                    <label for="ctx_${symbol}">${symbol}</label>
+                `;
+                contextGrid.appendChild(div);
+            });
+        }
+        
+        function populateDates() {
+            const startInput = document.getElementById('startDate');
+            const endInput = document.getElementById('endDate');
+            
+            startInput.value = dateRange.start;
+            endInput.value = dateRange.end;
+            
+            startInput.min = dateRange.start;
+            startInput.max = dateRange.end;
+            endInput.min = dateRange.start;
+            endInput.max = dateRange.end;
+            
+            document.getElementById('startDateHelp').textContent = `Earliest: ${dateRange.start}`;
+            document.getElementById('endDateHelp').textContent = `Latest: ${dateRange.end}`;
+        }
+        
+        function showStatus(type, message) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+        }
+        
+        // Form submission
+        document.getElementById('trainingForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '⏳ Starting Training...';
+            
+            // Collect selected symbols
+            const symbols = Array.from(document.querySelectorAll('#symbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            const contextSymbols = Array.from(document.querySelectorAll('#contextSymbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            if (symbols.length === 0) {
+                showStatus('error', 'Please select at least one primary symbol');
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🚀 Start Walk-Forward Training';
+                return;
+            }
+            
+            // Parse windows
+            const windows = document.getElementById('windows').value
+                .split(',')
+                .map(w => parseInt(w.trim()))
+                .filter(w => !isNaN(w));
+            
+            // Parse resampling timeframes
+            const resamplingInput = document.getElementById('resamplingTimeframes').value.trim();
+            const resamplingTimeframes = resamplingInput
+                ? resamplingInput.split(',').map(t => t.trim())
+                : null;
+            
+            // Build request payload
+            const payload = {
+                symbols: symbols,
+                context_symbols: contextSymbols.length > 0 ? contextSymbols : null,
+                start_date: document.getElementById('startDate').value,
+                end_date: document.getElementById('endDate').value,
+                train_months: parseInt(document.getElementById('trainMonths').value),
+                test_months: parseInt(document.getElementById('testMonths').value),
+                step_months: parseInt(document.getElementById('stepMonths').value),
+                algorithm: document.querySelector('input[name="algorithm"]:checked').value,
+                num_samples: parseInt(document.getElementById('numSamples').value),
+                num_gpus: parseFloat(document.getElementById('numGpus').value),
+                windows: windows,
+                resampling_timeframes: resamplingTimeframes
+            };
+            
+            try {
+                const response = await fetch('/train/walk_forward', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('success', 
+                        `Training started! ${result.num_samples} trials across ${symbols.join(', ')}. ` +
+                        `Check Ray Dashboard for progress: http://localhost:8265`
+                    );
+                } else {
+                    showStatus('error', `Failed to start training: ${result.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                showStatus('error', `Error: ${error.message}`);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🚀 Start Walk-Forward Training';
+            }
+        });
+        
+        // Load data on page load
+        loadData();
+    </script>
+</body>
+</html>

@@ -48,13 +48,14 @@ services:
       - "8265:8265"   # Ray Dashboard
       - "8000:8000"   # Ray Serve (conflicts with api, use 8600 if needed)
       - "6379:6379"   # Ray GCS
+      - "8080:8080"   # Ray Prometheus Metrics
     volumes:
       - ./data:/app/data
       - ./ray_orchestrator:/app/ray_orchestrator
     environment:
-      RAY_ADDRESS: auto
       RAY_DASHBOARD_PORT: "8265"
       RAY_NAMESPACE: trading_bot
+      RAY_PROMETHEUS_HOST: "0.0.0.0"
       FEATURES_PARQUET_DIR: /app/data/features_parquet
       MODELS_DIR: /app/data/models/ray
       CHECKPOINTS_DIR: /app/data/ray_checkpoints
@@ -64,7 +65,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    profiles: ["ray"]  # Only start with: docker-compose --profile ray up
 
   # Ray Worker (for scaling out)
   ray_worker:
@@ -106,8 +106,48 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    profiles: ["ray"]  # Only start with: docker-compose --profile ray up
+
+  # ============================================
+  # Prometheus - Metrics Collection
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - ray_orchestrator
+
+  # ============================================
+  # Grafana - Metrics Visualization
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   ray_checkpoints:
   postgres_data:
+  prometheus_data:
+  grafana_data:
