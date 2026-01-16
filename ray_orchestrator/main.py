@@ -142,6 +142,8 @@ class WalkForwardTrainRequest(BaseModel):
     num_samples: int = 50  # Number of trials
     windows: list[int] = [50, 200]
     resampling_timeframes: Optional[list[str]] = None
+    num_gpus: float = 0.0  # GPU acceleration for preprocessing
+    actor_pool_size: Optional[int] = None  # None = auto-detect all CPUs
     num_samples: int = 50
     target_col: str = "close"
     target_transform: str = "log_return"
@@ -551,7 +553,9 @@ results = trainer.run_walk_forward_tuning(
     num_samples={request.num_samples},
     context_symbols={request.context_symbols!r},
     windows={request.windows!r},
-    resampling_timeframes={request.resampling_timeframes!r}
+    resampling_timeframes={request.resampling_timeframes!r},
+    num_gpus={request.num_gpus},
+    actor_pool_size={request.actor_pool_size!r}
 )
 
 best = results.get_best_result()

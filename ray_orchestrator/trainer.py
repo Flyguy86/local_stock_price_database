@@ -230,6 +230,8 @@ class WalkForwardTrainer:
         context_symbols: Optional[List[str]] = None,
         windows: List[int] = [50, 200],
         resampling_timeframes: Optional[List[str]] = None,
+        num_gpus: float = 0.0,
+        actor_pool_size: Optional[int] = None,
     ) -> tune.ResultGrid:
         """
         Run hyperparameter tuning with walk-forward validation.
@@ -252,6 +254,18 @@ class WalkForwardTrainer:
         """
         log.info("Starting walk-forward hyperparameter tuning")
         
+        # Auto-detect CPU count if not specified
+        import os
+        try:
+            cpu_count = len(os.sched_getaffinity(0))
+        except AttributeError:
+            cpu_count = os.cpu_count() or 4
+        
+        if actor_pool_size is None:
+            actor_pool_size = cpu_count
+        
+        log.info(f"Using {actor_pool_size} parallel actors for preprocessing (CPUs available: {cpu_count})")
+        
         # Step 1: Generate and load folds
         log.info("Generating walk-forward folds...")
         self.folds = []
@@ -266,8 +280,8 @@ class WalkForwardTrainer:
             context_symbols=context_symbols,
             windows=windows,
             resampling_timeframes=resampling_timeframes,
-            num_gpus=0.0,  # Set to 1.0 for GPU
-            actor_pool_size=2
+            num_gpus=num_gpus,
+            actor_pool_size=actor_pool_size
         ):
             self.folds.append(fold)
         
