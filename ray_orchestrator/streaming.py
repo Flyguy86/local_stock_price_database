@@ -25,6 +25,11 @@ import pandas as pd
 import numpy as np
 import duckdb
 
+# Disable Ray Data progress bars to avoid ANSI escape codes in logs
+from ray.data import DataContext
+ctx = DataContext.get_current()
+ctx.enable_progress_bars = False
+
 log = logging.getLogger(__name__)
 
 
