@@ -11,10 +11,12 @@ scrape_configs:
           node_type: 'head'
     metrics_path: '/metrics'
     
-  # Ray workers (if using ray-cluster profile)
+  # Ray workers (GitHub Codespaces environment)
   - job_name: 'ray_workers'
     static_configs:
-      - targets: ['ray_worker:8080']
+      - targets: ['cuddly-trout-v959vxxj7gc6p79-8080.app.github.dev']
         labels:
           node_type: 'worker'
     metrics_path: '/metrics'
+    scheme: 'https'
+

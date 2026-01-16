@@ -423,6 +423,7 @@
     
     <script>
         let availableSymbols = [];
+        let symbolDateRanges = {}; // Store per-symbol date ranges
         let dateRange = { start: null, end: null };
         
         // Load available symbols and date ranges
@@ -439,6 +440,14 @@
                     const symbols = data.data_sources.symbols;
                     
                     availableSymbols = symbols.map(s => s.symbol).sort();
+                    
+                    // Store per-symbol date ranges
+                    symbols.forEach(s => {
+                        symbolDateRanges[s.symbol] = {
+                            start: s.date_range.start,
+                            end: s.date_range.end
+                        };
+                    });
                     
                     // Find overall date range across all symbols
                     if (symbols.length > 0) {
@@ -486,6 +495,10 @@
                     <label for="sym_${symbol}">${symbol}</label>
                 `;
                 symbolGrid.appendChild(div);
+                
+                // Add event listener to update dates when symbol is selected
+                const checkbox = div.querySelector('input');
+                checkbox.addEventListener('change', updateDatesFromSelectedSymbol);
             });
             
             // Populate context symbols - use same list (all available symbols)
@@ -498,6 +511,42 @@
                 `;
                 contextGrid.appendChild(div);
             });
+        }
+        
+        function updateDatesFromSelectedSymbol() {
+            // Get the first selected primary symbol
+            const selectedSymbols = Array.from(document.querySelectorAll('#symbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedSymbols.length === 0) {
+                // No symbols selected, use overall range
+                populateDates();
+                return;
+            }
+            
+            // Use the date range of the first selected symbol as the primary target
+            const primarySymbol = selectedSymbols[0];
+            if (symbolDateRanges[primarySymbol]) {
+                const range = symbolDateRanges[primarySymbol];
+                const startInput = document.getElementById('startDate');
+                const endInput = document.getElementById('endDate');
+                
+                startInput.value = range.start;
+                endInput.value = range.end;
+                
+                // Still allow full range adjustment
+                startInput.min = dateRange.start;
+                startInput.max = dateRange.end;
+                endInput.min = dateRange.start;
+                endInput.max = dateRange.end;
+                
+                document.getElementById('startDateHelp').textContent = 
+                    `${primarySymbol}: ${range.start} (Overall: ${dateRange.start})`;
+                document.getElementById('endDateHelp').textContent = 
+                    `${primarySymbol}: ${range.end} (Overall: ${dateRange.end})`;
+            } else {
+                populateDates();
+            }
         }
         
         function populateDates() {

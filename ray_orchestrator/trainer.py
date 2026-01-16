@@ -261,6 +261,33 @@ class WalkForwardTrainer:
         
         log.info(f"Loaded {len(self.folds)} folds for training")
         
+        # Validate that we have non-empty folds
+        if not self.folds:
+            raise ValueError(
+                f"No folds generated! Check that data exists for date range {start_date} to {end_date}. "
+                f"Use the /streaming/status endpoint to see available date ranges."
+            )
+        
+        # Check if all folds are empty
+        empty_folds = 0
+        for fold in self.folds:
+            try:
+                train_count = fold.train_ds.count()
+                test_count = fold.test_ds.count()
+                if train_count == 0 or test_count == 0:
+                    empty_folds += 1
+                    log.warning(f"Empty fold detected: {fold} (train={train_count}, test={test_count})")
+            except Exception as e:
+                log.warning(f"Could not count fold data: {e}")
+        
+        if empty_folds == len(self.folds):
+            raise ValueError(
+                f"All {len(self.folds)} folds are empty! No data found for symbols {symbols} "
+                f"in date range {start_date} to {end_date}. Check /streaming/status for available dates."
+            )
+        elif empty_folds > 0:
+            log.warning(f"{empty_folds}/{len(self.folds)} folds are empty and will produce inf metrics")
+        
         # Step 2: Define search space
         if param_space is None:
             param_space = self._default_param_space(algorithm)
@@ -292,8 +319,23 @@ class WalkForwardTrainer:
         results = tuner.fit()
         
         log.info("Hyperparameter tuning complete")
-        log.info(f"Best config: {results.get_best_result().config}")
-        log.info(f"Best test RMSE: {results.get_best_result().metrics['test_rmse']:.6f}")
+        
+        # Try to get best result, handle case where all trials failed
+        try:
+            best_result = results.get_best_result(metric="test_rmse", mode="min")
+            log.info(f"Best config: {best_result.config}")
+            log.info(f"Best test RMSE: {best_result.metrics['test_rmse']:.6f}")
+        except RuntimeError as e:
+            log.error(f"No valid trials completed successfully: {e}")
+            log.error("All trials returned NaN/inf metrics. Check that your date range has actual data!")
+            # Get a sample of results for debugging
+            all_results = results.get_dataframe()
+            log.error(f"Trial summary:\n{all_results[['test_rmse', 'test_mae', 'train_rmse']].describe()}")
+            raise ValueError(
+                "Training failed: All trials returned invalid metrics (NaN/inf). "
+                "This typically means no data was found for the specified date range. "
+                "Use /streaming/status to check available dates."
+            ) from e
         
         return results
     
