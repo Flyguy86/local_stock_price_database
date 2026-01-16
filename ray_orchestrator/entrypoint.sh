@@ -2,12 +2,13 @@
 set -e
 
 echo "Starting Ray head node with Prometheus metrics..."
+echo "Ray will auto-detect available CPUs (respects Docker limits)"
+
 ray start --head \
     --port=6379 \
     --dashboard-host=0.0.0.0 \
     --dashboard-port=8265 \
     --metrics-export-port=8080 \
-    --num-cpus=0 \
     --block &
 
 # Wait for Ray to be ready

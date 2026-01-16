@@ -17,6 +17,8 @@ from ray.train import Checkpoint
 from sklearn.linear_model import ElasticNet, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import xgboost as xgb
+import lightgbm as lgb
 
 from .streaming import StreamingPreprocessor, BarDataLoader, Fold
 from .config import settings
@@ -180,6 +182,25 @@ class WalkForwardTrainer:
                 min_samples_split=config.get("min_samples_split", 2),
                 random_state=42
             )
+        elif algorithm == "xgboost":
+            return xgb.XGBRegressor(
+                n_estimators=config.get("n_estimators", 100),
+                max_depth=config.get("max_depth", 6),
+                learning_rate=config.get("learning_rate", 0.1),
+                subsample=config.get("subsample", 0.8),
+                colsample_bytree=config.get("colsample_bytree", 0.8),
+                random_state=42
+            )
+        elif algorithm == "lightgbm":
+            return lgb.LGBMRegressor(
+                n_estimators=config.get("n_estimators", 100),
+                max_depth=config.get("max_depth", 6),
+                learning_rate=config.get("learning_rate", 0.1),
+                subsample=config.get("subsample", 0.8),
+                colsample_bytree=config.get("colsample_bytree", 0.8),
+                random_state=42,
+                verbosity=-1  # Suppress warnings
+            )
         else:
             raise ValueError(f"Unknown algorithm: {algorithm}")
     
@@ -296,6 +317,22 @@ class WalkForwardTrainer:
                 "n_estimators": tune.choice([50, 100, 200]),
                 "max_depth": tune.randint(5, 20),
                 "min_samples_split": tune.randint(2, 10),
+            }
+        elif algorithm == "xgboost":
+            return {
+                "n_estimators": tune.choice([50, 100, 200, 300]),
+                "max_depth": tune.randint(3, 10),
+                "learning_rate": tune.loguniform(0.01, 0.3),
+                "subsample": tune.uniform(0.6, 1.0),
+                "colsample_bytree": tune.uniform(0.6, 1.0),
+            }
+        elif algorithm == "lightgbm":
+            return {
+                "n_estimators": tune.choice([50, 100, 200, 300]),
+                "max_depth": tune.randint(3, 10),
+                "learning_rate": tune.loguniform(0.01, 0.3),
+                "subsample": tune.uniform(0.6, 1.0),
+                "colsample_bytree": tune.uniform(0.6, 1.0),
             }
         else:
             return {}
