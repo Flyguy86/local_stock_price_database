@@ -443,18 +443,23 @@
                     
                     // Store per-symbol date ranges
                     symbols.forEach(s => {
+                        // Strip 'dt=' prefix if present
+                        const startDate = s.date_range.start.replace(/^dt=/, '');
+                        const endDate = s.date_range.end.replace(/^dt=/, '');
+                        
                         symbolDateRanges[s.symbol] = {
-                            start: s.date_range.start,
-                            end: s.date_range.end
+                            start: startDate,
+                            end: endDate
                         };
                     });
                     
                     // Find overall date range across all symbols
                     if (symbols.length > 0) {
-                        dateRange.start = symbols.reduce((min, s) => 
-                            !min || s.date_range.start < min ? s.date_range.start : min, null);
-                        dateRange.end = symbols.reduce((max, s) => 
-                            !max || s.date_range.end > max ? s.date_range.end : max, null);
+                        const allStarts = symbols.map(s => s.date_range.start.replace(/^dt=/, ''));
+                        const allEnds = symbols.map(s => s.date_range.end.replace(/^dt=/, ''));
+                        
+                        dateRange.start = allStarts.reduce((min, d) => !min || d < min ? d : min, null);
+                        dateRange.end = allEnds.reduce((max, d) => !max || d > max ? d : max, null);
                     }
                 }
                 
@@ -469,7 +474,44 @@
                 }
                 
                 populateSymbols();
-                populateDates();
+                
+                // Auto-select first symbol and set its date range as default
+                if (availableSymbols.length > 0) {
+                    const firstSymbol = availableSymbols[0];
+                    const firstCheckbox = document.getElementById(`sym_${firstSymbol}`);
+                    if (firstCheckbox) {
+                        firstCheckbox.checked = true;
+                        // Manually trigger the date update
+                        if (symbolDateRanges[firstSymbol]) {
+                            const range = symbolDateRanges[firstSymbol];
+                            console.log('Setting dates for', firstSymbol, range);
+                            
+                            const startInput = document.getElementById('startDate');
+                            const endInput = document.getElementById('endDate');
+                            
+                            if (startInput && endInput) {
+                                startInput.value = range.start;
+                                endInput.value = range.end;
+                                
+                                startInput.min = dateRange.start;
+                                startInput.max = dateRange.end;
+                                endInput.min = dateRange.start;
+                                endInput.max = dateRange.end;
+                                
+                                console.log('Date inputs set:', startInput.value, endInput.value);
+                                
+                                document.getElementById('startDateHelp').textContent = 
+                                    `${firstSymbol}: ${range.start} (Overall: ${dateRange.start})`;
+                                document.getElementById('endDateHelp').textContent = 
+                                    `${firstSymbol}: ${range.end} (Overall: ${dateRange.end})`;
+                            } else {
+                                console.error('Date inputs not found!');
+                            }
+                        }
+                    }
+                } else {
+                    populateDates();
+                }
                 
             } catch (error) {
                 console.error('Error loading data:', error);
