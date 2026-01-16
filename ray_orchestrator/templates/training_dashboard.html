@@ -414,9 +414,9 @@
         
         <div class="links">
             <h3 style="margin-bottom: 10px;">📊 Monitoring Links</h3>
-            <a href="http://localhost:8265" target="_blank">Ray Dashboard</a>
-            <a href="http://localhost:3000" target="_blank">Grafana</a>
-            <a href="http://localhost:9090" target="_blank">Prometheus</a>
+            <a id="rayDashboardLink" href="#" target="_blank">Ray Dashboard</a>
+            <a id="grafanaLink" href="#" target="_blank">Grafana</a>
+            <a id="prometheusLink" href="#" target="_blank">Prometheus</a>
             <a href="/status" target="_blank">API Status</a>
         </div>
     </div>
@@ -425,6 +425,28 @@
         let availableSymbols = [];
         let symbolDateRanges = {}; // Store per-symbol date ranges
         let dateRange = { start: null, end: null };
+        
+        // Detect environment and set monitoring links
+        function setupMonitoringLinks() {
+            const hostname = window.location.hostname;
+            const isCodespaces = hostname.includes('.app.github.dev');
+            
+            if (isCodespaces) {
+                // GitHub Codespaces pattern: cuddly-trout-v959vxxj7gc6p79-{PORT}.app.github.dev
+                const baseUrl = hostname.replace(/-\d+\./, '-');  // Remove port
+                document.getElementById('rayDashboardLink').href = `https://${baseUrl}8265.app.github.dev/`;
+                document.getElementById('grafanaLink').href = `https://${baseUrl}3000.app.github.dev/`;
+                document.getElementById('prometheusLink').href = `https://${baseUrl}9090.app.github.dev/`;
+            } else {
+                // Local development
+                document.getElementById('rayDashboardLink').href = 'http://localhost:8265';
+                document.getElementById('grafanaLink').href = 'http://localhost:3000';
+                document.getElementById('prometheusLink').href = 'http://localhost:9090';
+            }
+        }
+        
+        // Initialize monitoring links on page load
+        setupMonitoringLinks();
         
         // Load available symbols and date ranges
         async function loadData() {
@@ -675,9 +697,10 @@
                 const result = await response.json();
                 
                 if (response.ok) {
+                    const rayDashboardUrl = document.getElementById('rayDashboardLink').href;
                     showStatus('success', 
                         `Training started! ${result.num_samples} trials across ${symbols.join(', ')}. ` +
-                        `Check Ray Dashboard for progress: http://localhost:8265`
+                        `Check Ray Dashboard for progress: ${rayDashboardUrl}`
                     );
                 } else {
                     showStatus('error', `Failed to start training: ${result.detail || 'Unknown error'}`);
