@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import ray
+from ray.job_submission import JobSubmissionClient
 
 from .config import settings
 from .data import get_available_symbols, get_symbol_date_range
@@ -253,8 +254,18 @@ async def get_streaming_status():
         }
         
         # List available data sources
-        loader = BarDataLoader(parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet"))
+        parquet_dir = Path("/app/data/parquet")
+        log.info(f"Checking parquet directory: {parquet_dir.absolute()} (exists={parquet_dir.exists()})")
+        
+        # Debug: list what's actually in /app/data
+        data_dir = Path("/app/data")
+        if data_dir.exists():
+            log.info(f"Contents of /app/data: {list(data_dir.iterdir())}")
+        
+        loader = BarDataLoader(parquet_dir=str(parquet_dir))
         files = loader._discover_parquet_files()
+        
+        log.info(f"BarDataLoader found {len(files)} parquet files")
         
         # Extract symbols and date ranges from files
         symbols_info = {}
@@ -419,62 +430,111 @@ async def train_walk_forward(request: WalkForwardTrainRequest, background_tasks:
     Each hyperparameter configuration is tested on ALL folds, ensuring
     the model generalizes across different time periods.
     
-    Example:
-        With 3-month train, 1-month test, 1-month step:
-        - Trial 1 (alpha=0.01): Avg test RMSE across 5 folds = 0.0234
-        - Trial 2 (alpha=0.1): Avg test RMSE across 5 folds = 0.0198
-        - Trial 3 (alpha=1.0): Avg test RMSE across 5 folds = 0.0156 (best!)
+    Jobs are submitted via Ray Job Submission API for better visibility
+    in the Ray Dashboard with full log access.
     """
-    log.info(f"Starting walk-forward training: {request.symbols} with {request.algorithm}")
+    log.info(f"Submitting training job: {request.symbols} with {request.algorithm}")
     
-    def run_training():
-        try:
-            # Create trainer
-            trainer = create_walk_forward_trainer(
-                parquet_dir=str(settings.data.features_parquet_dir.parent / "parquet")
-            )
-            
-            # Run tuning
-            results = trainer.run_walk_forward_tuning(
-                symbols=request.symbols,
-                start_date=request.start_date,
-                end_date=request.end_date,
-                train_months=request.train_months,
-                test_months=request.test_months,
-                step_months=request.step_months,
-                algorithm=request.algorithm,
-                param_space=request.param_space,
-                num_samples=request.num_samples,
-                context_symbols=request.context_symbols,
-                windows=request.windows,
-                resampling_timeframes=request.resampling_timeframes
-            )
-            
-            # Log best result
-            best = results.get_best_result()
-            log.info(f"Training complete! Best config: {best.config}")
-            log.info(f"Best metrics: test_rmse={best.metrics['test_rmse']:.6f}, "
-                    f"test_r2={best.metrics['test_r2']:.4f}")
-            
-        except Exception as e:
-            log.error(f"Walk-forward training failed: {e}", exc_info=True)
-    
-    background_tasks.add_task(run_training)
-    
-    return {
-        "status": "started",
-        "task": "walk_forward_training",
-        "symbols": request.symbols,
-        "algorithm": request.algorithm,
-        "num_samples": request.num_samples,
-        "date_range": f"{request.start_date} to {request.end_date}",
-        "fold_config": {
-            "train_months": request.train_months,
-            "test_months": request.test_months,
-            "step_months": request.step_months
-        },
-        "note": "Each trial is evaluated across all folds to ensure temporal robustness"
-    }
+    try:
+        # Create job submission client
+        client = JobSubmissionClient("http://127.0.0.1:8265")
+        
+        # Prepare Python entrypoint
+        entrypoint_code = f'''
+import ray
+from ray_orchestrator.trainer import create_walk_forward_trainer
+
+ray.init(address="auto", ignore_reinit_error=True)
+
+trainer = create_walk_forward_trainer(parquet_dir="/app/data/parquet")
+
+results = trainer.run_walk_forward_tuning(
+    symbols={request.symbols!r},
+    start_date="{request.start_date}",
+    end_date="{request.end_date}",
+    train_months={request.train_months},
+    test_months={request.test_months},
+    step_months={request.step_months},
+    algorithm="{request.algorithm}",
+    param_space={request.param_space!r},
+    num_samples={request.num_samples},
+    context_symbols={request.context_symbols!r},
+    windows={request.windows!r},
+    resampling_timeframes={request.resampling_timeframes!r}
+)
+
+best = results.get_best_result()
+print(f"=== TRAINING COMPLETE ===")
+print(f"Best config: {{best.config}}")
+print(f"Best test RMSE: {{best.metrics['test_rmse']:.6f}}")
+print(f"Best test R2: {{best.metrics['test_r2']:.4f}}")
+'''
+        
+        # Submit job
+        job_id = client.submit_job(
+            entrypoint=f"python -c {entrypoint_code!r}",
+            runtime_env={{
+                "working_dir": "/app",
+                "env_vars": {{
+                    "PYTHONPATH": "/app"
+                }}
+            }},
+            metadata={{
+                "symbols": str(request.symbols),
+                "algorithm": request.algorithm,
+                "date_range": f"{{request.start_date}} to {{request.end_date}}"
+            }}
+        )
+        
+        log.info(f"Training job submitted: {{job_id}}")
+        
+        return {{
+            "status": "submitted",
+            "job_id": job_id,
+            "task": "walk_forward_training",
+            "symbols": request.symbols,
+            "algorithm": request.algorithm,
+            "num_samples": request.num_samples,
+            "date_range": f"{{request.start_date}} to {{request.end_date}}",
+            "fold_config": {{
+                "train_months": request.train_months,
+                "test_months": request.test_months,
+                "step_months": request.step_months
+            }},
+            "note": "Job submitted via Ray Job Submission API. View logs at Ray Dashboard."
+        }}
+        
+    except Exception as e:
+        log.error(f"Failed to submit training job: {{e}}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Job submission failed: {{str(e)}}")
+
+
+@app.get("/train/job/{job_id}")
+async def get_job_status(job_id: str):
+    """Get status of a submitted training job."""
+    try:
+        client = JobSubmissionClient("http://127.0.0.1:8265")
+        status = client.get_job_status(job_id)
+        logs = client.get_job_logs(job_id)
+        
+        return {
+            "job_id": job_id,
+            "status": str(status),
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Job not found: {str(e)}")
+
+
+@app.get("/train/jobs")
+async def list_training_jobs():
+    """List all submitted training jobs."""
+    try:
+        client = JobSubmissionClient("http://127.0.0.1:8265")
+        jobs = client.list_jobs()
+        return {"jobs": jobs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

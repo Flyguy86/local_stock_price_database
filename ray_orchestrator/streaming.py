@@ -89,8 +89,11 @@ class BarDataLoader:
     def _discover_parquet_files(self, symbols: Optional[List[str]] = None) -> List[str]:
         """Discover all parquet files in the data directory."""
         if not self.parquet_dir.exists():
-            log.warning(f"Parquet directory not found: {self.parquet_dir}")
+            log.error(f"Parquet directory DOES NOT EXIST: {self.parquet_dir}")
+            log.error(f"Absolute path: {self.parquet_dir.absolute()}")
             return []
+        
+        log.info(f"Searching for parquet files in: {self.parquet_dir.absolute()}")
         
         # Pattern: data/parquet/SYMBOL/YYYY-MM-DD.parquet
         files = []
@@ -99,11 +102,27 @@ class BarDataLoader:
             # Load specific symbols
             for symbol in symbols:
                 symbol_dir = self.parquet_dir / symbol
+                log.info(f"Checking symbol directory: {symbol_dir.absolute()} (exists={symbol_dir.exists()})")
                 if symbol_dir.exists():
-                    files.extend([str(f) for f in symbol_dir.glob("*.parquet")])
+                    symbol_files = list(symbol_dir.glob("*.parquet"))
+                    log.info(f"Found {len(symbol_files)} files for {symbol}")
+                    files.extend([str(f) for f in symbol_files])
+                else:
+                    # Try case-insensitive search
+                    for child in self.parquet_dir.iterdir():
+                        if child.is_dir() and child.name.upper() == symbol.upper():
+                            log.info(f"Found case-insensitive match: {child.name} for {symbol}")
+                            symbol_files = list(child.glob("*.parquet"))
+                            log.info(f"Found {len(symbol_files)} files for {child.name}")
+                            files.extend([str(f) for f in symbol_files])
+                            break
         else:
             # Load all symbols
             files = [str(f) for f in self.parquet_dir.rglob("*.parquet")]
+        
+        log.info(f"Total parquet files discovered: {len(files)}")
+        if len(files) > 0:
+            log.info(f"Sample files: {files[:3]}")
         
         return sorted(files)
 
