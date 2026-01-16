@@ -382,8 +382,8 @@
                 </div>
                 <div class="form-group">
                     <label for="resamplingTimeframes">Multi-Timeframe Resampling (comma-separated, optional)</label>
-                    <input type="text" id="resamplingTimeframes" name="resampling_timeframes" value="5min, 15min" placeholder="e.g., 5min, 15min, 1H">
-                    <div class="help-text">Resample 1-min bars to higher timeframes for multi-scale features</div>
+                    <input type="text" id="resamplingTimeframes" name="resampling_timeframes" value="" placeholder="e.g., 5min, 15min, 1H">
+                    <div class="help-text">Leave empty to use only 1-min bars, or add higher timeframes for multi-scale features</div>
                 </div>
             </div>
             
@@ -400,6 +400,18 @@
                         <label for="numGpus">GPUs per Trial</label>
                         <input type="number" id="numGpus" name="num_gpus" value="0" min="0" max="8" step="0.1">
                         <div class="help-text">Set to 1.0 for GPU acceleration (requires GPU instance)</div>
+                    </div>
+                </div>
+                
+                <!-- Error Handling Options -->
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="skipEmptyFolds" name="skip_empty_folds" style="margin-right: 8px;">
+                        <span>Skip Empty Folds</span>
+                    </label>
+                    <div class="help-text">
+                        If checked, training will skip folds with no data and continue with valid folds. 
+                        If unchecked, training will fail immediately on empty folds (recommended for debugging).
                     </div>
                 </div>
             </div>
@@ -460,6 +472,7 @@
                 if (data.data_sources && data.data_sources.symbols) {
                     // Extract symbols with date ranges
                     const symbols = data.data_sources.symbols;
+                    const maxAllowedDate = data.data_sources.max_allowed_date; // Backend enforces Month-1
                     
                     availableSymbols = symbols.map(s => s.symbol).sort();
                     
@@ -471,7 +484,8 @@
                         
                         symbolDateRanges[s.symbol] = {
                             start: startDate,
-                            end: endDate
+                            end: endDate,
+                            capped: s.date_range.capped || false  // Was end date capped?
                         };
                     });
                     
@@ -522,10 +536,13 @@
                                 
                                 console.log('Date inputs set:', startInput.value, endInput.value);
                                 
+                                // Show capped warning if applicable
+                                const cappedWarning = range.capped ? ' ⚠️ (capped to previous month)' : '';
+                                
                                 document.getElementById('startDateHelp').textContent = 
                                     `${firstSymbol}: ${range.start} (Overall: ${dateRange.start})`;
                                 document.getElementById('endDateHelp').textContent = 
-                                    `${firstSymbol}: ${range.end} (Overall: ${dateRange.end})`;
+                                    `${firstSymbol}: ${range.end}${cappedWarning} (Overall: ${dateRange.end})`;
                             } else {
                                 console.error('Date inputs not found!');
                             }
@@ -681,6 +698,7 @@
                 algorithm: document.querySelector('input[name="algorithm"]:checked').value,
                 num_samples: parseInt(document.getElementById('numSamples').value),
                 num_gpus: parseFloat(document.getElementById('numGpus').value),
+                skip_empty_folds: document.getElementById('skipEmptyFolds').checked,
                 windows: windows,
                 resampling_timeframes: resamplingTimeframes
             };

@@ -232,6 +232,7 @@ class WalkForwardTrainer:
         resampling_timeframes: Optional[List[str]] = None,
         num_gpus: float = 0.0,
         actor_pool_size: Optional[int] = None,
+        skip_empty_folds: bool = False,
     ) -> tune.ResultGrid:
         """
         Run hyperparameter tuning with walk-forward validation.
@@ -248,6 +249,7 @@ class WalkForwardTrainer:
             context_symbols: Context symbols (QQQ, VIX)
             windows: SMA windows
             resampling_timeframes: Multi-timeframe features
+            skip_empty_folds: If True, skip empty folds with warnings; if False, fail on empty folds
             
         Returns:
             Ray Tune ResultGrid with all trial results
@@ -303,20 +305,25 @@ class WalkForwardTrainer:
                 f"Use the /streaming/status endpoint to see available date ranges."
             )
         
-        # PRE-VALIDATE ALL FOLDS: Fail-fast before starting expensive training
-        log.info("Validating all folds have sufficient data...")
+        # PRE-VALIDATE ALL FOLDS: Fail-fast or skip based on skip_empty_folds parameter
+        log.info(f"Validating all folds have sufficient data (skip_empty_folds={skip_empty_folds})...")
         validation_errors = []
+        valid_folds = []
+        skipped_folds = []
         
         for fold in self.folds:
             try:
                 train_count = fold.train_ds.count()
                 test_count = fold.test_ds.count()
                 
+                # Check for empty data
+                fold_has_errors = False
+                fold_error_msgs = []
+                
                 if train_count == 0:
-                    validation_errors.append(
-                        f"Fold {fold.fold_id} has ZERO training data "
-                        f"(train: {fold.train_start} to {fold.train_end})"
-                    )
+                    msg = f"Fold {fold.fold_id} has ZERO training data (train: {fold.train_start} to {fold.train_end})"
+                    fold_error_msgs.append(msg)
+                    fold_has_errors = True
                 elif train_count < 100:  # Minimum threshold for meaningful training
                     log.warning(
                         f"Fold {fold.fold_id} has only {train_count} training rows "
@@ -324,23 +331,55 @@ class WalkForwardTrainer:
                     )
                 
                 if test_count == 0:
-                    validation_errors.append(
-                        f"Fold {fold.fold_id} has ZERO test data "
-                        f"(test: {fold.test_start} to {fold.test_end})"
-                    )
-                    
-                log.info(f"✓ Fold {fold.fold_id} validated: train={train_count:,} rows, test={test_count:,} rows")
+                    msg = f"Fold {fold.fold_id} has ZERO test data (test: {fold.test_start} to {fold.test_end})"
+                    fold_error_msgs.append(msg)
+                    fold_has_errors = True
+                
+                # Handle empty fold based on skip_empty_folds flag
+                if fold_has_errors:
+                    if skip_empty_folds:
+                        # Skip this fold with warning
+                        for msg in fold_error_msgs:
+                            log.warning(f"⚠️  SKIPPING: {msg}")
+                        skipped_folds.append(fold)
+                    else:
+                        # Add to validation errors to fail later
+                        validation_errors.extend(fold_error_msgs)
+                else:
+                    # Fold is valid
+                    log.info(f"✓ Fold {fold.fold_id} validated: train={train_count:,} rows, test={test_count:,} rows")
+                    valid_folds.append(fold)
                     
             except Exception as e:
-                validation_errors.append(f"Fold {fold.fold_id} validation failed: {e}")
+                error_msg = f"Fold {fold.fold_id} validation failed: {e}"
+                if skip_empty_folds:
+                    log.warning(f"⚠️  SKIPPING: {error_msg}")
+                    skipped_folds.append(fold)
+                else:
+                    validation_errors.append(error_msg)
         
-        # Fail fast if any validation errors
+        # Report skipped folds
+        if skipped_folds:
+            log.warning(f"⚠️  Skipped {len(skipped_folds)} empty folds (skip_empty_folds=True)")
+            log.info(f"Continuing with {len(valid_folds)} valid folds")
+        
+        # Fail fast if any validation errors (when skip_empty_folds=False)
         if validation_errors:
             error_msg = "Fold validation failed:\\n" + "\\n".join(f"  - {err}" for err in validation_errors)
             error_msg += f"\\n\\nCheck parquet data exists for date range {start_date} to {end_date}"
+            error_msg += "\\n\\nTo skip empty folds instead of failing, use skip_empty_folds=True"
             raise ValueError(error_msg)
         
-        log.info(f"✓ All {len(self.folds)} folds validated successfully")
+        # Update folds list to only include valid folds when skipping
+        if skip_empty_folds:
+            self.folds = valid_folds
+            if not self.folds:
+                raise ValueError(
+                    f"All {len(self.folds) + len(skipped_folds)} folds were empty! "
+                    f"Check parquet data exists for date range {start_date} to {end_date}"
+                )
+        
+        log.info(f"✓ Validated {len(self.folds)} folds for training")
         
         # Legacy empty fold check (should be caught above now)
         empty_folds = 0

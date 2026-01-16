@@ -144,7 +144,7 @@ class WalkForwardTrainRequest(BaseModel):
     resampling_timeframes: Optional[list[str]] = None
     num_gpus: float = 0.0  # GPU acceleration for preprocessing
     actor_pool_size: Optional[int] = None  # None = auto-detect all CPUs
-    num_samples: int = 50
+    skip_empty_folds: bool = False  # If True, skip empty folds; if False, fail on empty folds
     target_col: str = "close"
     target_transform: str = "log_return"
     timeframe: str = "1m"
@@ -380,10 +380,32 @@ async def get_streaming_status():
                 log.debug(f"Error parsing file path {file_path}: {e}")
                 continue
         
+        # Cap max date to last day of previous month (validation requirement)
+        from datetime import date
+        today = date.today()
+        if today.month == 1:
+            max_allowed_year = today.year - 1
+            max_allowed_month = 12
+        else:
+            max_allowed_year = today.year
+            max_allowed_month = today.month - 1
+        
+        # Last day of previous month
+        import calendar
+        last_day = calendar.monthrange(max_allowed_year, max_allowed_month)[1]
+        max_allowed_date = date(max_allowed_year, max_allowed_month, last_day).isoformat()
+        
+        # Cap all symbol date ranges
+        for symbol_info in symbols_info.values():
+            if symbol_info['date_range']['end'] > max_allowed_date:
+                symbol_info['date_range']['end'] = max_allowed_date
+                symbol_info['date_range']['capped'] = True  # Mark as capped for UI
+        
         stats["data_sources"] = {
             "total_parquet_files": len(files),
             "sample_files": files[:10] if files else [],
-            "symbols": list(symbols_info.values())
+            "symbols": list(symbols_info.values()),
+            "max_allowed_date": max_allowed_date  # Tell UI the boundary
         }
         
         return stats
@@ -555,7 +577,8 @@ results = trainer.run_walk_forward_tuning(
     windows={request.windows!r},
     resampling_timeframes={request.resampling_timeframes!r},
     num_gpus={request.num_gpus},
-    actor_pool_size={request.actor_pool_size!r}
+    actor_pool_size={request.actor_pool_size!r},
+    skip_empty_folds={request.skip_empty_folds}
 )
 
 best = results.get_best_result()
