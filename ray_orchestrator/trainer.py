@@ -261,10 +261,14 @@ class WalkForwardTrainer:
         except AttributeError:
             cpu_count = os.cpu_count() or 4
         
+        # CRITICAL: Reserve CPUs for training trials
+        # Preprocessing uses half the CPUs, training uses the other half
+        # This prevents deadlock where preprocessing actors block training trials
         if actor_pool_size is None:
-            actor_pool_size = cpu_count
+            actor_pool_size = max(2, cpu_count // 2)  # Use half CPUs for preprocessing
         
         log.info(f"Using {actor_pool_size} parallel actors for preprocessing (CPUs available: {cpu_count})")
+        log.info(f"Reserving {cpu_count - actor_pool_size} CPUs for training trials")
         
         # Step 1: Generate and load folds
         log.info("Generating walk-forward folds...")
@@ -286,6 +290,12 @@ class WalkForwardTrainer:
             self.folds.append(fold)
         
         log.info(f"Loaded {len(self.folds)} folds for training")
+        
+        # CRITICAL: Force cleanup of preprocessing actors to free CPUs for training
+        import gc
+        import ray
+        gc.collect()  # Python garbage collection
+        log.info("Preprocessing complete - forcing actor cleanup to free CPUs for training")
         
         # Validate that we have non-empty folds
         if not self.folds:
@@ -328,8 +338,11 @@ class WalkForwardTrainer:
         # Step 4: Run tuning
         log.info(f"Running {num_samples} trials with {algorithm}")
         
-        # Maximize CPU usage by running multiple trials in parallel
-        # Each trial uses 1 CPU, so we can run as many concurrent trials as we have cores
+        # Limit concurrent trials to prevent resource exhaustion
+        # Reserve some CPUs for Ray overhead and cleanup
+        max_concurrent = max(1, cpu_count - 1)  # Leave 1 CPU for Ray system
+        log.info(f"Running up to {max_concurrent} concurrent trials (reserving 1 CPU for Ray)")
+        
         tuner = tune.Tuner(
             trainable,
             param_space=param_space,
@@ -337,7 +350,7 @@ class WalkForwardTrainer:
                 metric="test_rmse",
                 mode="min",
                 num_samples=num_samples,
-                max_concurrent_trials=0,  # 0 = unlimited (use all available CPUs)
+                max_concurrent_trials=max_concurrent,  # Prevent deadlock by limiting concurrency
             ),
             run_config=ray.train.RunConfig(
                 name=f"walk_forward_{algorithm}_{symbols[0]}",
