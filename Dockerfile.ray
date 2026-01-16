@@ -24,7 +24,12 @@ COPY ray_orchestrator/requirements.txt /app/requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir py-spy
+
+# Set py-spy permissions for profiling
+RUN chown root:root $(which py-spy) && \
+    chmod u+s $(which py-spy)
 
 # Production stage
 FROM base as production

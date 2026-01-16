@@ -12,7 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir py-spy
+
+# Set py-spy permissions for profiling
+RUN chown root:root $(which py-spy) && \
+    chmod u+s $(which py-spy)
 
 # Set environment variables
 ENV PYTHONPATH=/app
