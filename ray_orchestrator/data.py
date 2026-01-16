@@ -24,15 +24,16 @@ log = logging.getLogger("ray_orchestrator.data")
 
 def get_available_symbols() -> list[str]:
     """
-    Get list of available symbols from feature parquet directory.
+    Get list of available symbols from parquet directory (Hive partitioned).
     
     Returns:
         List of ticker symbols (e.g., ["AAPL", "GOOGL", "MSFT"])
     """
-    parquet_dir = settings.data.features_parquet_dir
+    # Read from the actual parquet data directory (not old features_parquet)
+    parquet_dir = settings.data.features_parquet_dir.parent / "parquet"
     
     if not parquet_dir.exists():
-        log.warning(f"Features parquet directory not found: {parquet_dir}")
+        log.warning(f"Parquet directory not found: {parquet_dir}")
         return []
     
     symbols = []
@@ -45,7 +46,7 @@ def get_available_symbols() -> list[str]:
 
 def get_symbol_date_range(symbol: str) -> tuple[str, str]:
     """
-    Get the date range available for a symbol.
+    Get the date range available for a symbol from parquet directory.
     
     Args:
         symbol: Ticker symbol
@@ -53,7 +54,8 @@ def get_symbol_date_range(symbol: str) -> tuple[str, str]:
     Returns:
         Tuple of (start_date, end_date) in YYYY-MM-DD format
     """
-    parquet_dir = settings.data.features_parquet_dir / symbol
+    # Read from actual parquet data directory
+    parquet_dir = settings.data.features_parquet_dir.parent / "parquet" / symbol
     
     if not parquet_dir.exists():
         return ("", "")
