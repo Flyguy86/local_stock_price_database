@@ -387,6 +387,31 @@ print(FEATURE_ENGINEERING_VERSION)  # Should be 'v3.1'
 
 ## CI/CD Integration
 
+### Docker Compose Test Profile
+
+The project includes an `e2e_tests` service that runs automatically with the `test` profile:
+
+```bash
+# Run full stack with tests
+docker-compose --profile test up --build
+
+# View test logs
+docker-compose logs e2e_tests
+
+# Run tests only (services must be running)
+docker-compose up -d
+docker-compose --profile test up e2e_tests
+```
+
+**Service Configuration**:
+- **Image**: Same as `ray_orchestrator` (Dockerfile.ray)
+- **Restart**: `no` (run once and exit)
+- **Profile**: `test` (not started by default)
+- **Wait**: 30 seconds for Ray to initialize
+- **Exit Code**: 0 if all tests pass, 1 if any fail
+
+---
+
 ### GitHub Actions Workflow
 ```yaml
 name: Feature Pipeline E2E Tests
@@ -405,20 +430,29 @@ jobs:
       - name: Start services
         run: docker-compose up -d
       
-      - name: Wait for Ray
+      - name: Wait for services
         run: sleep 30
       
       - name: Ingest test data
         run: |
-          curl -X POST "http://localhost:8000/ingest/start/AAPL"
+          curl -X POST "http://localhost:8600/ingest/start/AAPL"
           sleep 60
       
       - name: Run E2E tests
-        run: docker exec ray_orchestrator python test_e2e_feature_pipeline.py
+        run: docker-compose --profile test up e2e_tests
+      
+      - name: Check test results
+        run: docker-compose logs e2e_tests | grep "ALL TESTS PASSED"
       
       - name: Cleanup
         run: docker-compose down
 ```
+
+**Benefits**:
+- ✅ Consistent test environment (Docker)
+- ✅ Automatic test execution
+- ✅ Easy integration with CI/CD
+- ✅ No manual setup required
 
 ---
 
