@@ -518,9 +518,9 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
                 fold_count += 1
                 log.info(f"Processing {fold}")
                 
-                # Create output directory
+                # Create output directory with zero-padded fold ID
                 symbol_dir = Path(request.output_base_path) / request.symbol
-                fold_dir = symbol_dir / f"fold_{fold.fold_id}"
+                fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
                 fold_dir.mkdir(parents=True, exist_ok=True)
                 
                 # Save train data
@@ -837,28 +837,71 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         folds = get_available_folds(symbol)
         
         if not folds:
-            # Check if fold directory exists at all
-            fold_base = Path(settings.data.walk_forward_folds_dir)
-            symbol_dir = fold_base / symbol
+            # Auto-generate folds if they don't exist (synchronously)
+            log.info(f"No folds found for {symbol}, auto-generating before backtest...")
             
-            error_msg = f"No walk-forward folds found for symbol {symbol}.\n"
-            error_msg += f"Expected location: {symbol_dir}\n"
-            
-            if not fold_base.exists():
-                error_msg += f"Fold base directory doesn't exist: {fold_base}\n"
-            elif not symbol_dir.exists():
-                error_msg += f"Symbol directory doesn't exist: {symbol_dir}\n"
-                error_msg += f"Available symbols: {', '.join([d.name for d in fold_base.iterdir() if d.is_dir()])}\n"
-            
-            error_msg += f"\n✋ Generate folds for {symbol}:\n"
-            error_msg += f"1. Select checkbox for {symbol} in 'Symbols to Backtest' section\n"
-            error_msg += "2. Dates will auto-populate\n"
-            error_msg += "3. Click '📁 Generate Fold Data Only'\n"
-            error_msg += "4. Wait ~30 seconds\n"
-            error_msg += "5. Try backtest again\n"
-            error_msg += f"\nOr use API: POST /streaming/generate-folds with symbol={symbol}"
-            
-            raise ValueError(error_msg)
+            try:
+                # Create preprocessing pipeline (reuses training code!)
+                preprocessor = create_preprocessing_pipeline(
+                    parquet_dir=str(settings.data.parquet_dir)
+                )
+                
+                # Use dates from request or default to full available range
+                start_date = request.start_date or "2020-01-01"
+                end_date = request.end_date or "2024-12-31"
+                
+                log.info(f"Generating folds for {symbol}: {start_date} to {end_date}")
+                log.info(f"⏳ This will take 1-2 minutes for ~60 folds. Watch logs for progress...")
+                
+                # Use the SAME walk-forward pipeline as training
+                fold_count = 0
+                for fold in preprocessor.create_walk_forward_pipeline(
+                    symbols=[symbol],
+                    start_date=start_date,
+                    end_date=end_date,
+                    train_months=request.train_months,
+                    test_months=request.test_months,
+                    step_months=request.step_months,
+                    context_symbols=None,
+                    windows=[5, 10, 20, 50, 200],
+                    resampling_timeframes=None,
+                    num_gpus=0.0,
+                    actor_pool_size=2
+                ):
+                    fold_count += 1
+                    log.info(f"Processing {fold}")
+                    
+                    # Create output directory with zero-padded fold ID
+                    symbol_dir = Path(settings.data.walk_forward_folds_dir) / symbol
+                    fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
+                    fold_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save train data
+                    if fold.train_ds:
+                        train_path = str(fold_dir / "train")
+                        fold.train_ds.write_parquet(train_path, try_create_dir=True)
+                        log.info(f"✓ Saved train data → {train_path}/")
+                    
+                    # Save test data
+                    if fold.test_ds:
+                        test_path = str(fold_dir / "test")
+                        fold.test_ds.write_parquet(test_path, try_create_dir=True)
+                        log.info(f"✓ Saved test data → {test_path}/")
+                
+                log.info(f"✅ Auto-generated {fold_count} folds for {symbol}. Proceeding to backtest...")
+                
+                # Re-check folds
+                folds = get_available_folds(symbol)
+                
+            except Exception as e:
+                log.error(f"Auto-generation failed: {e}", exc_info=True)
+                raise ValueError(
+                    f"Failed to auto-generate folds for {symbol}: {str(e)}. "
+                    f"Try generating manually with '📁 Generate Fold Data Only' button."
+                )
+        
+        if not folds:
+            raise ValueError(f"No folds available for {symbol} after generation attempt")
         
         log.info(f"Found {len(folds)} folds to backtest")
         

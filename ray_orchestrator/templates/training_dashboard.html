@@ -678,9 +678,19 @@
                 <div class="help-text">Price impact of market orders</div>
             </div>
             
-            <button type="button" class="btn btn-secondary" id="generateFoldsBtn" onclick="generateFoldsOnly()" style="width: 100%; margin-bottom: 10px; background: #FFA500;">
-                📁 Generate Fold Data Only
-            </button>
+            <details style="margin-bottom: 10px;">
+                <summary style="cursor: pointer; padding: 10px; background: #f0f0f0; border-radius: 6px; font-weight: 500;">
+                    ⚙️ Advanced: Manual Fold Generation
+                </summary>
+                <div style="padding: 10px; margin-top: 10px; background: #f9f9f9; border-radius: 6px;">
+                    <p style="font-size: 0.9em; color: #666; margin-bottom: 10px;">
+                        Folds are auto-generated when you run backtest. Use this only if you need to pre-generate or regenerate folds manually.
+                    </p>
+                    <button type="button" class="btn btn-secondary" id="generateFoldsBtn" onclick="generateFoldsOnly()" style="width: 100%; background: #FFA500;">
+                        📁 Generate Fold Data Only
+                    </button>
+                </div>
+            </details>
             
             <button type="button" class="btn btn-primary" id="backtestBtn" onclick="runBacktest()">
                 📊 Run Backtest
