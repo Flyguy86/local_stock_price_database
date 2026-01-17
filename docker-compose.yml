@@ -48,11 +48,14 @@ services:
       MODELS_DIR: /app/data/models/ray
       CHECKPOINTS_DIR: /app/data/ray_checkpoints
       DATABASE_URL: postgresql://orchestrator:orchestrator_secret@postgres:5432/strategy_factory
+      MLFLOW_TRACKING_URI: http://mlflow:5000
       LOG_LEVEL: INFO
       PYTHONPATH: /app
     depends_on:
       postgres:
         condition: service_healthy
+      mlflow:
+        condition: service_started
 
   # Ray Worker (for scaling out)
   ray_worker:
