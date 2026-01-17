@@ -141,6 +141,82 @@ class ModelBacktester:
         
         return self.best_trial
     
+    def _load_fold_model_from_checkpoint(self, fold_id: int) -> Tuple:
+        """
+        Load fold-specific model and feature list from checkpoint.
+        
+        Args:
+            fold_id: Fold number to load
+            
+        Returns:
+            Tuple of (model, feature_cols) or (None, None) if not found
+        """
+        import joblib
+        import json
+        
+        if not self.best_trial:
+            log.warning("No best trial loaded - call load_best_model() first")
+            return None, None
+        
+        # Find best checkpoint directory
+        exp_dir = Path(self.checkpoint_dir) / self.experiment_name
+        if not exp_dir.exists():
+            log.warning(f"Experiment directory not found: {exp_dir}")
+            return None, None
+        
+        # Find best trial checkpoint
+        trial_dirs = [d for d in exp_dir.iterdir() if d.is_dir()]
+        if not trial_dirs:
+            log.warning(f"No trial directories found in {exp_dir}")
+            return None, None
+        
+        # Sort by test_rmse to find best trial
+        best_trial_dir = None
+        best_rmse = float('inf')
+        for trial_dir in trial_dirs:
+            result_file = trial_dir / "result.json"
+            if result_file.exists():
+                with open(result_file) as f:
+                    result = json.load(f)
+                    rmse = result.get("test_rmse", float('inf'))
+                    if rmse < best_rmse:
+                        best_rmse = rmse
+                        best_trial_dir = trial_dir
+        
+        if not best_trial_dir:
+            log.warning("Could not find best trial directory")
+            return None, None
+        
+        # Look for checkpoint subdirectory
+        checkpoint_dirs = list(best_trial_dir.glob("checkpoint_*"))
+        if not checkpoint_dirs:
+            log.warning(f"No checkpoint directories found in {best_trial_dir}")
+            return None, None
+        
+        checkpoint_dir = checkpoint_dirs[0]  # Use first/only checkpoint
+        
+        # Load fold-specific model
+        model_file = checkpoint_dir / f"fold_{fold_id:03d}_model.joblib"
+        if not model_file.exists():
+            log.warning(f"Fold model not found: {model_file}")
+            return None, None
+        
+        model = joblib.load(model_file)
+        
+        # Load feature list
+        features_file = checkpoint_dir / "feature_lists.json"
+        if features_file.exists():
+            with open(features_file) as f:
+                feature_lists = json.load(f)
+                feature_cols = feature_lists.get(str(fold_id))
+        else:
+            log.warning(f"Feature list not found: {features_file}")
+            feature_cols = None
+        
+        log.info(f"✅ Loaded fold {fold_id} model from checkpoint with {len(feature_cols) if feature_cols else '?'} features")
+        
+        return model, feature_cols
+    
     def generate_signals(
         self,
         predictions: np.ndarray,
@@ -176,7 +252,7 @@ class ModelBacktester:
         self,
         fold_id: int,
         symbol: str,
-        model,
+        model=None,
         fees: float = 0.001,
         slippage: float = 0.0005,
         signal_threshold: float = 0.0,
@@ -188,7 +264,7 @@ class ModelBacktester:
         Args:
             fold_id: Fold number
             symbol: Trading symbol
-            model: Trained model
+            model: Trained model (if None, loads from checkpoint)
             fees: Transaction fee (0.001 = 0.1%)
             slippage: Slippage (0.0005 = 0.05%)
             signal_threshold: Prediction threshold for signals
@@ -204,9 +280,21 @@ class ModelBacktester:
             log.warning(f"Fold {fold_id} has no test data")
             return {"fold_id": fold_id, "error": "No test data"}
         
-        # Prepare features (same as training)
-        exclude_cols = {'ts', 'symbol', 'close', 'open', 'high', 'low', 'volume', 'vwap', 'trade_count'}
-        feature_cols = [c for c in test_df.columns if c not in exclude_cols and test_df[c].dtype in [np.float64, np.int64]]
+        # Try to load model and features from checkpoint if not provided
+        if model is None:
+            model, feature_cols = self._load_fold_model_from_checkpoint(fold_id)
+        else:
+            # Use backtester's feature extraction logic
+            feature_cols = None
+        
+        # Prepare features
+        if feature_cols is None:
+            # Fallback: match training feature logic (same as data.py)
+            exclude_cols = {'target', 'symbol', 'date', 'source', 'ts', 'timestamp'}
+            numeric_cols = test_df.select_dtypes(include=[np.number]).columns.tolist()
+            feature_cols = [c for c in numeric_cols if c not in exclude_cols]
+        
+        log.info(f"Fold {fold_id}: Using {len(feature_cols)} features")
         
         # Get predictions
         X_test = test_df[feature_cols].dropna()

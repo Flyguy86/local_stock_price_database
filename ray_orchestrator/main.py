@@ -534,25 +534,36 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
                 fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
                 fold_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Add target column using map_batches
-                def add_target(batch: pd.DataFrame) -> pd.DataFrame:
-                    """Add target column (next close price change)"""
+                def transform_to_log_returns(batch: pd.DataFrame) -> pd.DataFrame:
+                    """Transform OHLC to log returns and add target."""
                     batch = batch.copy()
-                    future_close = batch['close'].shift(-1)
-                    batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                    
+                    # Keep raw close for VectorBT simulation
+                    batch['close_raw'] = batch['close']
+                    
+                    # Transform OHLC to log returns
+                    for col in ['open', 'high', 'low', 'close']:
+                        if col in batch.columns:
+                            batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
+                            batch.drop(columns=[col], inplace=True)
+                    
+                    # Add target (future close log return)
+                    future_close = batch['close_raw'].shift(-1)
+                    batch['target'] = np.log((future_close + 1e-9) / (batch['close_raw'] + 1e-9))
+                    
                     return batch
                 
                 # Save train data with target
                 if fold.train_ds:
                     train_path = str(fold_dir / "train")
-                    fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
+                    fold.train_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                     train_count = fold.train_ds.count()
                     log.info(f"✓ Saved train data: {train_count:,} rows → {train_path}/")
                 
                 # Save test data with target
                 if fold.test_ds:
                     test_path = str(fold_dir / "test")
-                    fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
+                    fold.test_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     test_count = fold.test_ds.count()
                     log.info(f"✓ Saved test data: {test_count:,} rows → {test_path}/")
             
@@ -634,24 +645,39 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
                 fold_count += 1
                 log.info(f"Processing {fold}")
                 
-                # Add target column using map_batches
-                def add_target(batch: pd.DataFrame) -> pd.DataFrame:
-                    """Add target column (next close price change)"""
+                # Transform OHLC to log returns and add target
+                def transform_to_log_returns(batch: pd.DataFrame) -> pd.DataFrame:
+                    """
+                    Transform OHLC to log returns to prevent absolute price leakage.
+                    Keep close_raw for VectorBT simulation.
+                    """
                     batch = batch.copy()
-                    future_close = batch['close'].shift(-1)
-                    batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                    
+                    # Preserve raw close for VectorBT
+                    batch['close_raw'] = batch['close']
+                    
+                    # Transform OHLC to log returns
+                    for col in ['open', 'high', 'low', 'close']:
+                        if col in batch.columns:
+                            batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
+                            batch.drop(columns=[col], inplace=True)
+                    
+                    # Add target as future close log return
+                    future_close = batch['close_raw'].shift(-1)
+                    batch['target'] = np.log((future_close + 1e-9) / (batch['close_raw'] + 1e-9))
+                    
                     return batch
                 
-                # Save train data with target
+                # Save train data with log returns and target
                 if fold.train_ds:
                     train_path = f"{request.output_base_path}/fold_{fold.fold_id}/train"
-                    fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
+                    fold.train_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                     log.info(f"Saved train data to {train_path}")
                 
-                # Save test data with target
+                # Save test data with log returns and target
                 if fold.test_ds:
                     test_path = f"{request.output_base_path}/fold_{fold.fold_id}/test"
-                    fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
+                    fold.test_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     log.info(f"Saved test data to {test_path}")
             
             log.info(f"Walk-forward preprocessing completed: {fold_count} folds processed")
@@ -821,8 +847,9 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     """
     Run VectorBT backtesting on a trained model.
     
-    Quick fix implementation: Uses best hyperparameters to retrain on each fold.
-    TODO: Refactor to load pre-trained per-fold models from checkpoints.
+    Loads per-fold trained models from Ray checkpoints and runs realistic
+    backtesting with transaction costs. Uses the exact models and features
+    that were used during training for each fold.
     
     Returns aggregated metrics: Sharpe ratio, max drawdown, consistency scores.
     """
@@ -910,19 +937,33 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                         fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
                         fold_dir.mkdir(parents=True, exist_ok=True)
                         
-                        def add_target(batch: pd.DataFrame) -> pd.DataFrame:
+                        def transform_to_log_returns(batch: pd.DataFrame) -> pd.DataFrame:
+                            """Transform OHLC to log returns and add target."""
                             batch = batch.copy()
-                            future_close = batch['close'].shift(-1)
-                            batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                            
+                            # Keep raw close for VectorBT simulation (needed for portfolio tracking)
+                            batch['close_raw'] = batch['close']
+                            
+                            # Transform OHLC to log returns (prevents absolute price leakage)
+                            for col in ['open', 'high', 'low', 'close']:
+                                if col in batch.columns:
+                                    batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
+                                    # Drop raw price column
+                                    batch.drop(columns=[col], inplace=True)
+                            
+                            # Add target (future close log return)
+                            future_close = batch['close_raw'].shift(-1)
+                            batch['target'] = np.log((future_close + 1e-9) / (batch['close_raw'] + 1e-9))
+                            
                             return batch
                         
                         if fold.train_ds:
                             train_path = str(fold_dir / "train")
-                            fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
+                            fold.train_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                         
                         if fold.test_ds:
                             test_path = str(fold_dir / "test")
-                            fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
+                            fold.test_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     
                     log.info(f"Background: ✅ Generated {fold_count} folds for {symbol}")
                 except Exception as e:
@@ -942,32 +983,20 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         # Folds exist - proceed with backtest
         log.info(f"Found {len(folds)} folds to backtest")
         
-        # Backtest each fold with best hyperparameters
+        # Backtest each fold
         all_results = []
         
-        # Load the best model once (already trained on all folds)
-        if algorithm == 'xgboost':
-            import xgboost as xgb
-            model = xgb.XGBRegressor(**best_config)
-        elif algorithm == 'lightgbm':
-            import lightgbm as lgb
-            model = lgb.LGBMRegressor(**best_config)
-        elif algorithm == 'randomforest':
-            from sklearn.ensemble import RandomForestRegressor
-            model = RandomForestRegressor(**best_config)
-        else:
-            from sklearn.linear_model import ElasticNet
-            model = ElasticNet(**best_config)
-        
-        log.info(f"Using {algorithm} model with config: {best_config}")
+        # Let backtester load per-fold models from checkpoints
+        # This uses the exact model that was trained on each fold
+        log.info(f"Backtesting {len(folds)} folds (loading models from checkpoint)")
         
         for fold_id in folds:
             try:
-                # backtester.backtest_fold() handles all feature extraction, NaN filtering, etc.
+                # backtester.backtest_fold() loads fold-specific model and features from checkpoint
                 fold_result = backtester.backtest_fold(
                     fold_id=fold_id,
                     symbol=symbol,
-                    model=model,
+                    model=None,  # Load from checkpoint
                     fees=request.commission,
                     slippage=request.slippage
                 )

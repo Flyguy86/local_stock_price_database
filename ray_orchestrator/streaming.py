@@ -12,6 +12,47 @@ Key features:
 - Strict indicator reset at fold boundaries
 """
 
+# =============================================================================
+# FEATURE ENGINEERING VERSION TRACKING
+# =============================================================================
+# CRITICAL: When modifying feature calculations, increment this version number
+# and document the changes below. This version is saved in checkpoint metadata
+# to ensure reproducibility and track feature evolution over time.
+#
+# VERSION HISTORY:
+# - v3.1 (2026-01-17): Implemented comprehensive 3-phase normalization pipeline for all
+#                      10 major technical indicators. Phase 1 preserves indicator physics
+#                      (raw calculation on actual prices). Phase 3 adds simple centering
+#                      for bounded indicators (0-100 → -1 to +1). Phase 4 adds rolling
+#                      z-score (zscore_window=200) for regime-adaptive normalization.
+#                      Affected indicators: Stochastic (k/d), RSI-14, MACD (signal/diff),
+#                      Bollinger Bands (upper/mid/lower/width), ATR-14 (raw/pct), OBV,
+#                      SMAs (all windows + volume_ma + volatility), EMAs (all windows),
+#                      Volume Ratio. Models can now choose raw, _norm, or _zscore variants.
+#                      Ensures features are comparable across stocks, timeframes, and
+#                      volatility regimes. Added _rolling_zscore() helper method.
+#
+# - v3.0 (2026-01-17): Converted OHLC prices to log returns to prevent absolute
+#                      price leakage. Keeps close_raw for VectorBT simulation.
+#                      Drops raw open/high/low/close columns, adds 
+#                      open_log_return, high_log_return, low_log_return,
+#                      close_log_return. Target is future close log return.
+#
+# - v2.1 (2025-12-10): Added sin/cos time encoding for cyclical features,
+#                      market session indicators (is_market_open, is_morning),
+#                      enhanced volatility features with multiple windows.
+#
+# - v2.0 (2025-11-15): Added multi-timeframe resampling (5min, 15min, 1H),
+#                      context symbol features (QQQ, VIX relative indicators),
+#                      OBV (On Balance Volume), VWAP distance.
+#
+# - v1.0 (2025-10-01): Initial feature set with SMA, EMA, RSI, MACD, Bollinger
+#                      Bands, ATR, Stochastic Oscillator, volume indicators.
+#
+# =============================================================================
+
+FEATURE_ENGINEERING_VERSION = "v3.1"
+
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple, Generator
@@ -155,6 +196,7 @@ class StreamingPreprocessor:
     
     def __init__(self, loader: BarDataLoader):
         self.loader = loader
+        self.feature_engineering_version = FEATURE_ENGINEERING_VERSION
     
     def generate_walk_forward_folds(
         self,
@@ -350,7 +392,8 @@ class StreamingPreprocessor:
         batch: pd.DataFrame,
         windows: List[int] = [50, 200],
         resampling_timeframes: Optional[List[str]] = None,
-        drop_warmup: bool = True
+        drop_warmup: bool = True,
+        zscore_window: int = 200
     ) -> pd.DataFrame:
         """
         GPU-accelerated indicator calculation with strict no-look-ahead.
@@ -383,9 +426,10 @@ class StreamingPreprocessor:
             windows: SMA/EMA window sizes in BARS (default: [50, 200])
             resampling_timeframes: Multi-timeframe aggregations (5min, 15min, etc.)
             drop_warmup: Drop rows where indicators are NaN (warm-up period)
+            zscore_window: Window for rolling z-score normalization (default: 200)
             
         Returns:
-            DataFrame with calculated indicators
+            DataFrame with calculated indicators (raw + normalized versions)
         """
         # Handle empty batches
         if batch.empty:
@@ -430,35 +474,55 @@ class StreamingPreprocessor:
         batch['price_range'] = batch['high'] - batch['low']
         batch['price_range_pct'] = batch['price_range'] / batch['close']
         
-        # SMAs - these will be NaN for first N rows (proper behavior)
+        # SMAs - Phase 1: Raw calculation on actual prices
         for window in windows:
             batch[f'sma_{window}'] = batch['close'].rolling(window=window, min_periods=window).mean()
             batch[f'volume_ma_{window}'] = batch['volume'].rolling(window=window, min_periods=window).mean()
             
-            # Volatility
+            # Volatility (standard deviation of returns)
             batch[f'volatility_{window}'] = batch['returns'].rolling(window=window, min_periods=window).std()
             
-            # Distance from SMA
+            # Distance from SMA (Phase 3: Already normalized as % deviation)
             batch[f'dist_sma_{window}'] = (batch['close'] - batch[f'sma_{window}']) / batch[f'sma_{window}']
+        
+        # Phase 4: Rolling Z-Score for raw SMA values (in price units)
+        for window in windows:
+            batch[f'sma_{window}_zscore'] = self._rolling_zscore(batch[f'sma_{window}'], window=zscore_window)
+            batch[f'volume_ma_{window}_zscore'] = self._rolling_zscore(batch[f'volume_ma_{window}'], window=zscore_window)
+            batch[f'volatility_{window}_zscore'] = self._rolling_zscore(batch[f'volatility_{window}'], window=zscore_window)
         
         # Additional standard SMAs from feature_service
         if 20 not in windows:
             batch['sma_20'] = batch['close'].rolling(window=20, min_periods=20).mean()
+            batch['sma_20_zscore'] = self._rolling_zscore(batch['sma_20'], window=zscore_window)
         
-        # EMA (Exponential Moving Average)
+        # EMA (Exponential Moving Average) - Phase 1: Raw calculation
         for window in windows:
             batch[f'ema_{window}'] = batch['close'].ewm(span=window, min_periods=window).mean()
+        
+        # Phase 4: Rolling Z-Score for raw EMA values
+        for window in windows:
+            batch[f'ema_{window}_zscore'] = self._rolling_zscore(batch[f'ema_{window}'], window=zscore_window)
         
         # Additional standard EMAs from feature_service
         if 12 not in windows:
             batch['ema_12'] = batch['close'].ewm(span=12, min_periods=12).mean()
+            batch['ema_12_zscore'] = self._rolling_zscore(batch['ema_12'], window=zscore_window)
         if 26 not in windows:
             batch['ema_26'] = batch['close'].ewm(span=26, min_periods=26).mean()
+            batch['ema_26_zscore'] = self._rolling_zscore(batch['ema_26'], window=zscore_window)
         
-        # RSI (Relative Strength Index)
+        # RSI (Relative Strength Index) - Phase 1: Raw calculation on price changes
         batch['rsi_14'] = self._calculate_rsi(batch['close'], period=14)
         
-        # Stochastic Oscillator
+        # Phase 3: Normalization (center at 0, range -1 to 1)
+        # RSI is 0-100 scale, we center at 50
+        batch['rsi_norm'] = (batch['rsi_14'] - 50) / 50
+        
+        # Phase 4: Rolling Z-Score (adaptive to market regime)
+        batch['rsi_zscore'] = self._rolling_zscore(batch['rsi_14'], window=zscore_window)
+        
+        # Stochastic Oscillator (Phase 1: Raw calculation on actual prices)
         batch['stoch_k'], batch['stoch_d'] = self._calculate_stochastic(
             high=batch['high'],
             low=batch['low'],
@@ -467,18 +531,50 @@ class StreamingPreprocessor:
             d_period=3
         )
         
-        # MACD
+        # Phase 3: Normalization (center at 0, range -1 to 1)
+        # Stochastic is 0-100 scale, we center at 50
+        batch['stoch_k_norm'] = (batch['stoch_k'] - 50) / 50
+        batch['stoch_d_norm'] = (batch['stoch_d'] - 50) / 50
+        
+        # Phase 4: Rolling Z-Score (adaptive to market regime)
+        batch['stoch_k_zscore'] = self._rolling_zscore(batch['stoch_k'], window=zscore_window)
+        batch['stoch_d_zscore'] = self._rolling_zscore(batch['stoch_d'], window=zscore_window)
+        
+        # MACD (Phase 1: Raw calculation on actual prices)
         batch['macd'], batch['macd_signal'] = self._calculate_macd(batch['close'])
         batch['macd_diff'] = batch['macd'] - batch['macd_signal']
         
-        # Bollinger Bands
+        # Phase 4: Rolling Z-Score (MACD values vary by stock price, need normalization)
+        # MACD and signal are in price units (e.g., $2 for AAPL), not comparable across stocks
+        batch['macd_zscore'] = self._rolling_zscore(batch['macd'], window=zscore_window)
+        batch['macd_signal_zscore'] = self._rolling_zscore(batch['macd_signal'], window=zscore_window)
+        batch['macd_diff_zscore'] = self._rolling_zscore(batch['macd_diff'], window=zscore_window)
+        
+        # Bollinger Bands (Phase 1: Raw calculation on actual prices)
         batch['bb_upper'], batch['bb_mid'], batch['bb_lower'] = self._calculate_bollinger_bands(
             close=batch['close'],
             window=20,
             std_dev=2
         )
         
-        # Average True Range (ATR)
+        # Phase 3: Derived features (position within bands, band width)
+        # BB Position: Where is price within the bands? (0 = at lower, 1 = at upper)
+        bb_range = batch['bb_upper'] - batch['bb_lower']
+        batch['bb_position'] = (batch['close'] - batch['bb_lower']) / (bb_range + 1e-9)
+        
+        # BB Width: How volatile is the market? (wider bands = higher volatility)
+        batch['bb_width'] = bb_range
+        
+        # BB Width as % of price (normalized version)
+        batch['bb_width_pct'] = bb_range / batch['close']
+        
+        # Phase 4: Rolling Z-Score (for raw band values in price units)
+        batch['bb_upper_zscore'] = self._rolling_zscore(batch['bb_upper'], window=zscore_window)
+        batch['bb_mid_zscore'] = self._rolling_zscore(batch['bb_mid'], window=zscore_window)
+        batch['bb_lower_zscore'] = self._rolling_zscore(batch['bb_lower'], window=zscore_window)
+        batch['bb_width_zscore'] = self._rolling_zscore(batch['bb_width'], window=zscore_window)
+        
+        # Average True Range (ATR) - Phase 1: Raw calculation on actual price ranges
         batch['atr_14'] = self._calculate_atr(
             high=batch['high'],
             low=batch['low'],
@@ -486,11 +582,22 @@ class StreamingPreprocessor:
             period=14
         )
         
-        # On Balance Volume (OBV)
+        # Phase 3: ATR as % of price (normalized, comparable across stocks)
+        batch['atr_pct'] = batch['atr_14'] / batch['close']
+        
+        # Phase 4: Rolling Z-Score (adaptive to volatility regimes)
+        batch['atr_zscore'] = self._rolling_zscore(batch['atr_14'], window=zscore_window)
+        batch['atr_pct_zscore'] = self._rolling_zscore(batch['atr_pct'], window=zscore_window)
+        
+        # On Balance Volume (OBV) - Phase 1: Raw cumulative calculation
         batch['obv'] = self._calculate_obv(
             close=batch['close'],
             volume=batch['volume']
         )
+        
+        # Phase 4: Rolling Z-Score (OBV is cumulative, grows unbounded)
+        # Z-score makes it comparable across different time periods and stocks
+        batch['obv_zscore'] = self._rolling_zscore(batch['obv'], window=zscore_window)
         
         # Multi-timeframe resampling
         if resampling_timeframes:
@@ -498,7 +605,13 @@ class StreamingPreprocessor:
                 batch = self._add_resampled_features(batch, timeframe=tf)
         
         # Volume indicators
+        # Volume Ratio: Current volume vs 20-period average (Phase 3: already normalized as ratio)
         batch['volume_ratio'] = batch['volume'] / batch['volume'].rolling(window=20, min_periods=20).mean()
+        
+        # Phase 4: Rolling Z-Score (helps identify extreme volume spikes)
+        batch['volume_ratio_zscore'] = self._rolling_zscore(batch['volume_ratio'], window=zscore_window)
+        
+        # VWAP Distance (already normalized as ratio)
         batch['vwap_dist'] = (batch['close'] - batch['vwap']) / batch['vwap'] if 'vwap' in batch.columns else 0
         
         # Drop warm-up period if requested
@@ -509,6 +622,30 @@ class StreamingPreprocessor:
             log.debug(f"Dropped {max_window} warm-up rows, {len(batch)} rows remain")
         
         return batch
+    
+    def _rolling_zscore(self, series: pd.Series, window: int = 200) -> pd.Series:
+        """
+        Calculate rolling z-score for adaptive normalization.
+        
+        Z-score = (value - rolling_mean) / rolling_std
+        
+        This normalizes indicators relative to recent market regime,
+        making them comparable across different volatility periods.
+        
+        Args:
+            series: Input series to normalize
+            window: Rolling window size (default: 200 bars)
+            
+        Returns:
+            Z-score normalized series
+        """
+        rolling_mean = series.rolling(window=window, min_periods=window).mean()
+        rolling_std = series.rolling(window=window, min_periods=window).std()
+        
+        # Add small epsilon to prevent division by zero
+        zscore = (series - rolling_mean) / (rolling_std + 1e-9)
+        
+        return zscore
     
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
         """Calculate RSI indicator."""

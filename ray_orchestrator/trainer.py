@@ -47,7 +47,8 @@ class WalkForwardTrainer:
         algorithm: str = "elasticnet",
         target_col: str = "close",
         feature_cols: Optional[List[str]] = None,
-        target_transform: str = "log_return"
+        target_transform: str = "log_return",
+        preprocessing_config: Optional[Dict] = None
     ):
         """
         Create a Ray Tune trainable function for walk-forward validation.
@@ -68,12 +69,31 @@ class WalkForwardTrainer:
             Train on all folds and report average metrics.
             
             This is what Ray Tune will call for each hyperparameter configuration.
+            Saves per-fold models and feature lists to checkpoint.
             """
+            import tempfile
+            import joblib
+            import time
+            from datetime import datetime, timezone
+            from pathlib import Path
+            from ray.train import Checkpoint
+            import sys
+            import xgboost
+            import lightgbm
+            import sklearn
+            
+            training_start_time = time.time()
+            
             fold_metrics = []
+            fold_models = {}  # Store models per fold
+            fold_feature_lists = {}  # Store feature columns per fold
+            fold_metadata = {}  # Store date ranges and row counts per fold
+            fold_training_metrics = {}  # Store per-fold training performance
             
             for fold in folds:
-                # Train on this fold
-                metrics = self._train_single_fold(
+                # Train on this fold with timing
+                fold_start_time = time.time()
+                metrics, model, features_used, train_rows, test_rows = self._train_single_fold(
                     fold=fold,
                     config=config,
                     algorithm=algorithm,
@@ -81,7 +101,33 @@ class WalkForwardTrainer:
                     feature_cols=feature_cols,
                     target_transform=target_transform
                 )
+                fold_training_time = time.time() - fold_start_time
+                
                 fold_metrics.append(metrics)
+                fold_models[fold.fold_id] = model
+                fold_feature_lists[fold.fold_id] = features_used
+                
+                # Capture fold date ranges and row counts
+                fold_metadata[f"fold_{fold.fold_id:03d}"] = {
+                    "train_start": fold.train_start,
+                    "train_end": fold.train_end,
+                    "test_start": fold.test_start,
+                    "test_end": fold.test_end,
+                    "train_rows": train_rows,
+                    "test_rows": test_rows
+                }
+                
+                # Store per-fold training metrics
+                fold_training_metrics[f"fold_{fold.fold_id:03d}"] = {
+                    "train_rmse": metrics["train_rmse"],
+                    "test_rmse": metrics["test_rmse"],
+                    "test_r2": metrics["test_r2"],
+                    "test_mae": metrics["test_mae"],
+                    "training_time_seconds": round(fold_training_time, 2)
+                }
+            
+            # Calculate training duration
+            total_training_time = time.time() - training_start_time
             
             # Average metrics across all folds
             avg_metrics = {
@@ -92,7 +138,127 @@ class WalkForwardTrainer:
                 "num_folds": len(fold_metrics),
             }
             
-            # Report to Ray Tune
+            # Calculate cross-fold consistency (variance)
+            test_rmse_values = [m["test_rmse"] for m in fold_metrics]
+            test_r2_values = [m["test_r2"] for m in fold_metrics]
+            
+            # Find best and worst folds
+            best_fold_idx = np.argmin(test_rmse_values)
+            worst_fold_idx = np.argmax(test_rmse_values)
+            
+            # Extract feature importance from first fold model (representative)
+            feature_importance_data = None
+            if fold_models:
+                first_model = next(iter(fold_models.values()))
+                first_features = next(iter(fold_feature_lists.values()))
+                
+                try:
+                    if hasattr(first_model, 'feature_importances_'):  # Tree-based models
+                        importances = first_model.feature_importances_
+                        feature_importance_data = {
+                            "top_10_features": [
+                                {"name": first_features[i], "importance": float(importances[i])}
+                                for i in np.argsort(importances)[-10:][::-1]
+                            ]
+                        }
+                    elif hasattr(first_model, 'coef_'):  # Linear models
+                        coef = np.abs(first_model.coef_)
+                        feature_importance_data = {
+                            "top_10_features": [
+                                {"name": first_features[i], "importance": float(coef[i])}
+                                for i in np.argsort(coef)[-10:][::-1]
+                            ]
+                        }
+                except Exception as e:
+                    log.warning(f"Could not extract feature importance: {e}")
+            
+            # Save checkpoint with per-fold models and metadata
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmppath = Path(tmpdir)
+                
+                # Save each fold's model
+                for fold_id, model in fold_models.items():
+                    model_file = tmppath / f"fold_{fold_id:03d}_model.joblib"
+                    joblib.dump(model, model_file)
+                
+                # Save feature lists as JSON
+                import json
+                features_file = tmppath / "feature_lists.json"
+                with open(features_file, 'w') as f:
+                    json.dump({str(k): v for k, v in fold_feature_lists.items()}, f, indent=2)
+                
+                # Save hyperparameters
+                config_file = tmppath / "config.json"
+                with open(config_file, 'w') as f:
+                    json.dump(config, f, indent=2)
+                
+                # Build comprehensive metadata
+                complete_metadata = {
+                    # 1. Model algorithm & version
+                    "model_info": {
+                        "algorithm": algorithm,
+                        "model_class": first_model.__class__.__name__ if fold_models else "Unknown",
+                        "sklearn_version": sklearn.__version__,
+                        "xgboost_version": xgboost.__version__,
+                        "lightgbm_version": lightgbm.__version__,
+                        "target_col": target_col,
+                        "target_transform": target_transform
+                    },
+                    
+                    # 2. Training timestamp & duration
+                    "training_info": {
+                        "trained_at": datetime.now(timezone.utc).isoformat(),
+                        "total_training_time_seconds": round(total_training_time, 2),
+                        "ray_version": ray.__version__,
+                        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+                    },
+                    
+                    # 3. Preprocessing configuration
+                    "preprocessing_config": preprocessing_config or {},
+                    
+                    # 4. Fold date ranges and row counts
+                    "fold_metadata": fold_metadata,
+                    
+                    # 5. Per-fold training metrics
+                    "fold_training_metrics": fold_training_metrics,
+                    
+                    # 6. Feature importance (if available)
+                    "feature_importance": feature_importance_data,
+                    
+                    # 7. Validation summary
+                    "validation_summary": {
+                        "overall_metrics": {
+                            "avg_train_rmse": float(avg_metrics["train_rmse"]),
+                            "avg_test_rmse": float(avg_metrics["test_rmse"]),
+                            "avg_test_r2": float(avg_metrics["test_r2"]),
+                            "avg_test_mae": float(avg_metrics["test_mae"]),
+                            "best_fold": folds[best_fold_idx].fold_id if folds else None,
+                            "worst_fold": folds[worst_fold_idx].fold_id if folds else None,
+                            "num_folds": len(fold_metrics)
+                        },
+                        "cross_fold_consistency": {
+                            "test_rmse_std": float(np.std(test_rmse_values)) if test_rmse_values else 0.0,
+                            "test_rmse_min": float(np.min(test_rmse_values)) if test_rmse_values else 0.0,
+                            "test_rmse_max": float(np.max(test_rmse_values)) if test_rmse_values else 0.0,
+                            "test_r2_std": float(np.std(test_r2_values)) if test_r2_values else 0.0,
+                            "test_r2_min": float(np.min(test_r2_values)) if test_r2_values else 0.0,
+                            "test_r2_max": float(np.max(test_r2_values)) if test_r2_values else 0.0
+                        }
+                    }
+                }
+                
+                # Save complete metadata
+                metadata_file = tmppath / "metadata.json"
+                with open(metadata_file, 'w') as f:
+                    json.dump(complete_metadata, f, indent=2)
+                
+                # Create checkpoint
+                checkpoint = Checkpoint.from_directory(tmpdir)
+                
+                # Report to Ray Tune with checkpoint
+                from ray import train as ray_train
+                ray_train.report(avg_metrics, checkpoint=checkpoint)
+            
             return avg_metrics
         
         return train_on_folds
@@ -111,6 +277,10 @@ class WalkForwardTrainer:
         # Load fold data
         train_df = fold.train_ds.to_pandas() if fold.train_ds else pd.DataFrame()
         test_df = fold.test_ds.to_pandas() if fold.test_ds else pd.DataFrame()
+        
+        # Capture row counts before any processing
+        train_rows = len(train_df)
+        test_rows = len(test_df)
         
         log.info(f"Fold {fold.fold_id}: train_df shape={train_df.shape}, test_df shape={test_df.shape}")
         
@@ -177,12 +347,15 @@ class WalkForwardTrainer:
         
         log.info(f"Fold {fold.fold_id} results: test_rmse={test_rmse:.6f}, test_r2={test_r2:.4f}")
         
-        return {
+        metrics = {
             "train_rmse": train_rmse,
             "test_rmse": test_rmse,
             "test_mae": test_mae,
             "test_r2": test_r2,
         }
+        
+        # Return metrics, trained model, feature list, and row counts
+        return metrics, model, feature_cols, train_rows, test_rows
     
     def _create_model(self, algorithm: str, config: Dict):
         """Create model instance from algorithm name and config."""
@@ -423,11 +596,26 @@ class WalkForwardTrainer:
         if param_space is None:
             param_space = self._default_param_space(algorithm)
         
-        # Step 3: Create trainable
+        # Step 3: Create trainable with preprocessing config
+        preprocessing_config = {
+            "windows": windows,
+            "resampling_timeframes": resampling_timeframes,
+            "context_symbols": context_symbols,
+            "actor_pool_size": actor_pool_size,
+            "train_months": train_months,
+            "test_months": test_months,
+            "step_months": step_months,
+            "symbols": symbols,
+            "start_date": start_date,
+            "end_date": end_date,
+            "feature_engineering_version": self.preprocessor.feature_engineering_version
+        }
+        
         trainable = self.create_trainable(
             algorithm=algorithm,
             target_col="close",
-            target_transform="log_return"
+            target_transform="log_return",
+            preprocessing_config=preprocessing_config
         )
         
         # Step 4: Run tuning
