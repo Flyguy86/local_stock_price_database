@@ -321,12 +321,68 @@
 </head>
 <body>
     <div class="container">
-        <div class="nav-links">
-            <a href="/">← Back to Training Dashboard</a>
-            <a href="http://localhost:5000" target="_blank">MLflow UI →</a>
-        </div>
-        
         <div class="header">
+            <!-- Navigation Tabs -->
+            <div style="display: flex; gap: 0; margin: -30px -30px 20px -30px;">
+                <a href="/" style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: white;
+                    color: #666;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    text-decoration: none;
+                    text-align: center;
+                    transition: all 0.3s;
+                    border-bottom: 3px solid transparent;
+                " onmouseover="
+                    this.style.background='#f3f4f6';
+                    this.style.color='#667eea';
+                    this.style.borderBottomColor='#667eea';
+                " onmouseout="
+                    this.style.background='white';
+                    this.style.color='#666';
+                    this.style.borderBottomColor='transparent';
+                ">
+                    🚀 Training Dashboard
+                </a>
+                <div style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    border-bottom: 3px solid #667eea;
+                    cursor: default;
+                    text-align: center;
+                ">
+                    🗄️ Model Registry
+                </div>
+                <a href="/backtest/dashboard" style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: white;
+                    color: #666;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    text-decoration: none;
+                    text-align: center;
+                    transition: all 0.3s;
+                    border-bottom: 3px solid transparent;
+                " onmouseover="
+                    this.style.background='#f3f4f6';
+                    this.style.color='#667eea';
+                    this.style.borderBottomColor='#667eea';
+                " onmouseout="
+                    this.style.background='white';
+                    this.style.color='#666';
+                    this.style.borderBottomColor='transparent';
+                ">
+                    📊 VectorBT Dashboard
+                </a>
+            </div>
+            
             <h1>🗄️ Model Registry</h1>
             <p>Manage trained models, analyze performance, and launch backtests</p>
         </div>
