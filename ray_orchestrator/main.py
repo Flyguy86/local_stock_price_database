@@ -13,6 +13,7 @@ from typing import Optional
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -29,6 +30,7 @@ from .ensemble import ensemble_manager
 from .fingerprint import fingerprint_db
 from .streaming import create_preprocessing_pipeline, BarDataLoader
 from .trainer import create_walk_forward_trainer
+from .backtester import create_backtester
 
 # Configure logging
 logging.basicConfig(
@@ -167,6 +169,20 @@ class MultiTickerPBTRequest(BaseModel):
     end_date: Optional[str] = None
     name: Optional[str] = None
     resume: bool = False  # Resume crashed/stopped experiment
+
+
+class BacktestRequest(BaseModel):
+    """Request model for backtesting a trained model."""
+    experiment_name: str
+    symbols: Optional[list[str]] = None  # Symbols to backtest, None = all available
+    train_months: int = 3
+    test_months: int = 1
+    step_months: int = 1
+    start_date: Optional[str] = None  # Override fold start date
+    end_date: Optional[str] = None    # Override fold end date
+    initial_capital: float = 100000.0
+    commission: float = 0.001  # 0.1%
+    slippage: float = 0.0005   # 0.05%
 
 
 class DeployEnsembleRequest(BaseModel):
@@ -663,6 +679,138 @@ async def list_training_jobs():
         client = JobSubmissionClient("http://127.0.0.1:8265")
         jobs = client.list_jobs()
         return {"jobs": jobs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Backtesting Endpoints (VectorBT)
+# ============================================================================
+
+@app.post("/backtest/validate")
+async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
+    """
+    Run VectorBT backtesting on a trained model.
+    
+    This validates model profitability using realistic trading simulation with fees and slippage.
+    Returns aggregated metrics: Sharpe ratio, max drawdown, consistency scores.
+    """
+    try:
+        backtester = create_backtester(
+            experiment_name=request.experiment_name,
+            checkpoint_dir=f"/app/data/ray_checkpoints/{request.experiment_name}",
+            fold_dir="/app/data/walk_forward_folds"
+        )
+        
+        # Load best model
+        model_info = backtester.load_best_model()
+        
+        # Run backtesting across all folds
+        results = backtester.backtest_all_folds(
+            initial_capital=request.initial_capital,
+            commission=request.commission,
+            slippage=request.slippage
+        )
+        
+        # Aggregate results with consistency scoring
+        summary = backtester.aggregate_results(results)
+        
+        return {
+            "status": "completed",
+            "experiment_name": request.experiment_name,
+            "model_info": model_info,
+            "results": summary,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=f"Model not found: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backtesting failed: {str(e)}")
+
+
+@app.get("/backtest/results/{experiment_name}")
+async def get_backtest_results(experiment_name: str):
+    """
+    Get detailed backtest results for a specific experiment.
+    
+    Returns fold-by-fold performance metrics and aggregated assessment.
+    """
+    try:
+        checkpoint_dir = f"/app/data/ray_checkpoints/{experiment_name}"
+        fold_dir = "/app/data/walk_forward_folds"
+        
+        # Check if experiment exists
+        if not os.path.exists(checkpoint_dir):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Experiment '{experiment_name}' not found"
+            )
+        
+        backtester = create_backtester(
+            experiment_name=experiment_name,
+            checkpoint_dir=checkpoint_dir,
+            fold_dir=fold_dir
+        )
+        
+        # Load model info
+        model_info = backtester.load_best_model()
+        
+        return {
+            "experiment_name": experiment_name,
+            "model_info": model_info,
+            "checkpoint_dir": checkpoint_dir,
+            "fold_dir": fold_dir,
+            "status": "ready"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/backtest/experiments")
+async def list_backtest_experiments():
+    """
+    List all available experiments that can be backtested.
+    
+    Returns experiment names with model metadata (best trial, metrics).
+    """
+    try:
+        checkpoint_base = "/app/data/ray_checkpoints"
+        experiments = []
+        
+        if os.path.exists(checkpoint_base):
+            for exp_name in os.listdir(checkpoint_base):
+                exp_path = os.path.join(checkpoint_base, exp_name)
+                if os.path.isdir(exp_path):
+                    # Try to load model info
+                    try:
+                        backtester = create_backtester(
+                            experiment_name=exp_name,
+                            checkpoint_dir=exp_path,
+                            fold_dir="/app/data/walk_forward_folds"
+                        )
+                        model_info = backtester.load_best_model()
+                        experiments.append({
+                            "name": exp_name,
+                            "model_info": model_info,
+                            "path": exp_path
+                        })
+                    except Exception:
+                        # Skip experiments that can't load
+                        experiments.append({
+                            "name": exp_name,
+                            "model_info": None,
+                            "path": exp_path
+                        })
+        
+        return {
+            "experiments": experiments,
+            "total": len(experiments)
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

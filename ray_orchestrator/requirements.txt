@@ -31,6 +31,10 @@ psycopg2-binary>=2.9.0
 tensorboard>=2.15.0
 tqdm>=4.66.0  # Progress bars for Ray Data operations
 
+# Backtesting
+vectorbt>=0.26.0  # Fast vectorized backtesting for model validation
+# Note: backtrader will be added later for complex portfolio trading
+
 # Settings
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

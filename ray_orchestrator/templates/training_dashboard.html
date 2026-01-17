@@ -16,15 +16,109 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
+            display: flex;
+            gap: 20px;
+        }
+        
+        .sidebar {
+            width: 400px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 20px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            position: sticky;
+            top: 20px;
+        }
+        
+        .sidebar h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .api-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .api-section h3 {
+            color: #555;
+            font-size: 1em;
+            margin-bottom: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        .api-section h3:hover {
+            color: #667eea;
+        }
+        
+        .api-section h3::before {
+            content: '▼ ';
+            font-size: 0.8em;
+            transition: transform 0.3s;
+            display: inline-block;
+        }
+        
+        .api-section h3.collapsed::before {
+            transform: rotate(-90deg);
+        }
+        
+        .curl-example {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin-top: 10px;
+            position: relative;
+            transition: box-shadow 0.3s ease;
+        }
+        
+        .curl-example.updating {
+            box-shadow: 0 0 10px rgba(102, 126, 234, 0.5);
+        }
+        
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        
+        .copy-btn:hover {
+            background: #5568d3;
+        }
+        
+        .copy-btn.copied {
+            background: #28a745;
         }
         
         .container {
-            max-width: 1200px;
-            margin: 0 auto;
+            flex: 1;
             background: white;
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             padding: 30px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
         }
         
         h1 {
@@ -254,6 +348,91 @@
     </style>
 </head>
 <body>
+    <!-- API Reference Sidebar -->
+    <div class="sidebar">
+        <h2>🔌 API Reference</h2>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">Start Training</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="trainCurl">curl -X POST http://localhost:8265/train/walk-forward \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbols": ["GOOGL"],
+    "model_type": "xgboost",
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "num_samples": 50
+  }'</span>
+            </div>
+        </div>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">Generate Folds</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="foldsCurl">curl -X POST http://localhost:8265/streaming/generate-folds \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbols": ["GOOGL"],
+    "start_date": "2024-01-01",
+    "end_date": "2024-12-31",
+    "timeframe": "1m"
+  }'</span>
+            </div>
+        </div>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">Backtest Model</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="backtestCurl">curl -X POST http://localhost:8265/backtest/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "experiment_name": "walk_forward_xgboost_GOOGL",
+    "initial_capital": 100000.0,
+    "commission": 0.001,
+    "slippage": 0.0005
+  }'</span>
+            </div>
+        </div>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">Get Backtest Results</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="resultsCurl">curl -X GET http://localhost:8265/backtest/results/walk_forward_xgboost_GOOGL</span>
+            </div>
+        </div>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">List Experiments</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="experimentsCurl">curl -X GET http://localhost:8265/backtest/experiments</span>
+            </div>
+        </div>
+        
+        <div class="api-section">
+            <h3 onclick="toggleSection(this)">Check Status</h3>
+            <div class="curl-example">
+                <button class="copy-btn" onclick="copyCurl(this)">Copy</button>
+<span id="statusCurl">curl -X GET http://localhost:8265/streaming/status</span>
+            </div>
+        </div>
+        
+        <div style="margin-top: 20px; padding: 15px; background: #e9ecef; border-radius: 8px;">
+            <h3 style="font-size: 0.9em; color: #666; margin-bottom: 10px;">💡 Quick Tips</h3>
+            <ul style="font-size: 0.85em; color: #666; margin-left: 20px;">
+                <li>Curl examples update as you fill the form</li>
+                <li>Click headers to collapse sections</li>
+                <li>Use Copy button for easy clipboard access</li>
+                <li>Port 8265 is Ray Dashboard default</li>
+            </ul>
+        </div>
+    </div>
+    
     <div class="container">
         <h1>🚀 Ray Orchestrator - Walk-Forward Training</h1>
         <p class="subtitle">Configure and launch ML training with proper walk-forward validation</p>
@@ -422,6 +601,93 @@
             </button>
         </form>
         
+        <!-- Backtesting Section -->
+        <div class="section" style="margin-top: 30px;">
+            <h2>🎯 Model Backtesting (VectorBT)</h2>
+            <p class="help-text" style="margin-bottom: 20px;">
+                Validate trained models with realistic trading simulation including fees and slippage
+            </p>
+            
+            <div class="form-group">
+                <label for="backtestExperiment">Select Trained Model</label>
+                <select id="backtestExperiment" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 1em;">
+                    <option value="">-- Loading available models... --</option>
+                </select>
+                <div class="help-text" id="modelInfoHelp">Select an experiment to view model details</div>
+            </div>
+            
+            <div class="form-group">
+                <label>Symbols to Backtest</label>
+                <div id="backtestSymbolGrid" class="symbol-grid">
+                    <!-- Populated dynamically -->
+                </div>
+                <div class="help-text">Select which symbols to test the model against (leave empty for all available)</div>
+            </div>
+            
+            <div class="section" style="background: white; border-left: 4px solid #764ba2; margin: 20px 0;">
+                <h3 style="font-size: 1.1em; margin-bottom: 15px;">Walk-Forward Configuration</h3>
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="backtestTrainMonths">Training Window (months)</label>
+                        <input type="number" id="backtestTrainMonths" value="3" min="1" max="12">
+                        <div class="help-text">Months of training data per fold</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="backtestTestMonths">Test Window (months)</label>
+                        <input type="number" id="backtestTestMonths" value="1" min="1" max="6">
+                        <div class="help-text">Months of test data per fold</div>
+                    </div>
+                </div>
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="backtestStepMonths">Step Size (months)</label>
+                        <input type="number" id="backtestStepMonths" value="1" min="1" max="6">
+                        <div class="help-text">Step forward increment</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="backtestStartDate">Start Date (optional)</label>
+                        <input type="date" id="backtestStartDate">
+                        <div class="help-text">Override fold start date</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="backtestEndDate">End Date (optional)</label>
+                    <input type="date" id="backtestEndDate">
+                    <div class="help-text">Override fold end date</div>
+                </div>
+            </div>
+            
+            <div class="two-col">
+                <div class="form-group">
+                    <label for="initialCapital">Initial Capital ($)</label>
+                    <input type="number" id="initialCapital" value="100000" min="1000" step="1000">
+                    <div class="help-text">Starting portfolio value</div>
+                </div>
+                <div class="form-group">
+                    <label for="commission">Commission (%)</label>
+                    <input type="number" id="commission" value="0.1" min="0" max="5" step="0.01">
+                    <div class="help-text">Trading fees per transaction</div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="slippage">Slippage (%)</label>
+                <input type="number" id="slippage" value="0.05" min="0" max="5" step="0.01">
+                <div class="help-text">Price impact of market orders</div>
+            </div>
+            
+            <button type="button" class="btn btn-primary" id="backtestBtn" onclick="runBacktest()">
+                📊 Run Backtest
+            </button>
+            
+            <div id="backtestStatus" class="status"></div>
+            
+            <div id="backtestResults" style="display: none; margin-top: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                <h3 style="margin-bottom: 15px;">Backtest Results</h3>
+                <div id="backtestResultsContent"></div>
+            </div>
+        </div>
+        
         <div id="status" class="status"></div>
         
         <div class="links">
@@ -552,6 +818,9 @@
                     populateDates();
                 }
                 
+                // Update API examples after data is loaded
+                setTimeout(updateApiExamples, 100);
+                
             } catch (error) {
                 console.error('Error loading data:', error);
                 showStatus('error', 'Failed to load symbols. Please check if data is available.');
@@ -563,6 +832,7 @@
         function populateSymbols() {
             const symbolGrid = document.getElementById('symbolGrid');
             const contextGrid = document.getElementById('contextSymbolGrid');
+            const backtestGrid = document.getElementById('backtestSymbolGrid');
             
             // Use available symbols from parquet data
             const allSymbols = availableSymbols.length > 0 ? availableSymbols : ['AAPL', 'MSFT', 'GOOGL'];
@@ -579,7 +849,10 @@
                 
                 // Add event listener to update dates when symbol is selected
                 const checkbox = div.querySelector('input');
-                checkbox.addEventListener('change', updateDatesFromSelectedSymbol);
+                checkbox.addEventListener('change', () => {
+                    updateDatesFromSelectedSymbol();
+                    updateApiExamples();
+                });
             });
             
             // Populate context symbols - use same list (all available symbols)
@@ -591,6 +864,25 @@
                     <label for="ctx_${symbol}">${symbol}</label>
                 `;
                 contextGrid.appendChild(div);
+                
+                // Update API examples when context symbols change too
+                const checkbox = div.querySelector('input');
+                checkbox.addEventListener('change', updateApiExamples);
+            });
+            
+            // Populate backtest symbols
+            allSymbols.forEach(symbol => {
+                const div = document.createElement('div');
+                div.className = 'symbol-item';
+                div.innerHTML = `
+                    <input type="checkbox" id="btest_${symbol}" value="${symbol}">
+                    <label for="btest_${symbol}">${symbol}</label>
+                `;
+                backtestGrid.appendChild(div);
+                
+                // Update API examples when backtest symbols change
+                const checkbox = div.querySelector('input');
+                checkbox.addEventListener('change', updateApiExamples);
             });
         }
         
@@ -733,6 +1025,411 @@
         
         // Load data on page load
         loadData();
+        loadAvailableModels();
+        
+        // ============================================================================
+        // Model Selection Functions
+        // ============================================================================
+        
+        let availableModels = [];
+        
+        async function loadAvailableModels() {
+            try {
+                const response = await fetch('/backtest/experiments');
+                const data = await response.json();
+                
+                availableModels = data.experiments || [];
+                populateModelDropdown();
+                
+            } catch (error) {
+                console.error('Error loading models:', error);
+                const select = document.getElementById('backtestExperiment');
+                if (select) {
+                    select.innerHTML = '<option value="">-- No models found --</option>';
+                }
+            }
+        }
+        
+        function populateModelDropdown() {
+            const select = document.getElementById('backtestExperiment');
+            if (!select) return;
+            
+            if (availableModels.length === 0) {
+                select.innerHTML = '<option value="">-- No trained models available --</option>';
+                return;
+            }
+            
+            // Sort models by name
+            availableModels.sort((a, b) => a.name.localeCompare(b.name));
+            
+            // Build options
+            let html = '<option value="">-- Select a model --</option>';
+            availableModels.forEach(model => {
+                const info = model.model_info;
+                let optionText = model.name;
+                
+                if (info) {
+                    const rmse = info.test_rmse ? info.test_rmse.toFixed(6) : 'N/A';
+                    const r2 = info.test_r2 ? info.test_r2.toFixed(4) : 'N/A';
+                    optionText += ` (RMSE: ${rmse}, R²: ${r2})`;
+                }
+                
+                html += `<option value="${model.name}">${optionText}</option>`;
+            });
+            
+            select.innerHTML = html;
+            
+            // Add change listener to show model details
+            select.addEventListener('change', showModelDetails);
+        }
+        
+        function showModelDetails() {
+            const select = document.getElementById('backtestExperiment');
+            const helpText = document.getElementById('modelInfoHelp');
+            
+            if (!select || !helpText) return;
+            
+            const selectedName = select.value;
+            if (!selectedName) {
+                helpText.textContent = 'Select an experiment to view model details';
+                return;
+            }
+            
+            const model = availableModels.find(m => m.name === selectedName);
+            if (!model || !model.model_info) {
+                helpText.textContent = 'Model details unavailable';
+                return;
+            }
+            
+            const info = model.model_info;
+            helpText.innerHTML = `
+                <strong>Model Details:</strong> 
+                Trial: ${info.trial_id || 'N/A'} | 
+                RMSE: ${info.test_rmse ? info.test_rmse.toFixed(6) : 'N/A'} | 
+                R²: ${info.test_r2 ? info.test_r2.toFixed(4) : 'N/A'} | 
+                Path: ${model.path}
+            `;
+            
+            // Trigger API example update
+            updateApiExamples();
+        }
+        
+        // ============================================================================
+        // Backtesting Functions
+        // ============================================================================
+        
+        async function runBacktest() {
+            const backtestBtn = document.getElementById('backtestBtn');
+            const select = document.getElementById('backtestExperiment');
+            const experimentName = select ? select.value : '';
+            
+            if (!experimentName) {
+                showBacktestStatus('error', 'Please select a trained model');
+                return;
+            }
+            
+            // Get selected symbols
+            const symbols = Array.from(document.querySelectorAll('#backtestSymbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            backtestBtn.disabled = true;
+            backtestBtn.textContent = '⏳ Running Backtest...';
+            showBacktestStatus('info', 'Starting backtest simulation...');
+            
+            const payload = {
+                experiment_name: experimentName,
+                symbols: symbols.length > 0 ? symbols : null,  // null means use all available
+                train_months: parseInt(document.getElementById('backtestTrainMonths').value),
+                test_months: parseInt(document.getElementById('backtestTestMonths').value),
+                step_months: parseInt(document.getElementById('backtestStepMonths').value),
+                start_date: document.getElementById('backtestStartDate').value || null,
+                end_date: document.getElementById('backtestEndDate').value || null,
+                initial_capital: parseFloat(document.getElementById('initialCapital').value),
+                commission: parseFloat(document.getElementById('commission').value) / 100,  // Convert % to decimal
+                slippage: parseFloat(document.getElementById('slippage').value) / 100  // Convert % to decimal
+            };
+            
+            try {
+                const response = await fetch('/backtest/validate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showBacktestStatus('success', 'Backtest completed successfully!');
+                    displayBacktestResults(result);
+                } else {
+                    showBacktestStatus('error', `Backtest failed: ${result.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                showBacktestStatus('error', `Error: ${error.message}`);
+            } finally {
+                backtestBtn.disabled = false;
+                backtestBtn.textContent = '📊 Run Backtest';
+            }
+        }
+        
+        function showBacktestStatus(type, message) {
+            const statusDiv = document.getElementById('backtestStatus');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+        }
+        
+        function displayBacktestResults(result) {
+            const resultsDiv = document.getElementById('backtestResults');
+            const contentDiv = document.getElementById('backtestResultsContent');
+            
+            const summary = result.results;
+            
+            // Create assessment badge
+            const assessmentColors = {
+                'EXCELLENT': '🟢',
+                'GOOD': '🟡',
+                'MARGINAL': '🟠',
+                'POOR': '🔴'
+            };
+            const badge = assessmentColors[summary.assessment] || '⚪';
+            
+            contentDiv.innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div style="padding: 15px; background: white; border-radius: 6px; border-left: 4px solid #667eea;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Assessment</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${badge} ${summary.assessment}</div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Total Return</div>
+                        <div style="font-size: 1.5em; font-weight: bold; color: ${summary.avg_total_return >= 0 ? '#28a745' : '#dc3545'};">
+                            ${(summary.avg_total_return * 100).toFixed(2)}%
+                        </div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Sharpe Ratio</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${summary.avg_sharpe_ratio.toFixed(3)}</div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Max Drawdown</div>
+                        <div style="font-size: 1.5em; font-weight: bold; color: #dc3545;">
+                            ${(summary.avg_max_drawdown * 100).toFixed(2)}%
+                        </div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Win Rate</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${(summary.avg_win_rate * 100).toFixed(1)}%</div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Total Trades</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${summary.avg_num_trades.toFixed(0)}</div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Return Consistency</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${summary.return_consistency.toFixed(3)}</div>
+                    </div>
+                    <div style="padding: 15px; background: white; border-radius: 6px;">
+                        <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">vs Buy & Hold</div>
+                        <div style="font-size: 1.5em; font-weight: bold; color: ${summary.avg_alpha >= 0 ? '#28a745' : '#dc3545'};">
+                            ${summary.avg_alpha >= 0 ? '+' : ''}${(summary.avg_alpha * 100).toFixed(2)}%
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 15px; padding: 15px; background: white; border-radius: 6px;">
+                    <strong>Model Info:</strong><br>
+                    Trial: ${result.model_info.trial_id}<br>
+                    RMSE: ${result.model_info.test_rmse.toFixed(6)}<br>
+                    R²: ${result.model_info.test_r2.toFixed(4)}
+                </div>
+            `;
+            
+            resultsDiv.style.display = 'block';
+        }
+        
+        // ============================================================================
+        // API Sidebar Functions
+        // ============================================================================
+        
+        function toggleSection(header) {
+            header.classList.toggle('collapsed');
+            const content = header.nextElementSibling;
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+            } else {
+                content.style.display = 'none';
+            }
+        }
+        
+        function copyCurl(btn) {
+            const codeSpan = btn.nextElementSibling;
+            const text = codeSpan.textContent;
+            
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                btn.classList.add('copied');
+                
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.classList.remove('copied');
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                btn.textContent = '✗ Failed';
+                setTimeout(() => {
+                    btn.textContent = 'Copy';
+                }, 2000);
+            });
+        }
+        
+        function updateApiExamples() {
+            // Get form values
+            const symbols = Array.from(document.querySelectorAll('#symbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            const startDate = document.getElementById('startDate')?.value || '';
+            const endDate = document.getElementById('endDate')?.value || '';
+            
+            // Get selected algorithm from radio buttons
+            const algorithmRadio = document.querySelector('input[name="algorithm"]:checked');
+            const modelType = algorithmRadio ? algorithmRadio.value : 'xgboost';
+            
+            const numSamplesInput = document.getElementById('numSamples');
+            const numSamples = numSamplesInput ? numSamplesInput.value : '50';
+            const timeframe = '1m';
+            
+            // Get backtesting parameters
+            const backtestSymbols = Array.from(document.querySelectorAll('#backtestSymbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            const backtestSelect = document.getElementById('backtestExperiment');
+            const backtestExperiment = backtestSelect ? backtestSelect.value : '';
+            const initialCapital = parseFloat(document.getElementById('initialCapital')?.value || 100000);
+            const commission = parseFloat(document.getElementById('commission')?.value || 0.1) / 100;
+            const slippage = parseFloat(document.getElementById('slippage')?.value || 0.05) / 100;
+            const backtestTrainMonths = parseInt(document.getElementById('backtestTrainMonths')?.value || 3);
+            const backtestTestMonths = parseInt(document.getElementById('backtestTestMonths')?.value || 1);
+            const backtestStepMonths = parseInt(document.getElementById('backtestStepMonths')?.value || 1);
+            const backtestStartDate = document.getElementById('backtestStartDate')?.value || null;
+            const backtestEndDate = document.getElementById('backtestEndDate')?.value || null;
+            
+            // Generate experiment name
+            const primarySymbol = symbols.length > 0 ? symbols[0] : 'GOOGL';
+            const experimentName = backtestExperiment || `walk_forward_${modelType}_${primarySymbol}`;
+            
+            // Debug log
+            console.log('Updating API examples:', { symbols, startDate, endDate, modelType, numSamples, experimentName });
+            
+            // Add visual feedback
+            const curlExamples = document.querySelectorAll('.curl-example');
+            curlExamples.forEach(elem => elem.classList.add('updating'));
+            setTimeout(() => {
+                curlExamples.forEach(elem => elem.classList.remove('updating'));
+            }, 300);
+            
+            // Update Training curl
+            const trainPayload = {
+                symbols: symbols.length > 0 ? symbols : ['GOOGL'],
+                model_type: modelType,
+                start_date: startDate || '2024-01-01',
+                end_date: endDate || '2024-12-31',
+                num_samples: parseInt(numSamples) || 50
+            };
+            
+            const trainElem = document.getElementById('trainCurl');
+            if (trainElem) {
+                trainElem.textContent = 
+`curl -X POST http://localhost:8265/train/walk-forward \\
+  -H "Content-Type: application/json" \\
+  -d '${JSON.stringify(trainPayload, null, 2)}'`;
+            }
+            
+            // Update Folds curl
+            const foldsPayload = {
+                symbols: symbols.length > 0 ? symbols : ['GOOGL'],
+                start_date: startDate || '2024-01-01',
+                end_date: endDate || '2024-12-31',
+                timeframe: timeframe
+            };
+            
+            const foldsElem = document.getElementById('foldsCurl');
+            if (foldsElem) {
+                foldsElem.textContent = 
+`curl -X POST http://localhost:8265/streaming/generate-folds \\
+  -H "Content-Type: application/json" \\
+  -d '${JSON.stringify(foldsPayload, null, 2)}'`;
+            }
+            
+            // Update Backtest curl
+            const backtestPayload = {
+                experiment_name: experimentName,
+                symbols: backtestSymbols.length > 0 ? backtestSymbols : null,
+                train_months: backtestTrainMonths,
+                test_months: backtestTestMonths,
+                step_months: backtestStepMonths,
+                start_date: backtestStartDate,
+                end_date: backtestEndDate,
+                initial_capital: initialCapital,
+                commission: commission,
+                slippage: slippage
+            };
+            
+            const backtestElem = document.getElementById('backtestCurl');
+            if (backtestElem) {
+                backtestElem.textContent = 
+`curl -X POST http://localhost:8265/backtest/validate \\
+  -H "Content-Type: application/json" \\
+  -d '${JSON.stringify(backtestPayload, null, 2)}'`;
+            }
+            
+            // Update Results curl
+            const resultsElem = document.getElementById('resultsCurl');
+            if (resultsElem) {
+                resultsElem.textContent = 
+`curl -X GET http://localhost:8265/backtest/results/${experimentName}`;
+            }
+        }
+        
+        // Update API examples whenever form changes
+        document.addEventListener('DOMContentLoaded', () => {
+            // Add listeners to all form elements for real-time updates
+            const addUpdateListener = (id) => {
+                const elem = document.getElementById(id);
+                if (elem) {
+                    elem.addEventListener('change', updateApiExamples);
+                    elem.addEventListener('input', updateApiExamples);
+                }
+            };
+            
+            // Listen to all key form inputs
+            addUpdateListener('startDate');
+            addUpdateListener('endDate');
+            addUpdateListener('numSamples');
+            addUpdateListener('trainMonths');
+            addUpdateListener('testMonths');
+            addUpdateListener('stepMonths');
+            addUpdateListener('skipEmptyFolds');
+            addUpdateListener('windows');
+            addUpdateListener('resamplingTimeframes');
+            
+            // Listen to algorithm radio buttons
+            const algorithmRadios = document.querySelectorAll('input[name="algorithm"]');
+            algorithmRadios.forEach(radio => {
+                radio.addEventListener('change', updateApiExamples);
+            });
+            
+            // Listen to backtesting parameters
+            addUpdateListener('backtestExperiment');
+            addUpdateListener('initialCapital');
+            addUpdateListener('commission');
+            addUpdateListener('slippage');
+            addUpdateListener('backtestTrainMonths');
+            addUpdateListener('backtestTestMonths');
+            addUpdateListener('backtestStepMonths');
+            addUpdateListener('backtestStartDate');
+            addUpdateListener('backtestEndDate');
+        });
     </script>
 </body>
 </html>
