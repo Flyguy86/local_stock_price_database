@@ -10,7 +10,7 @@ This script is idempotent - safe to run multiple times.
 
 import json
 import os
-import pickle
+import joblib  # Use joblib instead of pickle
 from pathlib import Path
 import logging
 
@@ -92,8 +92,7 @@ def migrate_checkpoint_to_mlflow(checkpoint_path: Path):
             log.warning(f"No model files found in {checkpoint_path}")
             return
         
-        with open(model_files[0], "rb") as f:
-            model = pickle.load(f)
+        model = joblib.load(model_files[0])
         
         # Load feature list
         features_file = checkpoint_path / "feature_lists.json"
