@@ -219,17 +219,18 @@ class MLflowTracker:
         Get list of all registered models.
         
         Returns:
-            List of model metadata
+            List of model metadata for ALL versions
         """
         client = mlflow.tracking.MlflowClient(self.tracking_uri)
         models = []
         
         for rm in client.search_registered_models():
-            latest_versions = client.get_latest_versions(rm.name, stages=["None", "Staging", "Production"])
+            # Get ALL versions, not just latest per stage
+            all_versions = client.search_model_versions(f"name='{rm.name}'")
             
-            for version in latest_versions:
+            for version in all_versions:
                 models.append({
-                    "name": rm.name,
+                    "name": version.name,
                     "version": version.version,
                     "stage": version.current_stage,
                     "run_id": version.run_id,
