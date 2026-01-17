@@ -1,10 +1,33 @@
 # local_stock_price_database
-Stock price database
+Stock price database with ML model training, backtesting, and model registry
 
 ## Quick Links
+- **[Model Registry Guide](MODEL_REGISTRY_GUIDE.md)** - MLflow model management & backtest simulation
 - **[Complete Test Guide](tests/COMPLETE_TEST_GUIDE.md)** - All 208+ tests documented
 - **[CI/CD Workflow](.github/workflows/test.yml)** - Automated testing pipeline
 - **[Test Runner](run_unit_tests.sh)** - Run tests locally
+
+## 🚀 New: Model Registry & Backtest Simulation
+
+### MLflow Model Registry
+- **Browse Models**: `http://localhost:8265/registry`
+- **MLflow UI**: `http://localhost:5000`
+- **Features**:
+  - Automatic model logging from training runs
+  - Feature permutation importance ("polygraph test")
+  - Model versioning and stage management (Production/Staging/Archived)
+  - Detailed performance metrics and hyperparameters
+  - Launch backtests with configurable slippage and transaction costs
+
+### Single Source of Truth: Ray Data Pipeline
+**CRITICAL**: All feature engineering (training and backtesting) uses the **same Ray Data pipeline** (`StreamingPreprocessor.calculate_indicators_gpu()`):
+- ✅ Training: `create_walk_forward_pipeline()` → `calculate_indicators_gpu()`
+- ✅ Backtesting: `generate_features()` → `calculate_indicators_gpu()`
+- ✅ **Guaranteed consistency** - no feature discrepancies between train/test
+
+See **[FEATURE_CONSISTENCY_GUIDE.md](FEATURE_CONSISTENCY_GUIDE.md)** for architecture details.
+
+See **[MODEL_REGISTRY_GUIDE.md](MODEL_REGISTRY_GUIDE.md)** for full documentation.
 
 ## Testing & Quality Assurance
 

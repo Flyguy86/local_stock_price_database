@@ -31,6 +31,7 @@ import lightgbm as lgb
 
 from .streaming import StreamingPreprocessor, BarDataLoader, Fold
 from .config import settings
+from .mlflow_integration import MLflowTracker
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,7 @@ class WalkForwardTrainer:
             import tempfile
             import joblib
             import time
+            import os
             from datetime import datetime, timezone
             from pathlib import Path
             from ray.train import Checkpoint
@@ -81,6 +83,8 @@ class WalkForwardTrainer:
             import xgboost
             import lightgbm
             import sklearn
+            import pandas as pd
+            import numpy as np
             
             training_start_time = time.time()
             
@@ -251,6 +255,57 @@ class WalkForwardTrainer:
                 metadata_file = tmppath / "metadata.json"
                 with open(metadata_file, 'w') as f:
                     json.dump(complete_metadata, f, indent=2)
+                
+                # Log to MLflow (if enabled)
+                mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+                try:
+                    mlflow_tracker = MLflowTracker(tracking_uri=mlflow_uri)
+                    
+                    # Get first fold's model and data for signature
+                    first_model = next(iter(fold_models.values()))
+                    first_features = next(iter(fold_feature_lists.values()))
+                    
+                    # Create sample X, y for signature (use first fold's test data)
+                    first_fold = folds[0]
+                    sample_df = first_fold.test_ds.to_pandas() if first_fold.test_ds else pd.DataFrame()
+                    if not sample_df.empty:
+                        X_sample = sample_df[first_features].fillna(0).replace([np.inf, -np.inf], 0).values[:100]
+                        y_sample = sample_df[target_col].fillna(0).values[:100]
+                        
+                        # Log to MLflow
+                        run_id = mlflow_tracker.log_training_run(
+                            experiment_name=f"walk_forward_{algorithm}_{preprocessing_config.get('primary_ticker', 'unknown')}",
+                            model=first_model,
+                            model_type=algorithm,
+                            params=config,
+                            metrics={
+                                "avg_train_rmse": float(avg_metrics["train_rmse"]),
+                                "avg_test_rmse": float(avg_metrics["test_rmse"]),
+                                "avg_test_r2": float(avg_metrics["test_r2"]),
+                                "avg_test_mae": float(avg_metrics["test_mae"]),
+                                "num_folds": len(fold_metrics)
+                            },
+                            metadata=complete_metadata["model_info"] | complete_metadata["training_info"],
+                            X_train=X_sample,
+                            y_train=y_sample,
+                            feature_names=first_features,
+                            register_model=True
+                        )
+                        
+                        # Calculate and log permutation importance
+                        if len(X_sample) >= 10:  # Need enough samples
+                            importance_df = mlflow_tracker.calculate_permutation_importance(
+                                model=first_model,
+                                X=X_sample,
+                                y=y_sample,
+                                feature_names=first_features,
+                                n_repeats=5  # Keep low for speed
+                            )
+                            mlflow_tracker.log_permutation_importance(run_id, importance_df)
+                        
+                        log.info(f"✅ Logged to MLflow: run_id={run_id}")
+                except Exception as e:
+                    log.warning(f"Failed to log to MLflow: {e}", exc_info=True)
                 
                 # Create checkpoint
                 checkpoint = Checkpoint.from_directory(tmpdir)

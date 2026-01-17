@@ -31,6 +31,7 @@ from .fingerprint import fingerprint_db
 from .streaming import create_preprocessing_pipeline, BarDataLoader
 from .trainer import create_walk_forward_trainer
 from .backtester import create_backtester
+from .mlflow_integration import MLflowTracker
 
 # Configure logging
 logging.basicConfig(
@@ -1158,6 +1159,12 @@ async def dashboard(request: Request):
     return templates.TemplateResponse("training_dashboard.html", {"request": request})
 
 
+@app.get("/registry", response_class=HTMLResponse)
+async def model_registry(request: Request):
+    """Serve the Model Registry UI."""
+    return templates.TemplateResponse("model_registry.html", {"request": request})
+
+
 @app.get("/backtest/dashboard", response_class=HTMLResponse)
 async def vectorbt_dashboard(request: Request):
     """Serve the VectorBT backtest analysis dashboard."""
@@ -1296,6 +1303,249 @@ async def list_symbols():
         })
     
     return {"symbols": symbol_info, "count": len(symbols)}
+
+
+# ============================================================================
+# MLflow Model Registry Endpoints
+# ============================================================================
+
+@app.get("/mlflow/models")
+async def list_mlflow_models():
+    """List all registered models in MLflow."""
+    try:
+        mlflow_tracker = MLflowTracker(tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+        models = mlflow_tracker.get_registered_models()
+        return {"models": models, "count": len(models)}
+    except Exception as e:
+        log.error(f"Failed to fetch MLflow models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/mlflow/model/{model_name}/{version}")
+async def get_model_details(model_name: str, version: str):
+    """Get detailed information about a specific model version."""
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+        
+        client = mlflow.tracking.MlflowClient()
+        
+        # Get model version details
+        mv = client.get_model_version(model_name, version)
+        
+        # Get run details
+        run = client.get_run(mv.run_id)
+        
+        # Get permutation importance if logged
+        permutation_importance = None
+        try:
+            artifacts = client.list_artifacts(mv.run_id)
+            for artifact in artifacts:
+                if "permutation_importance" in artifact.path:
+                    # Download and parse
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        local_path = client.download_artifacts(mv.run_id, artifact.path, tmpdir)
+                        with open(local_path, 'r') as f:
+                            import pandas as pd
+                            permutation_importance = pd.read_json(f).to_dict(orient='records')
+                    break
+        except Exception as e:
+            log.warning(f"Could not load permutation importance: {e}")
+        
+        return {
+            "model_name": model_name,
+            "version": version,
+            "stage": mv.current_stage,
+            "run_id": mv.run_id,
+            "description": mv.description or "",
+            "created_at": mv.creation_timestamp,
+            "metrics": run.data.metrics,
+            "params": run.data.params,
+            "tags": run.data.tags,
+            "permutation_importance": permutation_importance
+        }
+        
+    except Exception as e:
+        log.error(f"Failed to get model details: {e}", exc_info=True)
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class ModelStageTransition(BaseModel):
+    stage: str  # None, Staging, Production, Archived
+
+
+@app.post("/mlflow/model/{model_name}/{version}/transition")
+async def transition_model_stage(model_name: str, version: str, transition: ModelStageTransition):
+    """Transition a model to a new stage."""
+    try:
+        mlflow_tracker = MLflowTracker(tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+        mlflow_tracker.transition_model_stage(model_name, version, transition.stage)
+        return {"status": "success", "model": model_name, "version": version, "new_stage": transition.stage}
+    except Exception as e:
+        log.error(f"Failed to transition model: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BacktestRequest(BaseModel):
+    model_name: str
+    model_version: str
+    ticker: str
+    start_date: str
+    end_date: str
+    slippage_pct: float = 0.0001  # 0.01% default
+    commission_per_share: float = 0.001  # $0.001 per share
+    initial_capital: float = 100000.0
+    position_size_pct: float = 0.1  # 10% of capital per trade
+
+
+@app.post("/backtest/simulate")
+async def run_backtest_simulation(request: BacktestRequest, background_tasks: BackgroundTasks):
+    """
+    Run a backtest simulation with a trained model.
+    
+    This loads the model from MLflow and runs it on historical data
+    with realistic transaction costs and slippage.
+    """
+    try:
+        # Validate model exists
+        import mlflow
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+        client = mlflow.tracking.MlflowClient()
+        
+        try:
+            mv = client.get_model_version(request.model_name, request.model_version)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Model {request.model_name} v{request.model_version} not found")
+        
+        # Create backtest job
+        job_id = f"backtest_{request.ticker}_{request.model_name}_v{request.model_version}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Queue backtest (run in background)
+        background_tasks.add_task(
+            execute_backtest,
+            job_id=job_id,
+            model_name=request.model_name,
+            model_version=request.model_version,
+            ticker=request.ticker,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            slippage_pct=request.slippage_pct,
+            commission_per_share=request.commission_per_share,
+            initial_capital=request.initial_capital,
+            position_size_pct=request.position_size_pct
+        )
+        
+        return {
+            "status": "queued",
+            "job_id": job_id,
+            "message": "Backtest simulation queued. Check /backtest/status/{job_id} for progress."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Failed to queue backtest: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def execute_backtest(
+    job_id: str,
+    model_name: str,
+    model_version: str,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    slippage_pct: float,
+    commission_per_share: float,
+    initial_capital: float,
+    position_size_pct: float
+):
+    """Execute backtest simulation (runs in background)."""
+    import subprocess
+    
+    results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    
+    status_file = results_dir / f"{job_id}_status.json"
+    results_file = results_dir / f"{job_id}_results.json"
+    
+    # Write initial status
+    with open(status_file, 'w') as f:
+        json.dump({"status": "running", "started_at": datetime.utcnow().isoformat()}, f)
+    
+    try:
+        # Run backtest_model.py script
+        cmd = [
+            "python", "/app/backtest_model.py",
+            "--checkpoint", f"models:/{model_name}/{model_version}",  # MLflow URI
+            "--ticker", ticker,
+            "--start-date", start_date,
+            "--end-date", end_date,
+            "--output-dir", str(results_dir),
+            "--mlflow-mode"  # Special flag to load from MLflow instead of Ray checkpoint
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            # Success - update status
+            with open(status_file, 'w') as f:
+                json.dump({
+                    "status": "completed",
+                    "started_at": datetime.utcnow().isoformat(),
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "results_file": str(results_file)
+                }, f)
+        else:
+            # Failure
+            with open(status_file, 'w') as f:
+                json.dump({
+                    "status": "failed",
+                    "error": result.stderr,
+                    "started_at": datetime.utcnow().isoformat(),
+                    "completed_at": datetime.utcnow().isoformat()
+                }, f)
+                
+    except Exception as e:
+        log.error(f"Backtest execution failed: {e}", exc_info=True)
+        with open(status_file, 'w') as f:
+            json.dump({
+                "status": "failed",
+                "error": str(e),
+                "started_at": datetime.utcnow().isoformat(),
+                "completed_at": datetime.utcnow().isoformat()
+            }, f)
+
+
+@app.get("/backtest/status/{job_id}")
+async def get_backtest_status(job_id: str):
+    """Get status of a backtest job."""
+    results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
+    status_file = results_dir / f"{job_id}_status.json"
+    
+    if not status_file.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    with open(status_file, 'r') as f:
+        status = json.load(f)
+    
+    return status
+
+
+@app.get("/backtest/results/{job_id}")
+async def get_backtest_results(job_id: str):
+    """Get results of a completed backtest."""
+    results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
+    results_file = results_dir / f"{job_id}_results.json"
+    
+    if not results_file.exists():
+        raise HTTPException(status_code=404, detail="Results not found")
+    
+    with open(results_file, 'r') as f:
+        results = json.load(f)
+    
+    return results
 
 
 @app.get("/algorithms")
