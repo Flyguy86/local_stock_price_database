@@ -75,6 +75,50 @@ services:
       replicas: 2  # Scale workers
 
   # ============================================
+  # E2E Test Runner (Feature Pipeline Validation)
+  # ============================================
+  e2e_tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.ray
+    container_name: e2e_tests
+    volumes:
+      - ./data:/app/data
+      - ./ray_orchestrator:/app/ray_orchestrator
+      - ./test_e2e_feature_pipeline.py:/app/test_e2e_feature_pipeline.py
+    environment:
+      RAY_ADDRESS: ray://ray_orchestrator:10001
+      PYTHONPATH: /app
+      LOG_LEVEL: INFO
+    command: >
+      bash -c "
+        echo '=================================================================';
+        echo 'Waiting for Ray Orchestrator to be ready...';
+        echo '=================================================================';
+        sleep 30;
+        echo '';
+        echo '=================================================================';
+        echo 'Starting End-to-End Feature Pipeline Tests';
+        echo '=================================================================';
+        python /app/test_e2e_feature_pipeline.py;
+        EXIT_CODE=$$?;
+        echo '';
+        echo '=================================================================';
+        if [ $$EXIT_CODE -eq 0 ]; then
+          echo '✓ ALL TESTS PASSED - Feature pipeline validated';
+        else
+          echo '✗ TESTS FAILED - Check logs above for details';
+        fi;
+        echo '=================================================================';
+        exit $$EXIT_CODE
+      "
+    depends_on:
+      ray_orchestrator:
+        condition: service_started
+    restart: "no"  # Run once and exit
+    profiles: ["test"]  # Only run with: docker-compose --profile test up
+
+  # ============================================
   # PostgreSQL Database (for Ray metadata)
   # ============================================
   postgres:
