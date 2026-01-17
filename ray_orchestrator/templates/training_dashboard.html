@@ -16,11 +16,13 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
-            display: flex;
-            gap: 20px;
         }
         
         .sidebar {
+            display: none;
+            position: fixed;
+            right: 20px;
+            top: 20px;
             width: 400px;
             background: white;
             border-radius: 12px;
@@ -28,8 +30,11 @@
             padding: 20px;
             max-height: calc(100vh - 40px);
             overflow-y: auto;
-            position: sticky;
-            top: 20px;
+            z-index: 1000;
+        }
+        
+        .sidebar.visible {
+            display: block;
         }
         
         .sidebar h2 {
@@ -111,14 +116,42 @@
             background: #28a745;
         }
         
+        .api-toggle-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            font-size: 1.5em;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+            transition: all 0.3s ease;
+            z-index: 999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .api-toggle-btn:hover {
+            transform: scale(1.1);
+            box-shadow: 0 6px 30px rgba(102, 126, 234, 0.6);
+        }
+        
+        .api-toggle-btn:active {
+            transform: scale(0.95);
+        }
+        
         .container {
-            flex: 1;
+            max-width: 1400px;
+            margin: 0 auto;
             background: white;
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             padding: 30px;
-            max-height: calc(100vh - 40px);
-            overflow-y: auto;
         }
         
         h1 {
@@ -348,9 +381,15 @@
     </style>
 </head>
 <body>
+    <!-- Floating API Reference Toggle Button -->
+    <button class="api-toggle-btn" onclick="toggleSidebar()" title="Toggle API Reference">
+        🔌
+    </button>
+    
     <!-- API Reference Sidebar -->
     <div class="sidebar">
-        <h2>🔌 API Reference</h2>
+        <h2 onclick="toggleSidebar(this)" style="cursor: pointer; user-select: none;">🔌 API Reference (Click to expand)</h2>
+        <div class="sidebar-content" style="display: none;">
         
         <div class="api-section">
             <h3 onclick="toggleSection(this)">Start Training</h3>
@@ -433,11 +472,66 @@
                 <li>Port 8265 is Ray Dashboard default</li>
             </ul>
         </div>
+        </div> <!-- Close sidebar-content -->
     </div>
     
     <div class="container">
-        <h1>🚀 Ray Orchestrator - Walk-Forward Training</h1>
-        <p class="subtitle">Configure and launch ML training with proper walk-forward validation</p>
+        <!-- Tabbed Navigation -->
+        <div style="
+            background: white;
+            border-radius: 12px 12px 0 0;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 0;
+            overflow: hidden;
+        ">
+            <div style="display: flex; border-bottom: 2px solid #e5e7eb;">
+                <div style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    border-bottom: 3px solid #667eea;
+                    cursor: default;
+                ">
+                    🚀 Training Dashboard
+                </div>
+                <a href="/backtest/dashboard" style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: white;
+                    color: #666;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    text-decoration: none;
+                    text-align: center;
+                    transition: all 0.3s;
+                    border-bottom: 3px solid transparent;
+                " onmouseover="
+                    this.style.background='#f3f4f6';
+                    this.style.color='#667eea';
+                    this.style.borderBottomColor='#667eea';
+                " onmouseout="
+                    this.style.background='white';
+                    this.style.color='#666';
+                    this.style.borderBottomColor='transparent';
+                ">
+                    📊 VectorBT Dashboard
+                </a>
+            </div>
+        </div>
+        
+        <div style="
+            background: white;
+            padding: 20px 30px 10px;
+            border-radius: 0 0 12px 12px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        ">
+            <h1 style="margin: 0; font-size: 1.8em; color: #333;">Walk-Forward Training</h1>
+            <p class="subtitle" style="margin: 10px 0 0;">Configure and launch ML training with proper walk-forward validation</p>
+        </div>
         
         <div id="loadingData" class="loading">
             <div class="spinner"></div>
@@ -1304,7 +1398,7 @@
             
             backtestBtn.disabled = true;
             backtestBtn.textContent = '⏳ Running Backtest...';
-            showBacktestStatus('info', 'Starting backtest simulation...');
+            showBacktestStatus('info', 'Starting backtest simulation... This may take 2-5 minutes if generating folds.');
             
             const payload = {
                 experiment_name: experimentName,
@@ -1320,13 +1414,27 @@
             };
             
             try {
+                // Extended timeout for fold generation (5 minutes)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
+                
                 const response = await fetch('/backtest/validate', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
+                
+                // Check if response is JSON
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    const text = await response.text();
+                    throw new Error(`Server returned non-JSON response: ${text.substring(0, 200)}`);
+                }
                 
                 const result = await response.json();
                 
@@ -1337,7 +1445,11 @@
                     showBacktestStatus('error', `Backtest failed: ${result.detail || 'Unknown error'}`);
                 }
             } catch (error) {
-                showBacktestStatus('error', `Error: ${error.message}`);
+                if (error.name === 'AbortError') {
+                    showBacktestStatus('error', 'Request timed out. The backtest is taking longer than expected (>5 minutes). Check server logs.');
+                } else {
+                    showBacktestStatus('error', `Error: ${error.message}`);
+                }
             } finally {
                 backtestBtn.disabled = false;
                 backtestBtn.textContent = '📊 Run Backtest';
@@ -1430,6 +1542,25 @@
                 content.style.display = 'block';
             } else {
                 content.style.display = 'none';
+            }
+        }
+        
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const toggleBtn = document.querySelector('.api-toggle-btn');
+            const header = sidebar.querySelector('h2');
+            const content = sidebar.querySelector('.sidebar-content');
+            
+            sidebar.classList.toggle('visible');
+            
+            if (sidebar.classList.contains('visible')) {
+                content.style.display = 'block';
+                header.innerHTML = '🔌 API Reference';
+                toggleBtn.style.opacity = '0.7';
+            } else {
+                content.style.display = 'none';
+                header.innerHTML = '🔌 API Reference (Click to expand)';
+                toggleBtn.style.opacity = '1';
             }
         }
         

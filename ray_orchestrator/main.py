@@ -494,6 +494,17 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
     def run_fold_generation():
         try:
             from pathlib import Path
+            import os
+            import pandas as pd
+            import numpy as np
+            
+            # Auto-detect CPU count
+            try:
+                cpu_count = len(os.sched_getaffinity(0))
+            except AttributeError:
+                cpu_count = os.cpu_count() or 4
+            
+            log.info(f"Using {cpu_count} parallel actors for fold generation")
             
             # Create preprocessing pipeline (reuses training code!)
             preprocessor = create_preprocessing_pipeline(
@@ -513,7 +524,7 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
                 windows=[5, 10, 20, 50, 200],  # Standard windows
                 resampling_timeframes=None,
                 num_gpus=0.0,  # CPU only for fold generation
-                actor_pool_size=2  # Parallel processing
+                actor_pool_size=cpu_count  # Use all available CPUs
             ):
                 fold_count += 1
                 log.info(f"Processing {fold}")
@@ -523,17 +534,25 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
                 fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
                 fold_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Save train data
+                # Add target column using map_batches
+                def add_target(batch: pd.DataFrame) -> pd.DataFrame:
+                    """Add target column (next close price change)"""
+                    batch = batch.copy()
+                    future_close = batch['close'].shift(-1)
+                    batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                    return batch
+                
+                # Save train data with target
                 if fold.train_ds:
                     train_path = str(fold_dir / "train")
-                    fold.train_ds.write_parquet(train_path, try_create_dir=True)
+                    fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                     train_count = fold.train_ds.count()
                     log.info(f"✓ Saved train data: {train_count:,} rows → {train_path}/")
                 
-                # Save test data
+                # Save test data with target
                 if fold.test_ds:
                     test_path = str(fold_dir / "test")
-                    fold.test_ds.write_parquet(test_path, try_create_dir=True)
+                    fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     test_count = fold.test_ds.count()
                     log.info(f"✓ Saved test data: {test_count:,} rows → {test_path}/")
             
@@ -589,6 +608,8 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
     def run_preprocessing():
         try:
             from pathlib import Path
+            import pandas as pd
+            import numpy as np
             
             # Create pipeline
             preprocessor = create_preprocessing_pipeline(
@@ -613,16 +634,24 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
                 fold_count += 1
                 log.info(f"Processing {fold}")
                 
-                # Save train data
+                # Add target column using map_batches
+                def add_target(batch: pd.DataFrame) -> pd.DataFrame:
+                    """Add target column (next close price change)"""
+                    batch = batch.copy()
+                    future_close = batch['close'].shift(-1)
+                    batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                    return batch
+                
+                # Save train data with target
                 if fold.train_ds:
                     train_path = f"{request.output_base_path}/fold_{fold.fold_id}/train"
-                    fold.train_ds.write_parquet(train_path, try_create_dir=True)
+                    fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                     log.info(f"Saved train data to {train_path}")
                 
-                # Save test data
+                # Save test data with target
                 if fold.test_ds:
                     test_path = f"{request.output_base_path}/fold_{fold.fold_id}/test"
-                    fold.test_ds.write_parquet(test_path, try_create_dir=True)
+                    fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     log.info(f"Saved test data to {test_path}")
             
             log.info(f"Walk-forward preprocessing completed: {fold_count} folds processed")
@@ -837,72 +866,80 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         folds = get_available_folds(symbol)
         
         if not folds:
-            # Auto-generate folds if they don't exist (synchronously)
-            log.info(f"No folds found for {symbol}, auto-generating before backtest...")
+            # Kick off fold generation in background and return immediately
+            log.info(f"No folds found for {symbol}, starting background fold generation...")
             
-            try:
-                # Create preprocessing pipeline (reuses training code!)
-                preprocessor = create_preprocessing_pipeline(
-                    parquet_dir=str(settings.data.parquet_dir)
-                )
-                
-                # Use dates from request or default to full available range
-                start_date = request.start_date or "2020-01-01"
-                end_date = request.end_date or "2024-12-31"
-                
-                log.info(f"Generating folds for {symbol}: {start_date} to {end_date}")
-                log.info(f"⏳ This will take 1-2 minutes for ~60 folds. Watch logs for progress...")
-                
-                # Use the SAME walk-forward pipeline as training
-                fold_count = 0
-                for fold in preprocessor.create_walk_forward_pipeline(
-                    symbols=[symbol],
-                    start_date=start_date,
-                    end_date=end_date,
-                    train_months=request.train_months,
-                    test_months=request.test_months,
-                    step_months=request.step_months,
-                    context_symbols=None,
-                    windows=[5, 10, 20, 50, 200],
-                    resampling_timeframes=None,
-                    num_gpus=0.0,
-                    actor_pool_size=2
-                ):
-                    fold_count += 1
-                    log.info(f"Processing {fold}")
+            def generate_folds_background():
+                try:
+                    import os
+                    import pandas as pd
+                    import numpy as np
                     
-                    # Create output directory with zero-padded fold ID
-                    symbol_dir = Path(settings.data.walk_forward_folds_dir) / symbol
-                    fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
-                    fold_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        cpu_count = len(os.sched_getaffinity(0))
+                    except AttributeError:
+                        cpu_count = os.cpu_count() or 4
                     
-                    # Save train data
-                    if fold.train_ds:
-                        train_path = str(fold_dir / "train")
-                        fold.train_ds.write_parquet(train_path, try_create_dir=True)
-                        log.info(f"✓ Saved train data → {train_path}/")
+                    log.info(f"Background: Generating folds with {cpu_count} parallel actors")
                     
-                    # Save test data
-                    if fold.test_ds:
-                        test_path = str(fold_dir / "test")
-                        fold.test_ds.write_parquet(test_path, try_create_dir=True)
-                        log.info(f"✓ Saved test data → {test_path}/")
-                
-                log.info(f"✅ Auto-generated {fold_count} folds for {symbol}. Proceeding to backtest...")
-                
-                # Re-check folds
-                folds = get_available_folds(symbol)
-                
-            except Exception as e:
-                log.error(f"Auto-generation failed: {e}", exc_info=True)
-                raise ValueError(
-                    f"Failed to auto-generate folds for {symbol}: {str(e)}. "
-                    f"Try generating manually with '📁 Generate Fold Data Only' button."
-                )
+                    preprocessor = create_preprocessing_pipeline(
+                        parquet_dir=str(settings.data.parquet_dir)
+                    )
+                    
+                    start_date = request.start_date or "2020-01-01"
+                    end_date = request.end_date or "2024-12-31"
+                    
+                    log.info(f"Background: {symbol} from {start_date} to {end_date}")
+                    
+                    fold_count = 0
+                    for fold in preprocessor.create_walk_forward_pipeline(
+                        symbols=[symbol],
+                        start_date=start_date,
+                        end_date=end_date,
+                        train_months=request.train_months,
+                        test_months=request.test_months,
+                        step_months=request.step_months,
+                        context_symbols=None,
+                        windows=[5, 10, 20, 50, 200],
+                        resampling_timeframes=None,
+                        num_gpus=0.0,
+                        actor_pool_size=cpu_count
+                    ):
+                        fold_count += 1
+                        symbol_dir = Path(settings.data.walk_forward_folds_dir) / symbol
+                        fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
+                        fold_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        def add_target(batch: pd.DataFrame) -> pd.DataFrame:
+                            batch = batch.copy()
+                            future_close = batch['close'].shift(-1)
+                            batch['target'] = np.log((future_close + 1e-9) / (batch['close'] + 1e-9))
+                            return batch
+                        
+                        if fold.train_ds:
+                            train_path = str(fold_dir / "train")
+                            fold.train_ds.map_batches(add_target, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
+                        
+                        if fold.test_ds:
+                            test_path = str(fold_dir / "test")
+                            fold.test_ds.map_batches(add_target, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
+                    
+                    log.info(f"Background: ✅ Generated {fold_count} folds for {symbol}")
+                except Exception as e:
+                    log.error(f"Background fold generation failed: {e}", exc_info=True)
+            
+            background_tasks.add_task(generate_folds_background)
+            
+            return {
+                "status": "generating_folds",
+                "message": f"Fold generation started in background for {symbol}. Watch docker logs for progress.",
+                "symbol": symbol,
+                "experiment_name": request.experiment_name,
+                "eta_minutes": "2-5",
+                "note": "Run backtest again after folds are generated"
+            }
         
-        if not folds:
-            raise ValueError(f"No folds available for {symbol} after generation attempt")
-        
+        # Folds exist - proceed with backtest
         log.info(f"Found {len(folds)} folds to backtest")
         
         # Backtest each fold with best hyperparameters
@@ -910,17 +947,17 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         
         for fold_id in folds:
             try:
-                # Load fold data
-                fold_data = load_fold_from_disk(fold_id, symbol)
+                # Load fold data (returns tuple)
+                train_df, test_df = load_fold_from_disk(fold_id, symbol)
                 
                 # Extract features and target
-                feature_cols = [col for col in fold_data.train.columns 
+                feature_cols = [col for col in train_df.columns 
                                if col not in ['symbol', 'ts', 'target', 'open', 'high', 'low', 'close', 'volume']]
                 
                 if len(feature_cols) == 0:
                     raise ValueError(
                         f"No features found in fold data. "
-                        f"Columns: {list(fold_data.train.columns)}. "
+                        f"Columns: {list(train_df.columns)}. "
                         f"The folds were generated with basic OHLCV only. "
                         f"You need to run full preprocessing with feature engineering. "
                         f"Use POST /streaming/walk_forward instead of /streaming/generate-folds"
@@ -928,10 +965,10 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                 
                 log.info(f"Fold {fold_id}: Found {len(feature_cols)} features")
                 
-                X_train = fold_data.train[feature_cols].values
-                y_train = fold_data.train['target'].values
-                X_test = fold_data.test[feature_cols].values
-                y_test = fold_data.test['target'].values
+                X_train = train_df[feature_cols].values
+                y_train = train_df['target'].values
+                X_test = test_df[feature_cols].values
+                y_test = test_df['target'].values
                 
                 # Retrain model with best hyperparameters
                 if algorithm == 'xgboost':
@@ -981,6 +1018,33 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         import pandas as pd
         results_df = pd.DataFrame(all_results)
         summary = backtester.aggregate_results(results_df)
+        
+        # Cache results for dashboard
+        results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        results_file = results_dir / f"{request.experiment_name}_{symbol}_results.json"
+        
+        dashboard_results = {
+            "symbol": symbol,
+            "model": request.experiment_name,
+            "model_info": model_info,
+            "backtest_config": {
+                "initial_capital": request.initial_capital,
+                "commission": request.commission,
+                "slippage": request.slippage,
+                "train_months": request.train_months,
+                "test_months": request.test_months,
+                "step_months": request.step_months
+            },
+            "aggregate_metrics": summary,
+            "fold_results": all_results,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        with open(results_file, 'w') as f:
+            json.dump(dashboard_results, f, indent=2)
+        
+        log.info(f"✅ Backtest complete: {len(all_results)} folds, results saved to {results_file}")
         
         return {
             "status": "completed",
@@ -1090,6 +1154,96 @@ async def list_backtest_experiments():
 async def dashboard(request: Request):
     """Serve the training dashboard UI."""
     return templates.TemplateResponse("training_dashboard.html", {"request": request})
+
+
+@app.get("/backtest/dashboard", response_class=HTMLResponse)
+async def vectorbt_dashboard(request: Request):
+    """Serve the VectorBT backtest analysis dashboard."""
+    return templates.TemplateResponse("vectorbt_dashboard.html", {"request": request})
+
+
+@app.get("/backtest/dashboard", response_class=HTMLResponse)
+async def vectorbt_dashboard(request: Request):
+    """Serve the VectorBT backtest analysis dashboard."""
+    return templates.TemplateResponse("vectorbt_dashboard.html", {"request": request})
+
+
+@app.get("/backtest/results")
+async def get_dashboard_results(model: str, symbol: str):
+    """
+    Get backtest results for the VectorBT dashboard.
+    
+    Loads cached results from previous backtest runs.
+    """
+    try:
+        results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
+        results_file = results_dir / f"{model}_{symbol}_results.json"
+        
+        if not results_file.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No backtest results found for {model} on {symbol}. Run backtest first."
+            )
+        
+        with open(results_file, 'r') as f:
+            results = json.load(f)
+        
+        return results
+        
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Results not found")
+    except Exception as e:
+        log.error(f"Failed to load results: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/list_trained_models")
+async def list_trained_models():
+    """
+    List all available trained models for backtesting.
+    
+    Scans Ray checkpoints directory for completed experiments.
+    """
+    try:
+        checkpoints_dir = Path(settings.data.checkpoints_dir)
+        models = []
+        
+        if not checkpoints_dir.exists():
+            return []
+        
+        for exp_dir in checkpoints_dir.iterdir():
+            if not exp_dir.is_dir() or exp_dir.name == "backtest_results":
+                continue
+            
+            # Parse experiment name (e.g., "walk_forward_xgboost_GOOGL")
+            parts = exp_dir.name.split('_')
+            if len(parts) >= 3:
+                algorithm = parts[-2] if len(parts) >= 3 else "unknown"
+                symbol = parts[-1]
+                
+                # Check if has valid trials
+                has_trials = any(
+                    (trial_dir / "result.json").exists()
+                    for trial_dir in exp_dir.iterdir()
+                    if trial_dir.is_dir()
+                )
+                
+                if has_trials:
+                    models.append({
+                        "name": exp_dir.name,
+                        "symbol": symbol,
+                        "algorithm": algorithm,
+                        "date": datetime.fromtimestamp(exp_dir.stat().st_mtime).strftime("%Y-%m-%d")
+                    })
+        
+        # Sort by date descending
+        models.sort(key=lambda x: x['date'], reverse=True)
+        
+        return models
+        
+    except Exception as e:
+        log.error(f"Failed to list models: {e}", exc_info=True)
+        return []
 
 
 # ============================================================================
