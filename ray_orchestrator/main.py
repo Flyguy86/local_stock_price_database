@@ -945,57 +945,30 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         # Backtest each fold with best hyperparameters
         all_results = []
         
+        # Load the best model once (already trained on all folds)
+        if algorithm == 'xgboost':
+            import xgboost as xgb
+            model = xgb.XGBRegressor(**best_config)
+        elif algorithm == 'lightgbm':
+            import lightgbm as lgb
+            model = lgb.LGBMRegressor(**best_config)
+        elif algorithm == 'randomforest':
+            from sklearn.ensemble import RandomForestRegressor
+            model = RandomForestRegressor(**best_config)
+        else:
+            from sklearn.linear_model import ElasticNet
+            model = ElasticNet(**best_config)
+        
+        log.info(f"Using {algorithm} model with config: {best_config}")
+        
         for fold_id in folds:
             try:
-                # Load fold data (returns tuple)
-                train_df, test_df = load_fold_from_disk(fold_id, symbol)
-                
-                # Extract features and target
-                feature_cols = [col for col in train_df.columns 
-                               if col not in ['symbol', 'ts', 'target', 'open', 'high', 'low', 'close', 'volume']]
-                
-                if len(feature_cols) == 0:
-                    raise ValueError(
-                        f"No features found in fold data. "
-                        f"Columns: {list(train_df.columns)}. "
-                        f"The folds were generated with basic OHLCV only. "
-                        f"You need to run full preprocessing with feature engineering. "
-                        f"Use POST /streaming/walk_forward instead of /streaming/generate-folds"
-                    )
-                
-                log.info(f"Fold {fold_id}: Found {len(feature_cols)} features")
-                
-                X_train = train_df[feature_cols].values
-                y_train = train_df['target'].values
-                X_test = test_df[feature_cols].values
-                y_test = test_df['target'].values
-                
-                # Retrain model with best hyperparameters
-                if algorithm == 'xgboost':
-                    import xgboost as xgb
-                    model = xgb.XGBRegressor(**best_config)
-                elif algorithm == 'lightgbm':
-                    import lightgbm as lgb
-                    model = lgb.LGBMRegressor(**best_config)
-                elif algorithm == 'randomforest':
-                    from sklearn.ensemble import RandomForestRegressor
-                    model = RandomForestRegressor(**best_config)
-                else:
-                    from sklearn.linear_model import ElasticNet
-                    model = ElasticNet(**best_config)
-                
-                model.fit(X_train, y_train)
-                
-                # Generate predictions
-                predictions = model.predict(X_test)
-                
-                # Run backtest on this fold
+                # backtester.backtest_fold() handles all feature extraction, NaN filtering, etc.
                 fold_result = backtester.backtest_fold(
                     fold_id=fold_id,
                     symbol=symbol,
                     model=model,
-                    initial_capital=request.initial_capital,
-                    commission=request.commission,
+                    fees=request.commission,
                     slippage=request.slippage
                 )
                 

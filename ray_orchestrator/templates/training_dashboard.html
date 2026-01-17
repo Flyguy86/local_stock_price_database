@@ -1467,32 +1467,46 @@
             const resultsDiv = document.getElementById('backtestResults');
             const contentDiv = document.getElementById('backtestResultsContent');
             
+            // Check if result has the expected structure
+            if (!result || !result.results) {
+                contentDiv.innerHTML = `
+                    <div style="padding: 20px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                        <h4 style="margin-top: 0;">⚠️ Invalid Backtest Result</h4>
+                        <p>The backtest returned an unexpected result format.</p>
+                        <pre style="background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(result, null, 2)}</pre>
+                    </div>
+                `;
+                resultsDiv.style.display = 'block';
+                return;
+            }
+            
             const summary = result.results;
             
-            // Create assessment badge
+            // Create assessment badge (with defaults for missing properties)
             const assessmentColors = {
                 'EXCELLENT': '🟢',
                 'GOOD': '🟡',
                 'MARGINAL': '🟠',
                 'POOR': '🔴'
             };
-            const badge = assessmentColors[summary.assessment] || '⚪';
+            const assessment = summary.assessment || 'N/A';
+            const badge = assessmentColors[assessment] || '⚪';
             
             contentDiv.innerHTML = `
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
                     <div style="padding: 15px; background: white; border-radius: 6px; border-left: 4px solid #667eea;">
                         <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Assessment</div>
-                        <div style="font-size: 1.5em; font-weight: bold;">${badge} ${summary.assessment}</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${badge} ${assessment}</div>
                     </div>
                     <div style="padding: 15px; background: white; border-radius: 6px;">
                         <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Total Return</div>
-                        <div style="font-size: 1.5em; font-weight: bold; color: ${summary.avg_total_return >= 0 ? '#28a745' : '#dc3545'};">
-                            ${(summary.avg_total_return * 100).toFixed(2)}%
+                        <div style="font-size: 1.5em; font-weight: bold; color: ${(summary.avg_total_return || 0) >= 0 ? '#28a745' : '#dc3545'};">
+                            ${((summary.avg_total_return || 0) * 100).toFixed(2)}%
                         </div>
                     </div>
                     <div style="padding: 15px; background: white; border-radius: 6px;">
                         <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Sharpe Ratio</div>
-                        <div style="font-size: 1.5em; font-weight: bold;">${summary.avg_sharpe_ratio.toFixed(3)}</div>
+                        <div style="font-size: 1.5em; font-weight: bold;">${(summary.avg_sharpe_ratio || 0).toFixed(3)}</div>
                     </div>
                     <div style="padding: 15px; background: white; border-radius: 6px;">
                         <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Max Drawdown</div>
