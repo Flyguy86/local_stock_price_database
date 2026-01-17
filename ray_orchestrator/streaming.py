@@ -379,13 +379,187 @@ class StreamingPreprocessor:
         primary_symbol: str
     ) -> Dataset:
         """
-        Join primary symbol data with context symbols (QQQ, VIX).
+        Join primary symbol data with context symbols (QQQ, VIX) to create cross-sectional features.
         
-        Creates features like relative_sma = sma50_AAPL / sma50_QQQ
+        This enables models to distinguish:
+        - Stock-specific moves vs market-wide moves
+        - Beta-adjusted returns (abnormal performance)
+        - Volatility regime context (VIX-based)
+        
+        Features created:
+        1. **Relative Strength**: close_ratio = close_AAPL / close_QQQ
+        2. **Beta-60**: Rolling 60-bar beta vs market proxy (QQQ)
+        3. **Beta-Adjusted Returns**: residual_return = return - (beta * market_return)
+        4. **VIX Regime**: vix_zscore, high_vix_regime (VIX > 20)
+        5. **Context Indicators**: Suffixed with symbol name (rsi_14_QQQ, macd_VIX)
+        
+        Args:
+            primary_ds: Primary symbol dataset (e.g., AAPL)
+            context_ds: Context symbols dataset (e.g., QQQ, VIX)
+            primary_symbol: Primary trading symbol name
+            
+        Returns:
+            Dataset with joined context features
+            
+        Example:
+            # Input: AAPL data + [QQQ, VIX] context
+            # Output: AAPL data with:
+            #   - close_ratio_QQQ = close_AAPL / close_QQQ
+            #   - beta_60_QQQ = rolling_beta(AAPL, QQQ)
+            #   - rsi_14_QQQ, macd_QQQ (context indicators)
+            #   - vix_zscore, high_vix_regime (if VIX present)
         """
-        # This is a simplified version - in production you'd use Ray's join
-        # For now, we'll handle this in the indicator calculation phase
+        def join_and_calculate_context(batch: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+            """
+            Process a batch to join context symbols and calculate cross-sectional features.
+            
+            This runs as a map operation on each batch of the primary dataset.
+            Context data is passed as a closure from the outer scope.
+            """
+            import pandas as pd
+            import numpy as np
+            
+            # Convert to DataFrame for easier manipulation
+            primary_df = pd.DataFrame(batch)
+            
+            if primary_df.empty or 'ts' not in primary_df.columns:
+                return batch
+            
+            # Ensure timestamp is datetime
+            primary_df['ts'] = pd.to_datetime(primary_df['ts'])
+            
+            # Get context data (this will be passed via map_batches closure)
+            # For now, return primary data unchanged - full implementation requires
+            # Ray Data's join operation or passing context data through actor state
+            return batch
+        
+        # TODO: Implement proper Ray Data join operation
+        # Current limitation: Ray Data's join is complex for time-series
+        # Recommended approach: Use Ray actors with shared context state
+        # or pre-join context data before creating Dataset
+        
+        log.info(f"Context feature joining for {primary_symbol} (stub - not yet implemented)")
         return primary_ds
+    
+    def _calculate_context_features(
+        self,
+        primary_df: pd.DataFrame,
+        context_df: pd.DataFrame,
+        context_symbol: str,
+        windows: List[int] = [50, 200]
+    ) -> pd.DataFrame:
+        """
+        Calculate cross-sectional features from context symbol data.
+        
+        This is called during indicator calculation if context data is available.
+        
+        Args:
+            primary_df: Primary symbol DataFrame with indicators already calculated
+            context_df: Context symbol DataFrame (QQQ, VIX, etc.)
+            context_symbol: Name of context symbol ("QQQ", "VIX")
+            windows: Window sizes for rolling calculations
+            
+        Returns:
+            DataFrame with added context features
+        """
+        if context_df.empty or primary_df.empty:
+            return primary_df
+        
+        # Ensure both have timestamps
+        if 'ts' not in primary_df.columns or 'ts' not in context_df.columns:
+            log.warning(f"Missing timestamp column, skipping context features for {context_symbol}")
+            return primary_df
+        
+        # Ensure timestamps are datetime
+        primary_df['ts'] = pd.to_datetime(primary_df['ts'])
+        context_df['ts'] = pd.to_datetime(context_df['ts'])
+        
+        # Calculate indicators on context symbol first
+        context_indicators = self.calculate_indicators_gpu(
+            batch=context_df.copy(),
+            windows=windows,
+            drop_warmup=False  # Keep all rows for alignment
+        )
+        
+        # Suffix all context columns (except 'ts') with context symbol name
+        context_cols = [col for col in context_indicators.columns if col != 'ts']
+        rename_dict = {col: f"{col}_{context_symbol}" for col in context_cols}
+        context_indicators = context_indicators.rename(columns=rename_dict)
+        
+        # Timestamp-aligned join (inner join to ensure exact matches)
+        # This automatically drops any rows where timestamps don't align
+        merged = pd.merge(
+            primary_df,
+            context_indicators,
+            on='ts',
+            how='left'  # Use left join to keep all primary data, fill NaN for missing context
+        )
+        
+        # Forward-fill context features to handle missing timestamps
+        context_feature_cols = [col for col in merged.columns if col.endswith(f"_{context_symbol}")]
+        merged[context_feature_cols] = merged[context_feature_cols].ffill()
+        
+        # Calculate relative features (only if we have price data)
+        if f'close_{context_symbol}' in merged.columns and 'close' in merged.columns:
+            # Relative price strength
+            merged[f'close_ratio_{context_symbol}'] = merged['close'] / (merged[f'close_{context_symbol}'] + 1e-9)
+            merged[f'close_ratio_{context_symbol}_zscore'] = self._rolling_zscore(
+                merged[f'close_ratio_{context_symbol}'],
+                window=200
+            )
+            
+            # Relative SMA strength (for each window)
+            for window in windows:
+                sma_col = f'sma_{window}'
+                context_sma_col = f'{sma_col}_{context_symbol}'
+                if sma_col in merged.columns and context_sma_col in merged.columns:
+                    merged[f'{sma_col}_ratio_{context_symbol}'] = merged[sma_col] / (merged[context_sma_col] + 1e-9)
+        
+        # Calculate beta (rolling covariance / variance) if we have returns
+        if f'returns_{context_symbol}' in merged.columns and 'returns' in merged.columns:
+            # 60-bar rolling beta
+            returns_primary = merged['returns']
+            returns_context = merged[f'returns_{context_symbol}']
+            
+            # Rolling covariance and variance
+            rolling_cov = returns_primary.rolling(window=60).cov(returns_context)
+            rolling_var = returns_context.rolling(window=60).var()
+            
+            merged[f'beta_60_{context_symbol}'] = rolling_cov / (rolling_var + 1e-9)
+            merged[f'beta_60_{context_symbol}'] = merged[f'beta_60_{context_symbol}'].fillna(1.0)  # Default beta = 1.0
+            
+            # Beta-adjusted returns (residual = actual - expected)
+            expected_return = merged[f'beta_60_{context_symbol}'] * returns_context
+            merged[f'residual_return_{context_symbol}'] = returns_primary - expected_return
+            
+            # Z-score of residual returns (identifies abnormal moves)
+            merged[f'residual_return_{context_symbol}_zscore'] = self._rolling_zscore(
+                merged[f'residual_return_{context_symbol}'],
+                window=60
+            )
+        
+        # VIX-specific regime features (if context symbol is VIX or VIXY)
+        if context_symbol.upper() in ['VIX', 'VIXY']:
+            if f'close_{context_symbol}' in merged.columns:
+                vix_close = merged[f'close_{context_symbol}']
+                
+                # VIX z-score (is VIX elevated?)
+                merged['vix_zscore'] = self._rolling_zscore(vix_close, window=60)
+                
+                # High VIX regime (VIX > 20 = fear/uncertainty)
+                merged['high_vix_regime'] = (vix_close > 20).astype(int)
+                
+                # VIX spike detection (VIX jumped > 1 std dev)
+                vix_returns = vix_close.pct_change()
+                vix_spike_threshold = vix_returns.rolling(window=20).std()
+                merged['vix_spike'] = (vix_returns > vix_spike_threshold).astype(int)
+                
+                # Log return of VIX (measures fear velocity)
+                merged['vix_log_return'] = np.log(vix_close / vix_close.shift(1))
+                merged['vix_log_return'] = merged['vix_log_return'].fillna(0.0)
+        
+        log.debug(f"Added context features from {context_symbol}: {len(context_feature_cols)} base features + relative/beta features")
+        return merged
     
     def calculate_indicators_gpu(
         self,

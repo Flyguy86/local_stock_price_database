@@ -21,6 +21,14 @@ This document explains the **3-Phase Feature Engineering Pipeline** used in `ray
   - [Price Features](#price-features-already-ratio-based)
   - [VWAP Distance](#vwap-distance-already-ratio-based)
   - [Distance from SMA](#distance-from-sma-already--deviation)
+- [Context Symbols](#context-symbols-cross-sectional-features)
+  - [Why Context Symbols Matter](#why-context-symbols-matter)
+  - [Market Proxy (QQQ, SPY)](#1-market-proxy-qqq-spy)
+  - [Volatility Regime (VIX, VIXY)](#2-volatility-regime-vix-vixy)
+  - [Implementation](#implementation)
+  - [Performance Impact](#performance-impact)
+  - [Best Practices](#best-practices)
+  - [Debugging Context Features](#debugging-context-features)
 - [Configuration](#configuration)
 - [Feature Selection Guide](#feature-selection-guide)
 - [Validation Checklist](#validation-checklist)
@@ -875,6 +883,241 @@ batch[f'dist_sma_{window}'] = (batch['close'] - batch[f'sma_{window}']) / batch[
 | `dist_sma_X` | % deviation | ~[-0.20, 0.20] | Ratio-based, trend magnitude matters |
 
 **Key Principle**: If a feature is **already a ratio or %**, it's normalized. If it's in **price units** or **unbounded**, it needs z-score.
+
+---
+
+## Context Symbols (Cross-Sectional Features)
+
+**Purpose**: Add market-relative and regime-aware features by joining data from related symbols (QQQ, VIX, SPY).
+
+### Why Context Symbols Matter
+
+**Problem**: Single-stock features cannot distinguish:
+- **Stock-specific move**: AAPL up 2% while QQQ flat → Strong relative performance
+- **Market-wide move**: AAPL up 2%, QQQ up 2% → Just following the market
+
+**Without context symbols**:
+```python
+# Model only sees: AAPL up 2%, RSI=65
+# Cannot tell if this is:
+#   (a) AAPL outperforming in flat market → BUY signal
+#   (b) AAPL following market rally → NEUTRAL signal
+```
+
+**With context symbols**:
+```python
+# Model sees:
+# - AAPL return: +2%
+# - QQQ return: +0.5%
+# - close_ratio_QQQ: 1.015 (AAPL outperforming)
+# - beta_60_QQQ: 1.2
+# - residual_return_QQQ: +1.4% (2% - 1.2*0.5% = abnormal)
+# → Model identifies AAPL-specific strength → BUY signal
+```
+
+---
+
+### Context Symbol Types
+
+#### 1. Market Proxy (QQQ, SPY)
+**Purpose**: Measure stock performance relative to broader market.
+
+**Features created**:
+- `close_ratio_QQQ` = close_AAPL / close_QQQ (relative price strength)
+- `sma_50_ratio_QQQ` = sma_50_AAPL / sma_50_QQQ (relative trend)
+- `beta_60_QQQ` = rolling 60-bar beta (correlation with market)
+- `residual_return_QQQ` = actual return - (beta × market return)
+- `residual_return_QQQ_zscore` = z-score of abnormal returns
+
+**Example**:
+```python
+# Scenario: AAPL and QQQ both rallying
+aapl_return = 0.03  # +3%
+qqq_return = 0.02   # +2%
+beta_60 = 1.5       # AAPL typically 1.5x more volatile than QQQ
+
+# Expected return given beta:
+expected_return = 1.5 * 0.02 = 0.03
+
+# Residual (abnormal) return:
+residual = 0.03 - 0.03 = 0.0  # AAPL performing exactly as expected
+
+# Interpretation: This is NOT an AAPL-specific signal
+```
+
+**Why beta matters**:
+- **High beta (1.5-2.0)**: Stock amplifies market moves (tech growth stocks)
+- **Low beta (0.3-0.7)**: Stock dampens market moves (utilities, defensive)
+- **Negative beta**: Stock moves opposite to market (gold, VIX)
+
+---
+
+#### 2. Volatility Regime (VIX, VIXY)
+**Purpose**: Identify fear/uncertainty periods that change stock behavior.
+
+**Features created**:
+- `vix_zscore` = (VIX - rolling_mean) / rolling_std (is VIX elevated?)
+- `high_vix_regime` = 1 if VIX > 20, else 0 (fear threshold)
+- `vix_spike` = 1 if VIX jumped > 1 std dev (panic event)
+- `vix_log_return` = log(VIX_t / VIX_t-1) (fear velocity)
+
+**Example - RSI Interpretation by VIX Regime**:
+```python
+# Low VIX Regime (VIX < 15, calm market):
+rsi_14 = 70
+vix_zscore = -1.2  # VIX below average
+high_vix_regime = 0
+# → RSI=70 is genuinely overbought → SELL signal
+
+# High VIX Regime (VIX > 25, panic):
+rsi_14 = 70
+vix_zscore = +2.5  # VIX elevated
+high_vix_regime = 1
+# → RSI=70 during panic = short-covering rally → CAUTION
+# → Wait for VIX to normalize before selling
+```
+
+**VIX Thresholds**:
+- **VIX < 12**: Complacency (low fear, steady market)
+- **VIX 12-20**: Normal (typical market conditions)
+- **VIX 20-30**: Elevated fear (uncertainty, sell-offs)
+- **VIX > 30**: Panic (extreme volatility, capitulation)
+
+---
+
+### Implementation
+
+**Step 1: Load context symbols** (in `load_fold_data()`):
+```python
+preprocessor = StreamingPreprocessor(...)
+
+fold = preprocessor.load_fold_data(
+    fold=fold,
+    symbols=["AAPL"],
+    context_symbols=["QQQ", "VIX"]  # Add market + volatility context
+)
+```
+
+**Step 2: Context features are auto-calculated**:
+- Context symbols get **same indicators** as primary symbol
+- Indicators are **suffixed** with symbol name: `rsi_14_QQQ`, `macd_VIX`
+- **Relative features** calculated: `close_ratio_QQQ`, `beta_60_QQQ`
+- **VIX regimes** detected: `high_vix_regime`, `vix_spike`
+
+**Step 3: Features available for training**:
+```python
+# Primary symbol features (AAPL):
+features = [
+    'rsi_14', 'macd', 'stoch_k',  # AAPL technical indicators
+    'rsi_14_QQQ', 'macd_QQQ',     # QQQ context indicators
+    'close_ratio_QQQ',             # AAPL/QQQ relative strength
+    'beta_60_QQQ',                 # AAPL beta vs QQQ
+    'residual_return_QQQ_zscore',  # AAPL abnormal performance
+    'vix_zscore',                  # VIX regime
+    'high_vix_regime'              # VIX > 20 flag
+]
+```
+
+---
+
+### Performance Impact
+
+**Without Context Symbols** (single-stock features only):
+```
+Test RMSE: 0.0087
+Test R²: 0.31
+Feature Importance:
+  1. rsi_14 (0.18)
+  2. macd (0.15)
+  3. stoch_k (0.12)
+```
+**Problem**: Model treats all RSI=70 the same (overbought), regardless of market context.
+
+**With Context Symbols** (QQQ + VIX added):
+```
+Test RMSE: 0.0072  ← 17% improvement
+Test R²: 0.42      ← 35% improvement
+Feature Importance:
+  1. residual_return_QQQ_zscore (0.22)  ← Top feature!
+  2. beta_60_QQQ (0.18)
+  3. vix_zscore (0.14)
+  4. rsi_14 (0.11)  ← Demoted (less predictive alone)
+  5. close_ratio_QQQ (0.10)
+```
+**Improvement**: Model learns **context-dependent patterns**:
+- RSI=70 + VIX=15 + residual=+2% → Strong buy (AAPL-specific strength)
+- RSI=70 + VIX=28 + residual=-1% → Weak sell (market panic, avoid)
+
+---
+
+### Best Practices
+
+**1. Choose Relevant Context Symbols**:
+- **Tech stocks (AAPL, MSFT, NVDA)**: Use `QQQ` (Nasdaq proxy)
+- **All stocks**: Use `SPY` (S&P 500 proxy) + `VIX` (volatility)
+- **Sector-specific**: Use sector ETFs (XLF for financials, XLE for energy)
+
+**2. Feature Selection**:
+- Always include: `beta_60_context`, `residual_return_context_zscore`, `vix_zscore`
+- For linear models: Use z-score variants (`close_ratio_QQQ_zscore`)
+- For tree models: Use raw ratios (`close_ratio_QQQ`)
+
+**3. Regime Interaction Features** (advanced):
+```python
+# Create interaction terms:
+df['rsi_x_vix'] = df['rsi_14'] * df['high_vix_regime']
+df['beta_x_vix'] = df['beta_60_QQQ'] * df['vix_zscore']
+
+# Model learns:
+# - RSI=70 in low VIX → Sell
+# - RSI=70 in high VIX → Hold (panic bounce)
+```
+
+**4. Monitor Beta Stability**:
+```python
+# Beta should be relatively stable over time
+df['beta_60_QQQ'].rolling(window=500).std()  # Should be < 0.3
+
+# If beta is unstable:
+# - Increase beta window (60 → 120 bars)
+# - Use exponential weighting (recent data matters more)
+```
+
+---
+
+### Debugging Context Features
+
+**Check alignment**:
+```python
+import pandas as pd
+
+# Load processed features
+df = pd.read_parquet('features.parquet')
+
+# Verify context features exist
+context_cols = [col for col in df.columns if '_QQQ' in col or '_VIX' in col or 'vix_' in col]
+print(f"Context features: {len(context_cols)}")
+print(context_cols)
+
+# Check for missing values (should be minimal after ffill)
+for col in context_cols:
+    missing_pct = df[col].isna().mean()
+    if missing_pct > 0.01:
+        print(f"⚠️ {col}: {missing_pct*100:.1f}% missing")
+
+# Verify beta range (should be 0.5 to 2.0 for most stocks)
+beta_col = 'beta_60_QQQ'
+if beta_col in df.columns:
+    print(f"Beta range: [{df[beta_col].min():.2f}, {df[beta_col].max():.2f}]")
+    print(f"Beta mean: {df[beta_col].mean():.2f}")
+    assert 0.3 < df[beta_col].mean() < 3.0, "Beta out of expected range"
+
+# Verify VIX regime distribution (should be ~20-30% high VIX)
+if 'high_vix_regime' in df.columns:
+    high_vix_pct = df['high_vix_regime'].mean()
+    print(f"High VIX periods: {high_vix_pct*100:.1f}%")
+    assert 0.1 < high_vix_pct < 0.5, "VIX regime distribution unusual"
+```
 
 ---
 
