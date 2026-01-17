@@ -91,6 +91,7 @@ services:
     volumes:
       - ./data/mlflow/artifacts:/mlflow/artifacts
       - ./data/mlflow/backend:/mlflow/backend
+      - ./data:/app/data  # Access to Ray checkpoints for migration
     environment:
       MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/backend/mlflow.db
       MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
