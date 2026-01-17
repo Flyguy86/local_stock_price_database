@@ -114,6 +114,17 @@ class StreamingPreprocessRequest(BaseModel):
     partition_by: Optional[list[str]] = None
 
 
+class GenerateFoldsRequest(BaseModel):
+    """Request model for generating fold data only (no training)."""
+    symbol: str  # Primary symbol (e.g., "AAPL")
+    start_date: str  # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
+    train_months: int = 12
+    test_months: int = 3
+    step_months: int = 3
+    output_base_path: str = "/app/data/walk_forward_folds"
+
+
 class WalkForwardPreprocessRequest(BaseModel):
     """Request model for walk-forward preprocessing with fold isolation."""
     symbols: list[str]  # Primary symbols (e.g., ["AAPL"])
@@ -459,6 +470,95 @@ async def preview_streaming_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/streaming/generate-folds")
+async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: BackgroundTasks):
+    """
+    Generate walk-forward fold data WITHOUT training models.
+    
+    Use this when you already have trained models but need to generate
+    fold data for backtesting. This will:
+    
+    1. Load raw OHLCV data for the symbol
+    2. Generate walk-forward folds with proper date splits
+    3. Save train.parquet and test.parquet for each fold
+    
+    Much faster than full training since it skips:
+    - Feature engineering
+    - Hyperparameter tuning
+    - Model training
+    
+    Output: /app/data/walk_forward_folds/{symbol}/fold_{id}/
+    """
+    log.info(f"Generating folds for {request.symbol}: {request.start_date} to {request.end_date}")
+    
+    def run_fold_generation():
+        try:
+            from pathlib import Path
+            
+            # Create preprocessing pipeline (reuses training code!)
+            preprocessor = create_preprocessing_pipeline(
+                parquet_dir=str(settings.data.parquet_dir)
+            )
+            
+            # Use the SAME walk-forward pipeline as training
+            fold_count = 0
+            for fold in preprocessor.create_walk_forward_pipeline(
+                symbols=[request.symbol],
+                start_date=request.start_date,
+                end_date=request.end_date,
+                train_months=request.train_months,
+                test_months=request.test_months,
+                step_months=request.step_months,
+                context_symbols=None,  # No context symbols for simple backtesting
+                windows=[5, 10, 20, 50, 200],  # Standard windows
+                resampling_timeframes=None,
+                num_gpus=0.0,  # CPU only for fold generation
+                actor_pool_size=2  # Parallel processing
+            ):
+                fold_count += 1
+                log.info(f"Processing {fold}")
+                
+                # Create output directory
+                symbol_dir = Path(request.output_base_path) / request.symbol
+                fold_dir = symbol_dir / f"fold_{fold.fold_id}"
+                fold_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save train data
+                if fold.train_ds:
+                    train_path = str(fold_dir / "train")
+                    fold.train_ds.write_parquet(train_path, try_create_dir=True)
+                    train_count = fold.train_ds.count()
+                    log.info(f"✓ Saved train data: {train_count:,} rows → {train_path}/")
+                
+                # Save test data
+                if fold.test_ds:
+                    test_path = str(fold_dir / "test")
+                    fold.test_ds.write_parquet(test_path, try_create_dir=True)
+                    test_count = fold.test_ds.count()
+                    log.info(f"✓ Saved test data: {test_count:,} rows → {test_path}/")
+            
+            log.info(f"✅ Fold generation completed: {fold_count} folds with features saved to {symbol_dir}")
+            
+        except Exception as e:
+            log.error(f"Fold generation failed: {e}", exc_info=True)
+    
+    background_tasks.add_task(run_fold_generation)
+    
+    return {
+        "status": "started",
+        "task": "generate_folds",
+        "symbol": request.symbol,
+        "date_range": f"{request.start_date} to {request.end_date}",
+        "fold_config": {
+            "train_months": request.train_months,
+            "test_months": request.test_months,
+            "step_months": request.step_months
+        },
+        "output_path": f"{request.output_base_path}/{request.symbol}",
+        "note": "Generating fold data only (no training). Check logs for progress."
+    }
+
+
 @app.post("/streaming/walk_forward")
 async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, background_tasks: BackgroundTasks):
     """
@@ -692,32 +792,159 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     """
     Run VectorBT backtesting on a trained model.
     
-    This validates model profitability using realistic trading simulation with fees and slippage.
+    Quick fix implementation: Uses best hyperparameters to retrain on each fold.
+    TODO: Refactor to load pre-trained per-fold models from checkpoints.
+    
     Returns aggregated metrics: Sharpe ratio, max drawdown, consistency scores.
     """
     try:
+        # Use symbols from request, not from model name
+        if not request.symbols or len(request.symbols) == 0:
+            raise ValueError("Please select at least one symbol in 'Symbols to Backtest'")
+        
+        if len(request.symbols) > 1:
+            raise ValueError("Please select only ONE symbol at a time for backtesting")
+        
+        symbol = request.symbols[0]
+        
+        # Extract algorithm from experiment name for model selection
+        parts = request.experiment_name.split('_')
+        if len(parts) < 3:
+            raise ValueError(
+                f"Invalid experiment name format: {request.experiment_name}. "
+                "Expected: walk_forward_{{algorithm}}_{{symbol}}"
+            )
+        algorithm = parts[-2]  # Second-to-last is algorithm
+        
+        log.info(f"Starting backtest for {request.experiment_name} on symbol: {symbol}, algorithm: {algorithm}")
+        
         backtester = create_backtester(
-            experiment_name=request.experiment_name,
-            checkpoint_dir=f"/app/data/ray_checkpoints/{request.experiment_name}",
-            fold_dir="/app/data/walk_forward_folds"
+            experiment_name=request.experiment_name
         )
         
-        # Load best model
+        # Load best hyperparameters
         model_info = backtester.load_best_model()
+        best_config = model_info.get('config', {})
         
-        # Run backtesting across all folds
-        results = backtester.backtest_all_folds(
-            initial_capital=request.initial_capital,
-            commission=request.commission,
-            slippage=request.slippage
-        )
+        if not best_config:
+            raise ValueError(
+                f"No hyperparameters found for {request.experiment_name}. "
+                "The model may not have completed training successfully."
+            )
         
-        # Aggregate results with consistency scoring
-        summary = backtester.aggregate_results(results)
+        # Get available folds for the SELECTED symbol (not model symbol)
+        from .data import get_available_folds, load_fold_from_disk
+        folds = get_available_folds(symbol)
+        
+        if not folds:
+            # Check if fold directory exists at all
+            fold_base = Path(settings.data.walk_forward_folds_dir)
+            symbol_dir = fold_base / symbol
+            
+            error_msg = f"No walk-forward folds found for symbol {symbol}.\n"
+            error_msg += f"Expected location: {symbol_dir}\n"
+            
+            if not fold_base.exists():
+                error_msg += f"Fold base directory doesn't exist: {fold_base}\n"
+            elif not symbol_dir.exists():
+                error_msg += f"Symbol directory doesn't exist: {symbol_dir}\n"
+                error_msg += f"Available symbols: {', '.join([d.name for d in fold_base.iterdir() if d.is_dir()])}\n"
+            
+            error_msg += f"\n✋ Generate folds for {symbol}:\n"
+            error_msg += f"1. Select checkbox for {symbol} in 'Symbols to Backtest' section\n"
+            error_msg += "2. Dates will auto-populate\n"
+            error_msg += "3. Click '📁 Generate Fold Data Only'\n"
+            error_msg += "4. Wait ~30 seconds\n"
+            error_msg += "5. Try backtest again\n"
+            error_msg += f"\nOr use API: POST /streaming/generate-folds with symbol={symbol}"
+            
+            raise ValueError(error_msg)
+        
+        log.info(f"Found {len(folds)} folds to backtest")
+        
+        # Backtest each fold with best hyperparameters
+        all_results = []
+        
+        for fold_id in folds:
+            try:
+                # Load fold data
+                fold_data = load_fold_from_disk(fold_id, symbol)
+                
+                # Extract features and target
+                feature_cols = [col for col in fold_data.train.columns 
+                               if col not in ['symbol', 'ts', 'target', 'open', 'high', 'low', 'close', 'volume']]
+                
+                if len(feature_cols) == 0:
+                    raise ValueError(
+                        f"No features found in fold data. "
+                        f"Columns: {list(fold_data.train.columns)}. "
+                        f"The folds were generated with basic OHLCV only. "
+                        f"You need to run full preprocessing with feature engineering. "
+                        f"Use POST /streaming/walk_forward instead of /streaming/generate-folds"
+                    )
+                
+                log.info(f"Fold {fold_id}: Found {len(feature_cols)} features")
+                
+                X_train = fold_data.train[feature_cols].values
+                y_train = fold_data.train['target'].values
+                X_test = fold_data.test[feature_cols].values
+                y_test = fold_data.test['target'].values
+                
+                # Retrain model with best hyperparameters
+                if algorithm == 'xgboost':
+                    import xgboost as xgb
+                    model = xgb.XGBRegressor(**best_config)
+                elif algorithm == 'lightgbm':
+                    import lightgbm as lgb
+                    model = lgb.LGBMRegressor(**best_config)
+                elif algorithm == 'randomforest':
+                    from sklearn.ensemble import RandomForestRegressor
+                    model = RandomForestRegressor(**best_config)
+                else:
+                    from sklearn.linear_model import ElasticNet
+                    model = ElasticNet(**best_config)
+                
+                model.fit(X_train, y_train)
+                
+                # Generate predictions
+                predictions = model.predict(X_test)
+                
+                # Run backtest on this fold
+                fold_result = backtester.backtest_fold(
+                    fold_id=fold_id,
+                    symbol=symbol,
+                    model=model,
+                    initial_capital=request.initial_capital,
+                    commission=request.commission,
+                    slippage=request.slippage
+                )
+                
+                all_results.append(fold_result)
+                log.info(f"✓ Fold {fold_id}: Return={fold_result.get('total_return', 0):.2%}")
+                
+            except Exception as e:
+                log.error(f"Failed to backtest fold {fold_id}: {str(e)}", exc_info=True)
+                continue
+        
+        if not all_results:
+            raise ValueError(
+                "No folds successfully backtested. "
+                "Check logs for details. "
+                "Most common issue: Folds have no features (only OHLCV). "
+                "Solution: Delete /app/data/walk_forward_folds/{symbol}/ and run full training with POST /streaming/walk_forward"
+            )
+        
+        # Aggregate results
+        import pandas as pd
+        results_df = pd.DataFrame(all_results)
+        summary = backtester.aggregate_results(results_df)
         
         return {
             "status": "completed",
             "experiment_name": request.experiment_name,
+            "symbol": symbol,
+            "algorithm": algorithm,
+            "num_folds": len(all_results),
             "model_info": model_info,
             "results": summary,
             "timestamp": datetime.utcnow().isoformat()
@@ -726,6 +953,7 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=f"Model not found: {str(e)}")
     except Exception as e:
+        log.error(f"Backtest error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Backtesting failed: {str(e)}")
 
 
@@ -748,9 +976,7 @@ async def get_backtest_results(experiment_name: str):
             )
         
         backtester = create_backtester(
-            experiment_name=experiment_name,
-            checkpoint_dir=checkpoint_dir,
-            fold_dir=fold_dir
+            experiment_name=experiment_name
         )
         
         # Load model info
@@ -788,9 +1014,7 @@ async def list_backtest_experiments():
                     # Try to load model info
                     try:
                         backtester = create_backtester(
-                            experiment_name=exp_name,
-                            checkpoint_dir=exp_path,
-                            fold_dir="/app/data/walk_forward_folds"
+                            experiment_name=exp_name
                         )
                         model_info = backtester.load_best_model()
                         experiments.append({

@@ -119,8 +119,14 @@ class ModelBacktester:
             result = json.load(f)
         
         self.best_trial = {
+            "trial_id": best_trial_dir.name,  # Trial directory name
             "trial_dir": str(best_trial_dir),
             "config": self.best_config,
+            "test_rmse": result.get("test_rmse"),
+            "test_r2": result.get("test_r2"),
+            "test_mae": result.get("test_mae"),
+            "train_rmse": result.get("train_rmse"),
+            "num_folds": result.get("num_folds"),
             "metrics": {
                 "test_rmse": result.get("test_rmse"),
                 "test_r2": result.get("test_r2"),
@@ -131,7 +137,7 @@ class ModelBacktester:
         }
         
         log.info(f"✅ Loaded best model: test_rmse={best_rmse:.6f}, R²={result.get('test_r2', 0):.4f}")
-        log.info(f"   Config: {self.best_config}")
+        log.info(f"   Trial: {best_trial_dir.name}, Config: {self.best_config}")
         
         return self.best_trial
     

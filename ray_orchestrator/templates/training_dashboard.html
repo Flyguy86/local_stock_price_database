@@ -375,10 +375,12 @@
 <span id="foldsCurl">curl -X POST http://localhost:8265/streaming/generate-folds \
   -H "Content-Type: application/json" \
   -d '{
-    "symbols": ["GOOGL"],
-    "start_date": "2024-01-01",
-    "end_date": "2024-12-31",
-    "timeframe": "1m"
+    "symbol": "<span class="param-symbol">AAPL</span>",
+    "start_date": "<span class="param-start-date">2020-01-01</span>",
+    "end_date": "<span class="param-end-date">2024-12-31</span>",
+    "train_months": <span class="param-train-months">12</span>,
+    "test_months": <span class="param-test-months">3</span>,
+    "step_months": <span class="param-step-months">3</span>
   }'</span>
             </div>
         </div>
@@ -647,13 +649,13 @@
                     <div class="form-group">
                         <label for="backtestStartDate">Start Date (optional)</label>
                         <input type="date" id="backtestStartDate">
-                        <div class="help-text">Override fold start date</div>
+                        <div class="help-text" id="backtestStartDateHelp">Auto-populated from symbol data</div>
                     </div>
                 </div>
                 <div class="form-group">
                     <label for="backtestEndDate">End Date (optional)</label>
                     <input type="date" id="backtestEndDate">
-                    <div class="help-text">Override fold end date</div>
+                    <div class="help-text" id="backtestEndDateHelp">Auto-populated from symbol data</div>
                 </div>
             </div>
             
@@ -675,6 +677,10 @@
                 <input type="number" id="slippage" value="0.05" min="0" max="5" step="0.01">
                 <div class="help-text">Price impact of market orders</div>
             </div>
+            
+            <button type="button" class="btn btn-secondary" id="generateFoldsBtn" onclick="generateFoldsOnly()" style="width: 100%; margin-bottom: 10px; background: #FFA500;">
+                📁 Generate Fold Data Only
+            </button>
             
             <button type="button" class="btn btn-primary" id="backtestBtn" onclick="runBacktest()">
                 📊 Run Backtest
@@ -888,9 +894,12 @@
                 `;
                 backtestGrid.appendChild(div);
                 
-                // Update API examples when backtest symbols change
+                // Update API examples and dates when backtest symbols change
                 const checkbox = div.querySelector('input');
-                checkbox.addEventListener('change', updateApiExamples);
+                checkbox.addEventListener('change', () => {
+                    populateBacktestDates();
+                    updateApiExamples();
+                });
             });
         }
         
@@ -1104,12 +1113,14 @@
             const selectedName = select.value;
             if (!selectedName) {
                 helpText.textContent = 'Select an experiment to view model details';
+                populateBacktestDates(null);  // Clear dates
                 return;
             }
             
             const model = availableModels.find(m => m.name === selectedName);
             if (!model || !model.model_info) {
                 helpText.textContent = 'Model details unavailable';
+                populateBacktestDates(null);  // Clear dates
                 return;
             }
             
@@ -1126,9 +1137,146 @@
             updateApiExamples();
         }
         
+        function populateBacktestDates() {
+            const startInput = document.getElementById('backtestStartDate');
+            const endInput = document.getElementById('backtestEndDate');
+            const startHelp = document.getElementById('backtestStartDateHelp');
+            const endHelp = document.getElementById('backtestEndDateHelp');
+            
+            if (!startInput || !endInput) return;
+            
+            // Get selected symbols from backtest grid
+            const selectedSymbols = Array.from(document.querySelectorAll('#backtestSymbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedSymbols.length === 0) {
+                // Clear if no symbols selected
+                startInput.value = '';
+                endInput.value = '';
+                startInput.removeAttribute('min');
+                startInput.removeAttribute('max');
+                endInput.removeAttribute('min');
+                endInput.removeAttribute('max');
+                
+                if (startHelp) startHelp.textContent = 'Select symbols to auto-populate';
+                if (endHelp) endHelp.textContent = 'Select symbols to auto-populate';
+                return;
+            }
+            
+            // Compute overall date range across selected symbols
+            let overallStart = null;
+            let overallEnd = null;
+            
+            selectedSymbols.forEach(symbol => {
+                if (symbolDateRanges[symbol]) {
+                    const range = symbolDateRanges[symbol];
+                    
+                    if (!overallStart || range.start < overallStart) {
+                        overallStart = range.start;
+                    }
+                    if (!overallEnd || range.end > overallEnd) {
+                        overallEnd = range.end;
+                    }
+                }
+            });
+            
+            if (!overallStart || !overallEnd) {
+                if (startHelp) startHelp.textContent = 'No data available for selected symbols';
+                if (endHelp) endHelp.textContent = 'No data available for selected symbols';
+                return;
+            }
+            
+            // Set values to overall date range
+            startInput.value = overallStart;
+            endInput.value = overallEnd;
+            
+            // Set min/max constraints
+            startInput.min = overallStart;
+            startInput.max = overallEnd;
+            endInput.min = overallStart;
+            endInput.max = overallEnd;
+            
+            // Update help text with symbol count
+            const symbolList = selectedSymbols.length <= 3 ? selectedSymbols.join(', ') : `${selectedSymbols.length} symbols`;
+            if (startHelp) startHelp.textContent = `${symbolList}: Earliest ${overallStart}`;
+            if (endHelp) endHelp.textContent = `${symbolList}: Latest ${overallEnd}`;
+            
+            console.log(`Auto-populated backtest dates for ${selectedSymbols.join(', ')}: ${overallStart} to ${overallEnd}`);
+        }
+        
         // ============================================================================
         // Backtesting Functions
         // ============================================================================
+        
+        async function generateFoldsOnly() {
+            const btn = document.getElementById('generateFoldsBtn');
+            
+            // Get selected symbols from backtest grid
+            const selectedSymbols = Array.from(document.querySelectorAll('#backtestSymbolGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            
+            if (selectedSymbols.length === 0) {
+                showBacktestStatus('error', 'Please select at least one symbol in "Symbols to Backtest"');
+                return;
+            }
+            
+            if (selectedSymbols.length > 1) {
+                showBacktestStatus('error', 'Please select only ONE symbol at a time for fold generation');
+                return;
+            }
+            
+            const symbol = selectedSymbols[0];
+            
+            // Get dates
+            const startDate = document.getElementById('backtestStartDate').value;
+            const endDate = document.getElementById('backtestEndDate').value;
+            
+            if (!startDate || !endDate) {
+                showBacktestStatus('error', 'Please select start and end dates (auto-populated from symbol data)');
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Generating Folds...';
+            showBacktestStatus('info', `Generating fold data for ${symbol}...`);
+            
+            const payload = {
+                symbol: symbol,
+                start_date: startDate,
+                end_date: endDate,
+                train_months: parseInt(document.getElementById('backtestTrainMonths').value),
+                test_months: parseInt(document.getElementById('backtestTestMonths').value),
+                step_months: parseInt(document.getElementById('backtestStepMonths').value)
+            };
+            
+            try {
+                const response = await fetch('/streaming/generate-folds', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showBacktestStatus('success', 
+                        `✅ Fold generation started for ${symbol}! ` +
+                        `Train: ${result.fold_config.train_months}mo, Test: ${result.fold_config.test_months}mo, Step: ${result.fold_config.step_months}mo. ` +
+                        `Check logs for progress. Output: ${result.output_path}/fold_*/`
+                    );
+                } else {
+                    showBacktestStatus('error', `Fold generation failed: ${result.detail || 'Unknown error'}`);
+                }
+                
+            } catch (error) {
+                showBacktestStatus('error', `Network error: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '📁 Generate Fold Data Only';
+            }
+        }
         
         async function runBacktest() {
             const backtestBtn = document.getElementById('backtestBtn');
@@ -1357,12 +1505,26 @@
   -d '${JSON.stringify(trainPayload, null, 2)}'`;
             }
             
-            // Update Folds curl
+            // Update Folds curl (extracts symbol from model selection)
+            // backtestSelect already declared above
+            const selectedModel = backtestSelect ? backtestSelect.value : '';
+            let foldSymbol = 'AAPL';  // Default
+            
+            if (selectedModel) {
+                // Extract symbol from model name (e.g., "walk_forward_xgboost_AAPL" -> "AAPL")
+                const parts = selectedModel.split('_');
+                if (parts.length >= 3) {
+                    foldSymbol = parts[parts.length - 1];
+                }
+            }
+            
             const foldsPayload = {
-                symbols: symbols.length > 0 ? symbols : ['GOOGL'],
-                start_date: startDate || '2024-01-01',
-                end_date: endDate || '2024-12-31',
-                timeframe: timeframe
+                symbol: foldSymbol,
+                start_date: backtestStartDate || startDate || '2020-01-01',
+                end_date: backtestEndDate || endDate || '2024-12-31',
+                train_months: backtestTrainMonths,
+                test_months: backtestTestMonths,
+                step_months: backtestStepMonths
             };
             
             const foldsElem = document.getElementById('foldsCurl');
