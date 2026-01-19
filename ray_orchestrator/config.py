@@ -81,11 +81,12 @@ class TuneSettings(BaseSettings):
     # Search algorithm
     search_algorithm: str = "pbt"  # pbt, asha, hyperopt, optuna
     
-    # Population-Based Training (PBT)
+    # Population-Based Training (PBT) - Best Practice Configuration
     pbt_population_size: int = 20
-    pbt_perturbation_interval: int = 5  # Generations between perturbations
-    pbt_quantile_fraction: float = 0.25  # Bottom 25% replaced
-    pbt_resample_probability: float = 0.25
+    pbt_perturbation_interval: int = 5  # 4-10 recommended; how often trials exploit peers (too low=thrashing, too high=wastes time)
+    pbt_quantile_fraction: float = 0.25  # 0.2-0.25 recommended; top 25% are teachers, bottom 25% replaced (maintains diversity)
+    pbt_resample_probability: float = 0.25  # 0.25 recommended; probability of random value vs mutation (helps escape local optima)
+    pbt_perturbation_factors: list[float] = [1.2, 0.8]  # Multiply continuous params by these for random walk around good values
     # NOTE: checkpoint_frequency must be <= pbt_perturbation_interval for PBT to exploit trials
     
     # Early stopping (ASHA)

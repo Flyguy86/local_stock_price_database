@@ -746,6 +746,37 @@
             </button>
         </form>
         
+        <!-- Fold Inspector Section -->
+        <div class="section" style="margin-top: 30px;">
+            <div class="section-header">
+                <h2>📊 Fold Inspector</h2>
+                <div class="help-text" style="margin-top: 10px;">
+                    View pre-computed folds and their feature columns. Helps verify data is ready before training.
+                </div>
+            </div>
+            
+            <div class="card" style="margin-top: 20px;">
+                <div class="form-group">
+                    <label for="inspectSymbol">Symbol</label>
+                    <input type="text" id="inspectSymbol" placeholder="e.g., GOOGL" value="GOOGL">
+                </div>
+                
+                <button type="button" class="btn btn-primary" onclick="loadFoldsList()" style="margin-bottom: 20px;">
+                    🔍 Load Available Folds
+                </button>
+                
+                <div id="foldsListContainer" style="display: none;">
+                    <h3 style="margin-bottom: 15px; color: #333;">Available Folds</h3>
+                    <div id="foldsList"></div>
+                </div>
+                
+                <div id="foldDetailsContainer" style="display: none; margin-top: 30px;">
+                    <h3 style="margin-bottom: 15px; color: #333;">Fold Details</h3>
+                    <div id="foldDetails"></div>
+                </div>
+            </div>
+        </div>
+        
         <!-- Backtesting Section -->
         <div class="section" style="margin-top: 30px;">
             <h2>🎯 Model Backtesting (VectorBT)</h2>
@@ -1927,6 +1958,236 @@
 `curl -X GET http://localhost:8265/backtest/results/${experimentName}`;
             }
         }
+        
+        // Update API examples whenever form changes
+        document.addEventListener('DOMContentLoaded', () => {
+            // Add listeners to all form elements for real-time updates
+            const addUpdateListener = (id) => {
+                const elem = document.getElementById(id);
+                if (elem) {
+                    elem.addEventListener('change', updateApiExamples);
+                    elem.addEventListener('input', updateApiExamples);
+                }
+            };
+            
+            // Listen to all key form inputs
+        
+        // ============================================================================
+        // Fold Inspector Functions
+        // ============================================================================
+        
+        async function loadFoldsList() {
+            const symbol = document.getElementById('inspectSymbol').value.trim().toUpperCase();
+            if (!symbol) {
+                alert('Please enter a symbol');
+                return;
+            }
+            
+            const listContainer = document.getElementById('foldsListContainer');
+            const foldsList = document.getElementById('foldsList');
+            const detailsContainer = document.getElementById('foldDetailsContainer');
+            
+            try {
+                foldsList.innerHTML = '<div style="text-align: center; padding: 20px;">Loading...</div>';
+                listContainer.style.display = 'block';
+                detailsContainer.style.display = 'none';
+                
+                const response = await fetch(`/folds/list/${symbol}`);
+                
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        foldsList.innerHTML = `
+                            <div style="text-align: center; padding: 20px; color: #666;">
+                                <div style="font-size: 2em; margin-bottom: 10px;">📂</div>
+                                <p>No folds found for ${symbol}</p>
+                                <p style="font-size: 0.9em;">Run preprocessing first: POST /streaming/generate-folds</p>
+                            </div>
+                        `;
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.num_folds === 0) {
+                    foldsList.innerHTML = `
+                        <div style="text-align: center; padding: 20px; color: #666;">
+                            <p>No folds available for ${symbol}</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Display fold list
+                let html = `
+                    <div style="margin-bottom: 15px; padding: 10px; background: #f0f9ff; border-radius: 8px; border-left: 4px solid #667eea;">
+                        <strong>${data.num_folds} folds available</strong> for ${symbol}
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;">
+                `;
+                
+                data.folds.forEach((fold, idx) => {
+                    html += `
+                        <div style="
+                            padding: 15px;
+                            background: white;
+                            border: 2px solid #e5e7eb;
+                            border-radius: 8px;
+                            cursor: pointer;
+                            transition: all 0.2s;
+                        " 
+                        onmouseover="this.style.borderColor='#667eea'; this.style.boxShadow='0 4px 12px rgba(102,126,234,0.2)'"
+                        onmouseout="this.style.borderColor='#e5e7eb'; this.style.boxShadow='none'"
+                        onclick="loadFoldDetails('${symbol}', ${fold.fold_id})">
+                            <div style="font-weight: 600; font-size: 1.1em; color: #667eea; margin-bottom: 5px;">
+                                Fold ${fold.fold_id}
+                            </div>
+                            <div style="font-size: 0.85em; color: #666;">
+                                Click to view columns
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += '</div>';
+                foldsList.innerHTML = html;
+                
+            } catch (error) {
+                foldsList.innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #dc2626;">
+                        <p>Error loading folds: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        async function loadFoldDetails(symbol, foldId) {
+            const detailsContainer = document.getElementById('foldDetailsContainer');
+            const detailsDiv = document.getElementById('foldDetails');
+            
+            try {
+                detailsDiv.innerHTML = '<div style="text-align: center; padding: 20px;">Loading fold details...</div>';
+                detailsContainer.style.display = 'block';
+                
+                const response = await fetch(`/folds/${symbol}/${foldId}/columns`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Display column summary
+                let html = `
+                    <div style="margin-bottom: 20px; padding: 15px; background: #f0f9ff; border-radius: 8px;">
+                        <h4 style="margin: 0 0 10px 0; color: #333;">Fold ${foldId} Summary</h4>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; font-size: 0.9em;">
+                            <div><strong>Total Columns:</strong> ${data.total_columns}</div>
+                            <div><strong>Context Features:</strong> ${data.column_categories.context_features.length}</div>
+                            <div><strong>Indicators:</strong> ${data.column_categories.indicators.length}</div>
+                            <div><strong>Price Features:</strong> ${data.column_categories.price_features.length}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <h4 style="margin-bottom: 10px; color: #333;">Column Categories</h4>
+                        
+                        ${renderColumnCategory('Context Features', data.column_categories.context_features, '#10b981')}
+                        ${renderColumnCategory('Technical Indicators', data.column_categories.indicators, '#667eea')}
+                        ${renderColumnCategory('Price Features', data.column_categories.price_features, '#f59e0b')}
+                        ${renderColumnCategory('Metadata', data.column_categories.metadata, '#6b7280')}
+                        ${data.column_categories.other.length > 0 ? renderColumnCategory('Other', data.column_categories.other, '#8b5cf6') : ''}
+                    </div>
+                    
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: #333;">All Columns (${data.columns.length})</h4>
+                        <div style="max-height: 400px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px;">
+                            <table style="width: 100%; font-size: 0.85em; border-collapse: collapse;">
+                                <thead style="position: sticky; top: 0; background: #f9fafb; z-index: 10;">
+                                    <tr>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #e5e7eb;">Column</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 2px solid #e5e7eb;">Type</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #e5e7eb;">Min</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #e5e7eb;">Max</th>
+                                        <th style="padding: 10px; text-align: right; border-bottom: 2px solid #e5e7eb;">Mean</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                `;
+                
+                data.columns.forEach((col, idx) => {
+                    const isContext = data.column_categories.context_features.includes(col.name);
+                    const bgColor = idx % 2 === 0 ? '#ffffff' : '#f9fafb';
+                    const contextMarker = isContext ? '<span style="color: #10b981; margin-left: 5px;">🌐</span>' : '';
+                    
+                    html += `
+                        <tr style="background: ${bgColor};">
+                            <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; font-family: monospace;">
+                                ${col.name}${contextMarker}
+                            </td>
+                            <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">${col.dtype}</td>
+                            <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right; font-family: monospace;">
+                                ${col.min !== null && col.min !== undefined ? col.min.toFixed(4) : '-'}
+                            </td>
+                            <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right; font-family: monospace;">
+                                ${col.max !== null && col.max !== undefined ? col.max.toFixed(4) : '-'}
+                            </td>
+                            <td style="padding: 8px; border-bottom: 1px solid #e5e7eb; text-align: right; font-family: monospace;">
+                                ${col.mean !== null && col.mean !== undefined ? col.mean.toFixed(4) : '-'}
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                html += `
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+                
+                detailsDiv.innerHTML = html;
+                
+                // Scroll to details
+                detailsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                
+            } catch (error) {
+                detailsDiv.innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #dc2626;">
+                        <p>Error loading fold details: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        function renderColumnCategory(title, columns, color) {
+            if (columns.length === 0) return '';
+            
+            return `
+                <div style="margin-bottom: 15px; padding: 12px; background: white; border-left: 4px solid ${color}; border-radius: 4px;">
+                    <div style="font-weight: 600; color: ${color}; margin-bottom: 8px;">
+                        ${title} (${columns.length})
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        ${columns.map(col => `
+                            <span style="
+                                padding: 4px 8px;
+                                background: #f3f4f6;
+                                border-radius: 4px;
+                                font-size: 0.8em;
+                                font-family: monospace;
+                                color: #374151;
+                            ">${col}</span>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        // ============================================================================
+        // End Fold Inspector Functions
+        // ============================================================================
         
         // Update API examples whenever form changes
         document.addEventListener('DOMContentLoaded', () => {

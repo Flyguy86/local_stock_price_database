@@ -237,8 +237,19 @@ class WalkForwardTrainer:
                             }
                         }, f, indent=2)
                 
-                # Save hyperparameters + top features for MLflow visibility
+                # Save hyperparameters + top features + PBT config for MLflow visibility
+                # NOTE: Ray Tune will also create params.json from this config automatically
                 config_with_features = config.copy()
+                
+                # Add PBT-specific parameters for checkpoint tracking
+                # These values reflect the PBT scheduler settings used during this trial
+                from .config import settings
+                config_with_features["pbt_perturbation_interval"] = settings.tune.pbt_perturbation_interval
+                config_with_features["pbt_quantile_fraction"] = settings.tune.pbt_quantile_fraction
+                config_with_features["pbt_resample_probability"] = settings.tune.pbt_resample_probability
+                config_with_features["pbt_perturbation_factors"] = settings.tune.pbt_perturbation_factors
+                config_with_features["checkpoint_frequency"] = settings.ray.checkpoint_frequency
+                
                 if feature_importance_data:
                     # Add top 5 feature names as params (MLflow friendly)
                     for i, feat in enumerate(feature_importance_data["top_15_features"][:5], 1):

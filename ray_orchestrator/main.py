@@ -348,6 +348,90 @@ async def get_folds_summary():
         "total_symbols_with_folds": len(symbols_with_folds),
         "symbols_needing_preprocessing": list(set(symbols_with_data) - set(symbols_with_folds)),
         "symbols_ready_for_training": symbols_with_folds,
+
+
+@app.get("/folds/{symbol}/{fold_id}/columns")
+async def get_fold_columns(symbol: str, fold_id: int):
+    """
+    Get column names and sample data for a specific fold.
+    
+    Useful for inspecting what features are available in pre-processed folds.
+    """
+    fold_base_dir = settings.data.walk_forward_folds_dir
+    fold_dir = fold_base_dir / symbol / f"fold_{fold_id:03d}"
+    
+    if not fold_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Fold {fold_id} not found for {symbol}"
+        )
+    
+    train_path = fold_dir / "train"
+    
+    if not train_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Train data not found for fold {fold_id}"
+        )
+    
+    try:
+        # Read first file to get schema
+        import duckdb
+        parquet_files = list(train_path.glob("*.parquet"))
+        if not parquet_files:
+            raise HTTPException(status_code=404, detail="No parquet files found")
+        
+        # Get schema and sample data
+        sample_query = f"""
+            SELECT * FROM read_parquet('{train_path}/*.parquet')
+            LIMIT 5
+        """
+        sample_df = duckdb.query(sample_query).df()
+        
+        # Get column stats
+        columns_info = []
+        for col in sample_df.columns:
+            col_info = {
+                "name": col,
+                "dtype": str(sample_df[col].dtype),
+                "null_count": int(sample_df[col].isnull().sum()),
+                "sample_values": sample_df[col].head(3).tolist()
+            }
+            
+            # Add type-specific info
+            if pd.api.types.is_numeric_dtype(sample_df[col]):
+                col_info["min"] = float(sample_df[col].min()) if not sample_df[col].isnull().all() else None
+                col_info["max"] = float(sample_df[col].max()) if not sample_df[col].isnull().all() else None
+                col_info["mean"] = float(sample_df[col].mean()) if not sample_df[col].isnull().all() else None
+            
+            columns_info.append(col_info)
+        
+        # Categorize columns
+        context_cols = [c for c in sample_df.columns if any(ctx in c for ctx in ['_QQQ', '_VIX', '_MSFT', '_SPY'])]
+        indicator_cols = [c for c in sample_df.columns if any(ind in c for ind in ['sma_', 'ema_', 'rsi_', 'macd_', 'bb_', 'atr_'])]
+        price_cols = [c for c in sample_df.columns if any(p in c for p in ['open', 'high', 'low', 'close', 'volume'])]
+        metadata_cols = [c for c in sample_df.columns if c in ['symbol', 'ts', 'date', 'dt']]
+        
+        return {
+            "symbol": symbol,
+            "fold_id": fold_id,
+            "total_columns": len(sample_df.columns),
+            "row_count_sample": len(sample_df),
+            "columns": columns_info,
+            "column_categories": {
+                "context_features": context_cols,
+                "indicators": indicator_cols,
+                "price_features": price_cols,
+                "metadata": metadata_cols,
+                "other": list(set(sample_df.columns) - set(context_cols) - set(indicator_cols) - set(price_cols) - set(metadata_cols))
+            }
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading fold data: {str(e)}")
+
+
+@app.get("/folds/summary")
     }
     
     return summary

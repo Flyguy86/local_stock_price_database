@@ -277,10 +277,20 @@ class TuneOrchestrator:
     
     def create_pbt_scheduler(self, algorithm: str) -> PopulationBasedTraining:
         """
-        Create Population-Based Training scheduler.
+        Create Population-Based Training scheduler with best practice configuration.
         
-        PBT is the "multi-generational" approach that evolves models
-        over time, replacing poor performers with mutated clones of winners.
+        PBT evolves a population of models over generations, replacing poor
+        performers with mutated clones of winners.
+        
+        BEST PRACTICE PARAMETERS:
+        ┌─────────────────────────┬─────────────────┬────────────────────────────────────────┐
+        │ Parameter               │ Recommended     │ Why?                                   │
+        ├─────────────────────────┼─────────────────┼────────────────────────────────────────┤
+        │ perturbation_interval   │ 4-10 iterations │ Too low=thrashing, too high=waste time │
+        │ quantile_fraction       │ 0.2-0.25        │ Top 25% teach, bottom 25% replaced     │
+        │ resample_probability    │ 0.25            │ Jump out of local optima               │
+        │ perturbation_factors    │ [1.2, 0.8]      │ Random walk around good values         │
+        └─────────────────────────┴─────────────────┴────────────────────────────────────────┘
         
         CRITICAL SYNC RULE:
         - perturbation_interval must be >= checkpoint_frequency
@@ -304,6 +314,25 @@ class TuneOrchestrator:
             f"PBT Scheduler: perturbation every {settings.tune.pbt_perturbation_interval} iterations, "
             f"checkpoints every {settings.ray.checkpoint_frequency} iterations ✓"
         )
+        log.info(
+            f"PBT Parameters: quantile={settings.tune.pbt_quantile_fraction}, "
+            f"resample_prob={settings.tune.pbt_resample_probability}, "
+            f"perturbation_factors={settings.tune.pbt_perturbation_factors}"
+        )
+        
+        # Custom explore function with perturbation factors
+        def explore(config):
+            """Custom explore function for PBT continuous parameter mutation."""
+            import random
+            # Resample probability: pick new random value vs mutate existing
+            if random.random() < settings.tune.pbt_resample_probability:
+                # Resample from hyperparam_mutations
+                return None  # Signals PBT to use hyperparam_mutations
+            else:
+                # Perturb by multiplying with random factor
+                factor = random.choice(settings.tune.pbt_perturbation_factors)
+                return {k: v * factor if isinstance(v, (int, float)) else v 
+                        for k, v in config.items()}
         
         return PopulationBasedTraining(
             time_attr="training_iteration",
@@ -311,6 +340,7 @@ class TuneOrchestrator:
             hyperparam_mutations=mutations,
             quantile_fraction=settings.tune.pbt_quantile_fraction,
             resample_probability=settings.tune.pbt_resample_probability,
+            custom_explore_fn=explore,  # Use custom perturbation factors
             log_config=True,
         )
     
