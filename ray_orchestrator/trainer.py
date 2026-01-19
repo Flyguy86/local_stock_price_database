@@ -23,6 +23,7 @@ from pathlib import Path
 import ray
 from ray import tune
 from ray.train import Checkpoint
+from ray.air.integrations.mlflow import MLflowLoggerCallback
 from sklearn.linear_model import ElasticNet, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -681,6 +682,23 @@ class WalkForwardTrainer:
         max_concurrent = max(1, cpu_count - 1)  # Leave 1 CPU for Ray system
         log.info(f"Running up to {max_concurrent} concurrent trials (reserving 1 CPU for Ray)")
         
+        # Setup MLflow callback for automatic trial logging
+        mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+        experiment_name = f"walk_forward_{algorithm}_{symbols[0]}"
+        
+        callbacks = []
+        try:
+            mlflow_callback = MLflowLoggerCallback(
+                tracking_uri=mlflow_uri,
+                experiment_name=experiment_name,
+                save_artifact=True,  # Save model artifacts to MLflow
+                tags={"algorithm": algorithm, "ticker": symbols[0]}
+            )
+            callbacks.append(mlflow_callback)
+            log.info(f"✅ MLflow callback configured: {mlflow_uri}, experiment: {experiment_name}")
+        except Exception as e:
+            log.warning(f"⚠️ Failed to setup MLflow callback: {e}. Continuing without MLflow logging.")
+        
         tuner = tune.Tuner(
             trainable,
             param_space=param_space,
@@ -691,8 +709,9 @@ class WalkForwardTrainer:
                 max_concurrent_trials=max_concurrent,  # Prevent deadlock by limiting concurrency
             ),
             run_config=ray.train.RunConfig(
-                name=f"walk_forward_{algorithm}_{symbols[0]}",
+                name=experiment_name,
                 storage_path=str(settings.data.checkpoints_dir),
+                callbacks=callbacks,  # Add MLflow callback
                 # Limit checkpoint storage to save disk space
                 checkpoint_config=ray.train.CheckpointConfig(
                     num_to_keep=1,  # Only keep best checkpoint

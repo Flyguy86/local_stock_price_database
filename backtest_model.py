@@ -31,6 +31,7 @@ import ray
 from ray.data import read_parquet
 
 from ray_orchestrator.streaming import StreamingPreprocessor, BarDataLoader
+from trading_simulator import TradingSimulator
 
 
 def load_checkpoint(checkpoint_path: str) -> dict:
@@ -280,6 +281,13 @@ def main():
     parser.add_argument('--plot', action='store_true', help='Generate plots')
     parser.add_argument('--output-dir', default='/app/data/backtest_results', help='Output directory')
     
+    # Trading simulation parameters
+    parser.add_argument('--initial-capital', type=float, default=100000.0, help='Initial capital')
+    parser.add_argument('--position-size-pct', type=float, default=0.95, help='Position size as % of capital')
+    parser.add_argument('--slippage-pct', type=float, default=0.001, help='Slippage percentage (0.001 = 0.1%%)')
+    parser.add_argument('--commission-per-share', type=float, default=0.005, help='Commission per share')
+    parser.add_argument('--prediction-threshold', type=float, default=0.001, help='Min predicted return to trade')
+    
     args = parser.parse_args()
     
     # Create output directory
@@ -302,10 +310,51 @@ def main():
         context_symbols=context_symbols
     )
     
-    # Run backtest
+    # Run prediction backtest
     results = backtest(model, features_df)
     
-    # Save results
+    # Run trading simulation
+    print("\n=== RUNNING TRADING SIMULATION ===")
+    simulator = TradingSimulator(
+        initial_capital=args.initial_capital,
+        position_size_pct=args.position_size_pct,
+        slippage_pct=args.slippage_pct,
+        commission_per_share=args.commission_per_share
+    )
+    
+    trading_results = simulator.run_backtest(
+        df=results['predictions'],
+        predictions_col='predicted',
+        actual_return_col='forward_return_1d',
+        threshold=args.prediction_threshold
+    )
+    
+    # Print trading metrics
+    metrics = trading_results['metrics']
+    summary = trading_results['summary']
+    
+    print(f"\n📊 TRADING PERFORMANCE")
+    print(f"   Initial Capital: ${summary['initial_capital']:,.2f}")
+    print(f"   Final Equity: ${summary['final_equity']:,.2f}")
+    print(f"   Total Return: {summary['total_return_pct']:.2f}%")
+    print(f"\n📈 RISK-ADJUSTED RETURNS")
+    print(f"   Annualized Return: {metrics['annualized_return_pct']:.2f}%")
+    print(f"   Volatility: {metrics['volatility_pct']:.2f}%")
+    print(f"   Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
+    print(f"   Sortino Ratio: {metrics['sortino_ratio']:.2f}")
+    print(f"   Max Drawdown: {metrics['max_drawdown_pct']:.2f}%")
+    print(f"\n🎯 TRADE STATISTICS")
+    print(f"   Total Trades: {metrics['num_trades']}")
+    print(f"   Win Rate: {metrics['win_rate_pct']:.1f}%")
+    print(f"   Profit Factor: {metrics['profit_factor']:.2f}")
+    print(f"   Avg Win: ${metrics['avg_win']:.2f}")
+    print(f"   Avg Loss: ${metrics['avg_loss']:.2f}")
+    print(f"\n💰 TRANSACTION COSTS")
+    print(f"   Total Commission: ${metrics['total_commission']:.2f}")
+    print(f"   Total Slippage: ${metrics['total_slippage']:.2f}")
+    print(f"   Total Costs: ${metrics['total_commission'] + metrics['total_slippage']:.2f}")
+    
+    # Save combined results
     results_file = output_dir / f"backtest_{args.ticker}_{args.start_date}_{args.end_date}.json"
     with open(results_file, 'w') as f:
         json.dump({
@@ -313,20 +362,29 @@ def main():
             "date_range": {"start": args.start_date, "end": args.end_date},
             "checkpoint": args.checkpoint,
             "trained_on": metadata['training_info']['primary_ticker'],
-            "metrics": {
+            "prediction_metrics": {
                 "n_samples": results['n_samples'],
                 "rmse": results['rmse'],
                 "r2": results['r2'],
                 "mae": results['mae'],
                 "direction_accuracy": results['direction_accuracy']
-            }
+            },
+            "trading_metrics": metrics,
+            "trading_summary": summary,
+            "trades": trading_results['trades']
         }, f, indent=2)
-    print(f"\nResults saved to: {results_file}")
+    print(f"\n✅ Results saved to: {results_file}")
     
-    # Save predictions
+    # Save predictions with trading signals
     pred_file = output_dir / f"predictions_{args.ticker}_{args.start_date}_{args.end_date}.csv"
     results['predictions'].to_csv(pred_file, index=False)
-    print(f"Predictions saved to: {pred_file}")
+    print(f"✅ Predictions saved to: {pred_file}")
+    
+    # Save equity curve
+    equity_df = pd.DataFrame(trading_results['equity_curve'])
+    equity_file = output_dir / f"equity_curve_{args.ticker}_{args.start_date}_{args.end_date}.csv"
+    equity_df.to_csv(equity_file, index=False)
+    print(f"✅ Equity curve saved to: {equity_file}")
     
     # Plot if requested
     if args.plot:

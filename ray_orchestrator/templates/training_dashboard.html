@@ -145,6 +145,11 @@
             transform: scale(0.95);
         }
         
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
         .container {
             max-width: 1400px;
             margin: 0 auto;
@@ -540,6 +545,28 @@
                     this.style.borderBottomColor='transparent';
                 ">
                     📊 VectorBT Dashboard
+                </a>
+                <a href="/backtest/results_viewer" style="
+                    flex: 1;
+                    padding: 20px 30px;
+                    background: white;
+                    color: #666;
+                    font-weight: 600;
+                    font-size: 1.1em;
+                    text-decoration: none;
+                    text-align: center;
+                    transition: all 0.3s;
+                    border-bottom: 3px solid transparent;
+                " onmouseover="
+                    this.style.background='#f3f4f6';
+                    this.style.color='#667eea';
+                    this.style.borderBottomColor='#667eea';
+                " onmouseout="
+                    this.style.background='white';
+                    this.style.color='#666';
+                    this.style.borderBottomColor='transparent';
+                ">
+                    📈 Results Viewer
                 </a>
             </div>
         </div>
@@ -1206,19 +1233,23 @@
                 return;
             }
             
-            // Sort models by name
-            availableModels.sort((a, b) => a.name.localeCompare(b.name));
+            // Sort models by test RMSE (best first)
+            availableModels.sort((a, b) => {
+                const rmseA = a.model_info?.test_rmse || Infinity;
+                const rmseB = b.model_info?.test_rmse || Infinity;
+                return rmseA - rmseB;
+            });
             
-            // Build options
+            // Build options with detailed info
             let html = '<option value="">-- Select a model --</option>';
             availableModels.forEach(model => {
                 const info = model.model_info;
-                let optionText = model.name;
+                let optionText = `${info?.algorithm?.toUpperCase() || 'Unknown'} - ${info?.ticker || 'Unknown'}`;
                 
                 if (info) {
                     const rmse = info.test_rmse ? info.test_rmse.toFixed(6) : 'N/A';
                     const r2 = info.test_r2 ? info.test_r2.toFixed(4) : 'N/A';
-                    optionText += ` (RMSE: ${rmse}, R²: ${r2})`;
+                    optionText += ` | RMSE: ${rmse} | R²: ${r2}`;
                 }
                 
                 html += `<option value="${model.name}">${optionText}</option>`;
@@ -1226,7 +1257,8 @@
             
             select.innerHTML = html;
             
-            // Add change listener to show model details (which triggers API update)
+            // Add change listener to show model details
+            select.removeEventListener('change', showModelDetails);
             select.addEventListener('change', showModelDetails);
         }
         
@@ -1238,25 +1270,51 @@
             
             const selectedName = select.value;
             if (!selectedName) {
-                helpText.textContent = 'Select an experiment to view model details';
-                populateBacktestDates(null);  // Clear dates
+                helpText.innerHTML = 'Select a model to view details';
+                populateBacktestDates(null);
                 return;
             }
             
             const model = availableModels.find(m => m.name === selectedName);
             if (!model || !model.model_info) {
-                helpText.textContent = 'Model details unavailable';
-                populateBacktestDates(null);  // Clear dates
+                helpText.innerHTML = 'Model details unavailable';
+                populateBacktestDates(null);
                 return;
             }
             
             const info = model.model_info;
+            const dateRange = info.date_range || {};
+            
             helpText.innerHTML = `
-                <strong>Model Details:</strong> 
-                Trial: ${info.trial_id || 'N/A'} | 
-                RMSE: ${info.test_rmse ? info.test_rmse.toFixed(6) : 'N/A'} | 
-                R²: ${info.test_r2 ? info.test_r2.toFixed(4) : 'N/A'} | 
-                Path: ${model.path}
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin-top: 10px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <div>
+                            <strong>📊 Performance Metrics</strong>
+                            <div style="margin-top: 8px; font-size: 0.95em;">
+                                • Test RMSE: <strong>${info.test_rmse ? info.test_rmse.toFixed(6) : 'N/A'}</strong><br>
+                                • Test R²: <strong>${info.test_r2 ? info.test_r2.toFixed(4) : 'N/A'}</strong><br>
+                                • Test MAE: <strong>${info.test_mae ? info.test_mae.toFixed(6) : 'N/A'}</strong><br>
+                                • Train RMSE: <strong>${info.train_rmse ? info.train_rmse.toFixed(6) : 'N/A'}</strong><br>
+                                • Folds: <strong>${info.num_folds || 'N/A'}</strong>
+                            </div>
+                        </div>
+                        <div>
+                            <strong>🔧 Model Configuration</strong>
+                            <div style="margin-top: 8px; font-size: 0.95em;">
+                                • Algorithm: <strong>${info.algorithm?.toUpperCase() || 'N/A'}</strong><br>
+                                • Trained on: <strong>${info.ticker || 'N/A'}</strong><br>
+                                • Date Range: <strong>${dateRange.start || 'N/A'} to ${dateRange.end || 'N/A'}</strong><br>
+                                • Features: <strong>${info.feature_version || 'N/A'}</strong>
+                            </div>
+                        </div>
+                    </div>
+                    ${info.params ? `
+                        <details style="margin-top: 10px;">
+                            <summary style="cursor: pointer; font-weight: 600;">View Hyperparameters</summary>
+                            <pre style="background: white; padding: 10px; border-radius: 4px; margin-top: 5px; overflow-x: auto; font-size: 0.85em;">${JSON.stringify(info.params, null, 2)}</pre>
+                        </details>
+                    ` : ''}
+                </div>
             `;
             
             // Trigger API example update
@@ -1461,8 +1519,14 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showBacktestStatus('success', 'Backtest completed successfully!');
-                    displayBacktestResults(result);
+                    // Check for folds_required status
+                    if (result.status === 'folds_required' || result.status === 'generating_folds') {
+                        showBacktestStatus('info', result.message);
+                        displayFoldGenerationInstructions(result);
+                    } else {
+                        showBacktestStatus('success', 'Backtest completed successfully!');
+                        displayBacktestResults(result);
+                    }
                 } else {
                     showBacktestStatus('error', `Backtest failed: ${result.detail || 'Unknown error'}`);
                 }
@@ -1483,6 +1547,128 @@
             statusDiv.className = `status ${type}`;
             statusDiv.textContent = message;
             statusDiv.style.display = 'block';
+        }
+        
+        function displayFoldGenerationInstructions(result) {
+            const resultsDiv = document.getElementById('backtestResults');
+            const contentDiv = document.getElementById('backtestResultsContent');
+            
+            const instructions = result.instructions || {};
+            const symbol = result.symbol;
+            
+            contentDiv.innerHTML = `
+                <div style="padding: 20px; background: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107;">
+                    <h4 style="margin-top: 0;">📁 Fold Generation Required</h4>
+                    <p><strong>Symbol:</strong> ${symbol}</p>
+                    <p>Walk-forward folds with full feature engineering must be generated before backtesting.</p>
+                    
+                    ${result.background_task ? `
+                        <div id="foldGenerationProgress" style="background: #e3f2fd; padding: 15px; border-radius: 6px; margin: 15px 0;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <div class="spinner" style="width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                                <strong>Background Task Running...</strong>
+                            </div>
+                            <div id="foldStatus" style="font-family: monospace; font-size: 0.9em; color: #666;">
+                                Checking status...
+                            </div>
+                            <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                                <em>This page will auto-refresh status every 3 seconds</em>
+                            </div>
+                        </div>
+                    ` : ''}
+                    
+                    <h5 style="margin-top: 20px; margin-bottom: 10px;">Option 1: Use This Dashboard</h5>
+                    <ol style="line-height: 1.8;">
+                        <li>Scroll up to the training form</li>
+                        <li>Set <strong>Primary Symbol</strong> to: <code>${symbol}</code></li>
+                        <li>Click <strong>"Generate Fold Data Only"</strong> button (under Advanced section)</li>
+                        <li>Wait 2-5 minutes for fold generation with Ray Data preprocessing</li>
+                        <li>Return here and click <strong>"Run Backtest"</strong> again</li>
+                    </ol>
+                    
+                    ${instructions.alternative ? `
+                        <h5 style="margin-top: 15px; margin-bottom: 10px;">Option 2: Use API</h5>
+                        <pre style="background: #f8f9fa; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 0.9em;">${instructions.alternative}</pre>
+                    ` : ''}
+                    
+                    <p style="margin-top: 15px; color: #666; font-size: 0.95em;">
+                        <strong>Why?</strong> Folds must use the same Ray Data preprocessing pipeline and feature engineering 
+                        as the original training to ensure feature compatibility with the trained model.
+                    </p>
+                </div>
+            `;
+            
+            resultsDiv.style.display = 'block';
+            
+            // Start polling if background task is running
+            if (result.background_task && symbol) {
+                pollFoldGenerationStatus(symbol);
+            }
+        }
+        
+        let foldStatusInterval = null;
+        
+        function pollFoldGenerationStatus(symbol) {
+            // Clear any existing interval
+            if (foldStatusInterval) {
+                clearInterval(foldStatusInterval);
+            }
+            
+            async function checkStatus() {
+                try {
+                    const response = await fetch(`/backtest/fold-status/${symbol}`);
+                    const status = await response.json();
+                    
+                    const statusDiv = document.getElementById('foldStatus');
+                    if (!statusDiv) {
+                        clearInterval(foldStatusInterval);
+                        return;
+                    }
+                    
+                    if (status.status === 'generating') {
+                        statusDiv.innerHTML = `
+                            <div style="color: #0066cc;">
+                                <strong>Status:</strong> Generating folds...<br>
+                                <strong>Progress:</strong> Fold ${status.current_fold} ${status.total_folds !== 'calculating...' ? '/ ' + status.total_folds : ''}<br>
+                                <strong>Message:</strong> ${status.message}
+                            </div>
+                        `;
+                    } else if (status.status === 'completed') {
+                        statusDiv.innerHTML = `
+                            <div style="color: #28a745;">
+                                <strong>✅ Completed!</strong><br>
+                                Generated ${status.total_folds} folds successfully.<br>
+                                <em>You can now run the backtest.</em>
+                            </div>
+                        `;
+                        clearInterval(foldStatusInterval);
+                        
+                        // Update progress box
+                        document.getElementById('foldGenerationProgress').style.background = '#d4edda';
+                        document.getElementById('foldGenerationProgress').style.borderLeft = '4px solid #28a745';
+                    } else if (status.status === 'failed') {
+                        statusDiv.innerHTML = `
+                            <div style="color: #dc3545;">
+                                <strong>❌ Failed</strong><br>
+                                ${status.message}
+                            </div>
+                        `;
+                        clearInterval(foldStatusInterval);
+                        
+                        // Update progress box
+                        document.getElementById('foldGenerationProgress').style.background = '#f8d7da';
+                        document.getElementById('foldGenerationProgress').style.borderLeft = '4px solid #dc3545';
+                    }
+                } catch (error) {
+                    console.error('Error checking fold status:', error);
+                }
+            }
+            
+            // Check immediately
+            checkStatus();
+            
+            // Then poll every 3 seconds
+            foldStatusInterval = setInterval(checkStatus, 3000);
         }
         
         function displayBacktestResults(result) {

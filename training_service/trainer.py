@@ -197,6 +197,41 @@ def _save_all_grid_models(grid_search, base_model, X_train, y_train, X_test, y_t
                 metrics["feature_importance"] = dict(sorted(feature_importance.items(), 
                                                             key=lambda x: abs(x[1]), reverse=True))
                 metrics["intercept"] = float(estimator.intercept_) if hasattr(estimator, "intercept_") else None
+            
+            # Enhanced logging: Display top features with context symbol highlighting
+            if "feature_importance" in metrics:
+                top_features = list(metrics["feature_importance"].items())[:15]
+                log.info(f"=== Top 15 Features for Grid Model {idx+1} ===")
+                
+                # Detect context symbols from feature names (features ending with _SYMBOL)
+                # Common context symbols: QQQ, VIX, SPY, DIA, etc.
+                context_symbols_in_features = set()
+                for feat_name in feature_cols_used:
+                    # Check for pattern: feature_name_SYMBOL (e.g., close_QQQ, rsi_14_VIX)
+                    parts = feat_name.split('_')
+                    if len(parts) >= 2 and parts[-1].isupper() and len(parts[-1]) <= 5:
+                        context_symbols_in_features.add(parts[-1])
+                
+                for rank, (feat, importance) in enumerate(top_features, 1):
+                    # Check if this feature is from a context symbol
+                    is_context = any(feat.endswith(f"_{sym}") for sym in context_symbols_in_features)
+                    context_marker = " [CONTEXT]" if is_context else ""
+                    log.info(f"  {rank:2d}. {feat:40s} = {importance:10.6f}{context_marker}")
+                
+                # Summary statistics
+                total_features = len(feature_cols_used)
+                context_feature_count = sum(
+                    1 for f in feature_cols_used 
+                    if any(f.endswith(f"_{sym}") for sym in context_symbols_in_features)
+                )
+                
+                if context_symbols_in_features:
+                    context_pct = 100 * context_feature_count / total_features if total_features > 0 else 0
+                    log.info(f"Context Symbols Detected: {sorted(context_symbols_in_features)}")
+                    log.info(f"Context Features: {context_feature_count}/{total_features} ({context_pct:.1f}%)")
+                else:
+                    log.info(f"No context symbol features detected in this model")
+                    
         except Exception as e:
             log.warning(f"Could not extract feature importance for grid model {idx+1}: {e}")
         
@@ -404,12 +439,22 @@ def train_model_task(
         X = df[feature_cols]
         y = df["target"]
         
+        # Track dropped columns with reasons for comprehensive reporting
+        drop_tracking = {
+            'all_nan': [],
+            'non_numeric': [],
+            'p_value_pruning': []
+        }
+        
         # 2. Handle Feature NaNs
         # First, drop feature columns that are 100% NaN (cannot impute them)
         initial_feature_cols = list(X.columns)
+        X_before_nan_drop = X.copy()
         X = X.dropna(axis=1, how='all')
         if X.empty:
             raise ValueError("All feature columns were entirely NaN.")
+        
+        drop_tracking['all_nan'] = sorted(list(set(X_before_nan_drop.columns) - set(X.columns)))
             
         # DEBUG: Log data shape and types
         log.info(f"Data Loaded: X.shape={X.shape}, y.shape={y.shape}")
@@ -418,12 +463,10 @@ def train_model_task(
              log.warning("Data Set extremely small (<10 rows).")
 
         feature_cols_used = list(X.columns)
-        dropped_feature_cols = sorted(list(set(initial_feature_cols) - set(feature_cols_used)))
         
         # Track initial column counts
         columns_initial = len(initial_feature_cols)
         columns_remaining = len(feature_cols_used)
-        log.info(f"Column counts after preprocessing: {columns_remaining}/{columns_initial} features (dropped {len(dropped_feature_cols)})")
         
         # Update DB with column counts early so orchestrator can display them
         db.update_model_status(
@@ -439,7 +482,8 @@ def train_model_task(
         # 1m data might contain object columns (strings) that break sklearn
         numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
         if len(numeric_cols) < len(feature_cols_used):
-             dropped_non_numeric = list(set(feature_cols_used) - set(numeric_cols))
+             dropped_non_numeric = sorted(list(set(feature_cols_used) - set(numeric_cols)))
+             drop_tracking['non_numeric'] = dropped_non_numeric
              log.warning(f"Dropping {len(dropped_non_numeric)} non-numeric features: {dropped_non_numeric}")
              feature_cols_used = numeric_cols
              X = X[feature_cols_used]
@@ -503,7 +547,8 @@ def train_model_task(
                 removed_feats = sorted(list(set(feature_cols_used) - set(kept_feats)))
                 
                 if removed_feats:
-                    log.info(f"Dropped {len(removed_feats)} features: {removed_feats}")
+                    drop_tracking['p_value_pruning'] = removed_feats
+                    log.info(f"P-value pruning: Dropped {len(removed_feats)} features")
                     feature_cols_used = kept_feats
                     X = X[feature_cols_used]
                     
@@ -513,6 +558,7 @@ def train_model_task(
                          best_idx = np.argmin(p_vals)
                          feature_cols_used = [X_sel.columns[best_idx]]
                          X = X.iloc[:, [best_idx]]
+                         drop_tracking['p_value_pruning'] = removed_feats[:-1]  # One was kept
 
                 # Log Standardized Coefficients (Ranking)
                 if len(feature_cols_used) > 0:
@@ -527,6 +573,61 @@ def train_model_task(
             except Exception as e:
                 import traceback
                 log.error(f"Pruning failed: {e}. Trace: {traceback.format_exc()}. Proceeding with all features.")
+        
+        # === COMPREHENSIVE DROPPED COLUMNS SUMMARY ===
+        # After all drop phases, log detailed breakdown
+        columns_final = len(feature_cols_used)
+        total_dropped = columns_initial - columns_final
+        
+        log.info(f"")
+        log.info(f"{'='*80}")
+        log.info(f"FEATURE DROPPING SUMMARY")
+        log.info(f"{'='*80}")
+        log.info(f"Initial features: {columns_initial}")
+        
+        # Detect context symbols from remaining feature names
+        context_symbols_detected = set()
+        for feat_name in initial_feature_cols:
+            parts = feat_name.split('_')
+            if len(parts) >= 2 and parts[-1].isupper() and len(parts[-1]) <= 5:
+                context_symbols_detected.add(parts[-1])
+        
+        if context_symbols_detected:
+            log.info(f"Context symbols detected in initial features: {sorted(context_symbols_detected)}")
+        
+        for reason, dropped_cols in drop_tracking.items():
+            if dropped_cols:
+                # Count context vs primary drops
+                context_drops = [c for c in dropped_cols if any(c.endswith(f"_{sym}") for sym in context_symbols_detected)]
+                primary_drops = [c for c in dropped_cols if c not in context_drops]
+                
+                log.info(f"")
+                log.info(f"Dropped due to {reason}: {len(dropped_cols)} features")
+                log.info(f"  - Primary symbol: {len(primary_drops)} features")
+                log.info(f"  - Context symbols: {len(context_drops)} features")
+                
+                # Only list if manageable number
+                if len(dropped_cols) <= 30:
+                    if primary_drops:
+                        log.info(f"  Primary dropped: {primary_drops}")
+                    if context_drops:
+                        log.info(f"  Context dropped: {context_drops}")
+                else:
+                    log.info(f"  (List omitted due to large count - {len(dropped_cols)} features)")
+        
+        # Final statistics
+        retention_rate = 100 * columns_final / columns_initial if columns_initial > 0 else 0
+        context_remaining = sum(1 for f in feature_cols_used if any(f.endswith(f"_{sym}") for sym in context_symbols_detected))
+        primary_remaining = columns_final - context_remaining
+        
+        log.info(f"")
+        log.info(f"Final features: {columns_final}")
+        log.info(f"  - Primary symbol: {primary_remaining} features")
+        log.info(f"  - Context symbols: {context_remaining} features")
+        log.info(f"Total dropped: {total_dropped} ({100 - retention_rate:.1f}%)")
+        log.info(f"Retention rate: {retention_rate:.1f}%")
+        log.info(f"{'='*80}")
+        log.info(f"")
 
         # Split Data (Custom Column or Time-based)
         is_cv = False

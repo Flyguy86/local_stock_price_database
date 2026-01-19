@@ -409,37 +409,100 @@ class StreamingPreprocessor:
             #   - rsi_14_QQQ, macd_QQQ (context indicators)
             #   - vix_zscore, high_vix_regime (if VIX present)
         """
-        def join_and_calculate_context(batch: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-            """
-            Process a batch to join context symbols and calculate cross-sectional features.
+        # Convert datasets to pandas for complex join operations
+        # This is acceptable because we're processing fold-sized chunks (2-3 months)
+        # not the entire multi-year dataset
+        try:
+            log.info(f"Converting datasets to pandas for context feature merge (primary: {primary_symbol})")
+            primary_pdf = primary_ds.to_pandas()
+            context_pdf = context_ds.to_pandas()
             
-            This runs as a map operation on each batch of the primary dataset.
-            Context data is passed as a closure from the outer scope.
-            """
-            import pandas as pd
-            import numpy as np
+            if context_pdf.empty:
+                log.warning(f"Context dataset is empty, skipping context merge for {primary_symbol}")
+                return primary_ds
             
-            # Convert to DataFrame for easier manipulation
-            primary_df = pd.DataFrame(batch)
+            pre_merge_rows = len(primary_pdf)
+            pre_merge_cols = len(primary_pdf.columns)
             
-            if primary_df.empty or 'ts' not in primary_df.columns:
-                return batch
+            # Get unique context symbols
+            context_symbols_in_df = context_pdf['symbol'].unique()
+            log.info(f"Merging {len(context_symbols_in_df)} context symbols: {list(context_symbols_in_df)}")
             
-            # Ensure timestamp is datetime
-            primary_df['ts'] = pd.to_datetime(primary_df['ts'])
+            # Process each context symbol separately
+            for ctx_sym in context_symbols_in_df:
+                ctx_data = context_pdf[context_pdf['symbol'] == ctx_sym].copy()
+                
+                # Rename columns to avoid collisions (except 'ts')
+                ctx_cols_to_rename = [c for c in ctx_data.columns if c not in ['ts', 'symbol']]
+                rename_dict = {c: f"{c}_{ctx_sym}" for c in ctx_cols_to_rename}
+                ctx_data = ctx_data.rename(columns=rename_dict)
+                
+                # Select only renamed columns + ts for merge
+                merge_cols = ['ts'] + [f"{c}_{ctx_sym}" for c in ctx_cols_to_rename]
+                ctx_data = ctx_data[merge_cols]
+                
+                # Ensure timestamps are datetime
+                if not pd.api.types.is_datetime64_any_dtype(primary_pdf['ts']):
+                    primary_pdf['ts'] = pd.to_datetime(primary_pdf['ts'])
+                if not pd.api.types.is_datetime64_any_dtype(ctx_data['ts']):
+                    ctx_data['ts'] = pd.to_datetime(ctx_data['ts'])
+                
+                # Merge on timestamp (left join to keep all primary data)
+                # This ensures we don't drop primary data if context has gaps
+                before_merge = len(primary_pdf)
+                primary_pdf = pd.merge(
+                    primary_pdf,
+                    ctx_data,
+                    on='ts',
+                    how='left',
+                    suffixes=('', f'_dup_{ctx_sym}')
+                )
+                after_merge = len(primary_pdf)
+                
+                # Verify no rows were dropped (left join should preserve all rows)
+                if after_merge != before_merge:
+                    log.error(f"CRITICAL: Row count changed during merge! {before_merge} → {after_merge}")
+                    raise ValueError(f"Context merge corrupted data: row count changed")
+                
+                # Forward-fill context features to handle missing timestamps
+                # This is safe because we're only filling gaps, not creating future data
+                context_feature_cols = [c for c in primary_pdf.columns if c.endswith(f"_{ctx_sym}")]
+                nan_before = primary_pdf[context_feature_cols].isna().sum().sum()
+                primary_pdf[context_feature_cols] = primary_pdf[context_feature_cols].ffill()
+                nan_after = primary_pdf[context_feature_cols].isna().sum().sum()
+                
+                log.info(f"  Merged {ctx_sym}: {len(ctx_data)} context rows → {len(context_feature_cols)} features "
+                        f"(filled {nan_before - nan_after} NaNs via forward-fill)")
             
-            # Get context data (this will be passed via map_batches closure)
-            # For now, return primary data unchanged - full implementation requires
-            # Ray Data's join operation or passing context data through actor state
-            return batch
-        
-        # TODO: Implement proper Ray Data join operation
-        # Current limitation: Ray Data's join is complex for time-series
-        # Recommended approach: Use Ray actors with shared context state
-        # or pre-join context data before creating Dataset
-        
-        log.info(f"Context feature joining for {primary_symbol} (stub - not yet implemented)")
-        return primary_ds
+            # Verify timestamps are still monotonically increasing (no future leakage)
+            if not primary_pdf['ts'].is_monotonic_increasing:
+                log.error("CRITICAL: Timestamps are not monotonically increasing after merge!")
+                raise ValueError("Context merge broke timestamp ordering - potential future leakage!")
+            
+            post_merge_rows = len(primary_pdf)
+            post_merge_cols = len(primary_pdf.columns)
+            added_cols = post_merge_cols - pre_merge_cols
+            
+            log.info(f"Context merge complete for {primary_symbol}: "
+                    f"{pre_merge_rows} rows preserved, "
+                    f"{added_cols} context features added "
+                    f"({pre_merge_cols} → {post_merge_cols} total columns)")
+            
+            # === DATA VALIDATION: Check for NaN/null values after merge ===
+            self._validate_data_quality(
+                df=primary_pdf,
+                stage="after_context_merge",
+                symbol=primary_symbol,
+                allow_nan_threshold=0.05  # Allow up to 5% NaNs (will be handled by imputation)
+            )
+            
+            # Convert back to Ray Dataset
+            return ray.data.from_pandas(primary_pdf)
+            
+        except Exception as e:
+            log.error(f"Failed to merge context features for {primary_symbol}: {e}", exc_info=True)
+            log.warning(f"Returning primary dataset without context features due to merge error")
+            return primary_ds
     
     def _calculate_context_features(
         self,
@@ -559,6 +622,13 @@ class StreamingPreprocessor:
                 merged['vix_log_return'] = merged['vix_log_return'].fillna(0.0)
         
         log.debug(f"Added context features from {context_symbol}: {len(context_feature_cols)} base features + relative/beta features")
+        
+        # Validate data quality after context feature calculation
+        nan_counts = merged[context_feature_cols].isna().sum()
+        high_nan_cols = nan_counts[nan_counts > len(merged) * 0.1].index.tolist()  # >10% NaN
+        if high_nan_cols:
+            log.warning(f"Context features with >10% NaN after calculation: {high_nan_cols}")
+        
         return merged
     
     def calculate_indicators_gpu(
@@ -1076,7 +1146,108 @@ class StreamingPreprocessor:
                 )
             log.info(f"Processed test data for {fold}")
         
+        # === FINAL VALIDATION: Check both train and test datasets ===
+        if fold.train_ds:
+            train_sample = fold.train_ds.take(1000)  # Sample for validation
+            if train_sample:
+                train_df = pd.DataFrame(train_sample)
+                self._validate_data_quality(
+                    df=train_df,
+                    stage="after_indicator_calculation_train",
+                    symbol="train_fold",
+                    allow_nan_threshold=0.02  # Stricter after indicators
+                )
+        
+        if fold.test_ds:
+            test_sample = fold.test_ds.take(1000)  # Sample for validation
+            if test_sample:
+                test_df = pd.DataFrame(test_sample)
+                self._validate_data_quality(
+                    df=test_df,
+                    stage="after_indicator_calculation_test",
+                    symbol="test_fold",
+                    allow_nan_threshold=0.02  # Stricter after indicators
+                )
+        
         return fold
+    
+    def _validate_data_quality(
+        self,
+        df: pd.DataFrame,
+        stage: str,
+        symbol: str,
+        allow_nan_threshold: float = 0.05
+    ) -> None:
+        """
+        Validate data quality after processing stages.
+        
+        Args:
+            df: DataFrame to validate
+            stage: Processing stage name (for logging)
+            symbol: Symbol being processed
+            allow_nan_threshold: Maximum allowed NaN percentage (0.0 to 1.0)
+            
+        Raises:
+            ValueError: If data quality issues exceed thresholds
+        """
+        if df.empty:
+            log.warning(f"Validation [{stage}] for {symbol}: DataFrame is empty")
+            return
+        
+        total_cells = df.shape[0] * df.shape[1]
+        nan_count = df.isna().sum().sum()
+        nan_pct = nan_count / total_cells if total_cells > 0 else 0
+        
+        log.info(f"""Data Quality Validation [{stage}] for {symbol}:
+          Rows: {len(df):,}
+          Columns: {len(df.columns)}
+          Total cells: {total_cells:,}
+          NaN cells: {nan_count:,} ({nan_pct*100:.2f}%)
+          Threshold: {allow_nan_threshold*100:.1f}%""")
+        
+        # Check overall NaN percentage
+        if nan_pct > allow_nan_threshold:
+            # Identify columns with high NaN percentage
+            nan_by_col = df.isna().sum()
+            high_nan_cols = nan_by_col[nan_by_col > len(df) * 0.1].sort_values(ascending=False)
+            
+            error_msg = (
+                f"VALIDATION FAILED [{stage}]: NaN percentage {nan_pct*100:.2f}% "
+                f"exceeds threshold {allow_nan_threshold*100:.1f}%\n"
+                f"Columns with >10% NaN (top 10):\n"
+            )
+            for col, count in high_nan_cols.head(10).items():
+                col_pct = count / len(df) * 100
+                error_msg += f"  - {col}: {count:,}/{len(df):,} ({col_pct:.1f}%)\n"
+            
+            log.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Check for columns that are entirely NaN
+        all_nan_cols = df.columns[df.isna().all()].tolist()
+        if all_nan_cols:
+            log.warning(f"Columns with 100% NaN (will be dropped): {all_nan_cols}")
+        
+        # Check for infinite values
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        inf_counts = {}
+        for col in numeric_cols:
+            inf_count = np.isinf(df[col]).sum()
+            if inf_count > 0:
+                inf_counts[col] = inf_count
+        
+        if inf_counts:
+            log.warning(f"Columns with infinite values: {inf_counts}")
+            # Replace inf with NaN for downstream handling
+            for col in inf_counts:
+                df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+                log.info(f"Replaced {inf_counts[col]} infinite values with NaN in {col}")
+        
+        # Summary
+        if nan_pct <= allow_nan_threshold and not inf_counts:
+            log.info(f"✅ Validation [{stage}] PASSED for {symbol}")
+        else:
+            log.warning(f"⚠️  Validation [{stage}] passed with warnings for {symbol}")
     
     def add_basic_features(self, ds: Dataset) -> Dataset:
         """Add basic technical features using Ray Data map."""

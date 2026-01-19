@@ -25,7 +25,18 @@ Stock price database with ML model training, backtesting, and model registry
 - ✅ Backtesting: `generate_features()` → `calculate_indicators_gpu()`
 - ✅ **Guaranteed consistency** - no feature discrepancies between train/test
 
+**NEW: Context Symbol Support (2026-01-19)**
+- ✅ Context symbols (QQQ, VIX, SPY) are properly merged into training/testing data
+- ✅ Timestamp-aligned merges ensure no future data leakage
+- ✅ Context features are suffixed with symbol name (e.g., `rsi_14_QQQ`, `close_VIX`)
+- ✅ Comprehensive logging shows:
+  - Which context symbols were merged
+  - How many context features were added
+  - Feature importance with [CONTEXT] markers
+  - Detailed dropped columns breakdown by category
+
 See **[FEATURE_CONSISTENCY_GUIDE.md](FEATURE_CONSISTENCY_GUIDE.md)** for architecture details.
+See **[.github/ray-data-preprocessing-review.md](.github/ray-data-preprocessing-review.md)** for context symbol implementation details.
 
 See **[MODEL_REGISTRY_GUIDE.md](MODEL_REGISTRY_GUIDE.md)** for full documentation.
 

@@ -221,24 +221,54 @@ class MLflowTracker:
         Returns:
             List of model metadata for ALL versions
         """
-        client = mlflow.tracking.MlflowClient(self.tracking_uri)
-        models = []
-        
-        for rm in client.search_registered_models():
-            # Get ALL versions, not just latest per stage
-            all_versions = client.search_model_versions(f"name='{rm.name}'")
+        try:
+            log.info(f"🔍 get_registered_models() - tracking_uri: {self.tracking_uri}")
             
-            for version in all_versions:
-                models.append({
-                    "name": version.name,
-                    "version": version.version,
-                    "stage": version.current_stage,
-                    "run_id": version.run_id,
-                    "description": rm.description or "",
-                    "created_at": version.creation_timestamp
-                })
-        
-        return models
+            # Use REST API directly since search_registered_models() has issues
+            import requests
+            response = requests.post(
+                f"{self.tracking_uri}/api/2.0/mlflow/registered-models/search",
+                json={"max_results": 1000}
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            registered_models_data = data.get("registered_models", [])
+            log.info(f"🔍 Found {len(registered_models_data)} registered model names via REST API")
+            
+            if not registered_models_data:
+                log.warning(f"⚠️ No registered models found in MLflow!")
+                return []
+            
+            models = []
+            client = mlflow.tracking.MlflowClient(self.tracking_uri)
+            
+            for rm_data in registered_models_data:
+                model_name = rm_data["name"]
+                log.info(f"🔍 Processing model: {model_name}")
+                
+                # Get ALL versions for this model
+                all_versions = client.search_model_versions(f"name='{model_name}'")
+                version_list = list(all_versions)
+                log.info(f"🔍   Found {len(version_list)} versions for {model_name}")
+                
+                for version in version_list:
+                    models.append({
+                        "name": version.name,
+                        "version": version.version,
+                        "stage": version.current_stage,
+                        "run_id": version.run_id,
+                        "description": rm_data.get("description", ""),
+                        "created_at": version.creation_timestamp
+                    })
+            
+            log.info(f"🔍 Returning {len(models)} total model versions")
+            return models
+        except Exception as e:
+            log.error(f"❌ Error in get_registered_models(): {e}", exc_info=True)
+            import traceback
+            traceback.print_exc()
+            return []
     
     def load_model(self, model_name: str, version: Optional[str] = None, stage: Optional[str] = None):
         """

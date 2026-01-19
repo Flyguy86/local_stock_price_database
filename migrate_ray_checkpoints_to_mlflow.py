@@ -160,13 +160,165 @@ def migrate_checkpoint_to_mlflow(checkpoint_path: Path):
                     registered_model_name=experiment_name
                 )
             
-            log.info(f"✅ Migrated {checkpoint_path.parent.name} to MLflow experiment: {experiment_name}")
+            # Get the run ID for verification
+            run_id = mlflow.active_run().info.run_id
             
-            # Mark as migrated
-            mark_checkpoint_migrated(checkpoint_path)
+            log.info(f"✅ Migrated {checkpoint_path.parent.name} to MLflow experiment: {experiment_name}")
+        
+        # Verify model was registered (outside run context)
+        log.info(f"🔍 Starting verification for {experiment_name}...")
+        verify_model_registration(experiment_name, run_id, checkpoint_path)
+        
+        # Mark as migrated
+        mark_checkpoint_migrated(checkpoint_path)
             
     except Exception as e:
         log.error(f"Failed to migrate {checkpoint_path}: {e}", exc_info=True)
+
+
+def verify_model_registration(model_name: str, run_id: str, checkpoint_path: Path):
+    """
+    Verify that a model was successfully registered in MLflow.
+    
+    Args:
+        model_name: Name of the registered model
+        run_id: MLflow run ID
+        checkpoint_path: Original checkpoint path for logging
+    """
+    log.info(f"🔍 VERIFY START: model_name='{model_name}', run_id={run_id[:8]}...")
+    
+    try:
+        client = mlflow.tracking.MlflowClient()
+        
+        # Wait a moment for registration to complete
+        import time
+        time.sleep(2)
+        
+        # First, list ALL registered models to see what's there
+        all_registered = list(client.search_registered_models())
+        log.info(f"   📊 Total registered model names in MLflow: {len(all_registered)}")
+        if all_registered:
+            log.info(f"   📋 Model names: {[rm.name for rm in all_registered[:5]]}")
+        
+        # Search for this specific registered model
+        log.info(f"   🔎 Searching for model name: '{model_name}'")
+        registered_models = list(client.search_registered_models(f"name='{model_name}'"))
+        
+        if not registered_models:
+            log.error(f"❌ VERIFICATION FAILED: Model '{model_name}' not found in registry!")
+            log.error(f"   Checkpoint: {checkpoint_path}")
+            log.error(f"   Run ID: {run_id}")
+            log.error(f"   Available models: {[rm.name for rm in all_registered]}")
+            return False
+        
+        log.info(f"   ✓ Found registered model: {model_name}")
+        
+        # Find version associated with this run
+        log.info(f"   🔎 Searching for version with run_id={run_id[:8]}...")
+        versions = list(client.search_model_versions(f"name='{model_name}' and run_id='{run_id}'"))
+        
+        if not versions:
+            log.error(f"❌ VERIFICATION FAILED: No version found for run {run_id}")
+            log.error(f"   Model: {model_name}")
+            log.error(f"   Checkpoint: {checkpoint_path}")
+            # List all versions for this model
+            all_versions = list(client.search_model_versions(f"name='{model_name}'"))
+            log.error(f"   Total versions for this model: {len(all_versions)}")
+            return False
+        
+        version = versions[0]
+        log.info(f"✅ VERIFIED: Model '{model_name}' v{version.version} registered successfully")
+        log.info(f"   Stage: {version.current_stage}")
+        log.info(f"   Run ID: {run_id[:8]}...")
+        
+        return True
+        
+    except Exception as e:
+        log.error(f"❌ VERIFICATION ERROR for '{model_name}': {e}", exc_info=True)
+        return False
+
+
+def validate_mlflow_setup(mlflow_uri: str):
+    """
+    Validate MLflow configuration and database accessibility.
+    
+    Checks:
+    - MLflow tracking URI is reachable
+    - Backend database path is correct (4 slashes for absolute paths)
+    - Database file exists and is writable
+    - Can query registered models
+    """
+    log.info(f"🔍 Validating MLflow setup...")
+    log.info(f"   Tracking URI: {mlflow_uri}")
+    
+    # Check if it's an HTTP URI
+    if mlflow_uri.startswith("http"):
+        try:
+            import requests
+            health_url = f"{mlflow_uri.rstrip('/')}/health"
+            response = requests.get(health_url, timeout=5)
+            if response.status_code == 200:
+                log.info(f"   ✅ MLflow server is reachable at {mlflow_uri}")
+            else:
+                log.error(f"   ❌ MLflow server returned status {response.status_code}")
+                return False
+        except Exception as e:
+            log.error(f"   ❌ Cannot reach MLflow server: {e}")
+            return False
+    
+    # Check SQLite path format if direct database access
+    elif mlflow_uri.startswith("sqlite"):
+        # Validate path format
+        if not mlflow_uri.startswith("sqlite:////"):
+            log.error(f"   ❌ SQLite path should use 4 slashes for absolute paths!")
+            log.error(f"      Current: {mlflow_uri}")
+            log.error(f"      Should be: sqlite:////absolute/path/to/db.db")
+            return False
+        
+        # Extract database path (remove sqlite://)
+        db_path = mlflow_uri.replace("sqlite:///", "")
+        db_file = Path(db_path)
+        
+        log.info(f"   Database path: {db_file}")
+        
+        if not db_file.parent.exists():
+            log.error(f"   ❌ Database directory does not exist: {db_file.parent}")
+            return False
+        
+        # Check if database exists or can be created
+        if db_file.exists():
+            log.info(f"   ✅ Database file exists ({db_file.stat().st_size / 1024:.1f} KB)")
+            if not os.access(db_file, os.R_OK | os.W_OK):
+                log.error(f"   ❌ Database file is not readable/writable!")
+                return False
+        else:
+            log.info(f"   ℹ️  Database will be created at {db_file}")
+    
+    # Test MLflow client connection
+    try:
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient(mlflow_uri)
+        
+        # Try to list registered models
+        models = list(client.search_registered_models())
+        log.info(f"   ✅ MLflow client connected successfully")
+        log.info(f"   📊 Currently {len(models)} registered model(s) in database")
+        
+        # Check backend store URI environment variable
+        backend_uri = os.getenv("MLFLOW_BACKEND_STORE_URI")
+        if backend_uri:
+            log.info(f"   ℹ️  MLFLOW_BACKEND_STORE_URI env: {backend_uri}")
+            if backend_uri.startswith("sqlite:///") and not backend_uri.startswith("sqlite:////"):
+                log.warning(f"   ⚠️  Environment variable uses relative path (3 slashes)!")
+                log.warning(f"      This may cause issues. Use 4 slashes for absolute paths.")
+        
+        return True
+        
+    except Exception as e:
+        log.error(f"   ❌ Failed to connect to MLflow: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():
@@ -175,6 +327,17 @@ def main():
     mlflow.set_tracking_uri(mlflow_uri)
     
     log.info(f"Starting Ray checkpoint migration to MLflow ({mlflow_uri})...")
+    
+    # Validate MLflow setup before migration
+    if not validate_mlflow_setup(mlflow_uri):
+        log.error("❌ MLflow validation failed! Aborting migration.")
+        log.error("Please check:")
+        log.error("  1. MLflow server is running")
+        log.error("  2. MLFLOW_BACKEND_STORE_URI uses 4 slashes (sqlite:////path)")
+        log.error("  3. Database path exists and is writable")
+        return
+    
+    log.info("")
     
     # Find all checkpoints
     checkpoints = find_ray_checkpoints()

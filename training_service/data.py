@@ -163,6 +163,18 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
         # Any minute missing in EITHER dataset is dropped to ensure data integrity
         df = pd.merge(df, ctx_df, on="ts", how="inner")
         log.info(f"Merged {ctx_sym}. Resulting rows: {len(df)}")
+        
+        # Validate merge didn't introduce excessive NaNs
+        nan_pct = df.isna().sum().sum() / (df.shape[0] * df.shape[1]) if df.shape[0] > 0 else 0
+        if nan_pct > 0.10:
+            log.warning(f"After merging {ctx_sym}: {nan_pct*100:.2f}% NaN values (high)")
+        
+        # Check for infinite values
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        inf_count = np.isinf(df[numeric_cols]).sum().sum()
+        if inf_count > 0:
+            log.warning(f"After merging {ctx_sym}: {inf_count} infinite values detected, replacing with NaN")
+            df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
 
     # 3. Resample if needed
     if timeframe and timeframe != "1m":
@@ -396,4 +408,24 @@ def load_training_data(symbol: str, target_col: str = "close", lookforward: int 
     # Drop rows without target (last N rows)
     df = df.dropna(subset=["target"])
     
+    # 5. Final Validation before returning
+    final_nan_pct = df.isna().sum().sum() / (df.shape[0] * df.shape[1]) if df.shape[0] > 0 else 0
+    log.info(f"Final data quality: {len(df)} rows, {len(df.columns)} columns, {final_nan_pct*100:.2f}% NaN")
+    
+    if final_nan_pct > 0.15:
+        log.error(f"CRITICAL: Final dataset has {final_nan_pct*100:.2f}% NaN values (threshold: 15%)")
+        # List columns with high NaN
+        high_nan_cols = df.columns[df.isna().sum() > len(df) * 0.2].tolist()
+        if high_nan_cols:
+            log.error(f"Columns with >20% NaN: {high_nan_cols}")
+        raise ValueError(f"Dataset quality check failed: {final_nan_pct*100:.2f}% NaN exceeds 15% threshold")
+    
+    # Check for infinite values
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    inf_count = np.isinf(df[numeric_cols]).sum().sum()
+    if inf_count > 0:
+        log.warning(f"Final dataset has {inf_count} infinite values, replacing with NaN")
+        df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+    
+    log.info("✅ Data validation passed")
     return df

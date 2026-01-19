@@ -40,6 +40,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("ray_orchestrator.api")
 
+# Global fold generation status tracking
+fold_generation_status = {}
+
 # Create FastAPI app
 app = FastAPI(
     title="Ray Orchestrator",
@@ -671,12 +674,32 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
                 
                 # Save train data with log returns and target
                 if fold.train_ds:
+                    # Validate before saving
+                    train_sample = fold.train_ds.take(1000)
+                    if train_sample:
+                        train_df_check = pd.DataFrame(train_sample)
+                        nan_pct = train_df_check.isna().sum().sum() / (train_df_check.shape[0] * train_df_check.shape[1])
+                        if nan_pct > 0.05:
+                            log.error(f"Train data has {nan_pct*100:.2f}% NaN values before saving (fold {fold.fold_id})")
+                        else:
+                            log.info(f"Train data validation passed: {nan_pct*100:.2f}% NaN (fold {fold.fold_id})")
+                    
                     train_path = f"{request.output_base_path}/fold_{fold.fold_id}/train"
                     fold.train_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(train_path, try_create_dir=True)
                     log.info(f"Saved train data to {train_path}")
                 
                 # Save test data with log returns and target
                 if fold.test_ds:
+                    # Validate before saving
+                    test_sample = fold.test_ds.take(1000)
+                    if test_sample:
+                        test_df_check = pd.DataFrame(test_sample)
+                        nan_pct = test_df_check.isna().sum().sum() / (test_df_check.shape[0] * test_df_check.shape[1])
+                        if nan_pct > 0.05:
+                            log.error(f"Test data has {nan_pct*100:.2f}% NaN values before saving (fold {fold.fold_id})")
+                        else:
+                            log.info(f"Test data validation passed: {nan_pct*100:.2f}% NaN (fold {fold.fold_id})")
+                    
                     test_path = f"{request.output_base_path}/fold_{fold.fold_id}/test"
                     fold.test_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
                     log.info(f"Saved test data to {test_path}")
@@ -843,6 +866,16 @@ async def list_training_jobs():
 # Backtesting Endpoints (VectorBT)
 # ============================================================================
 
+@app.get("/backtest/fold-status/{symbol}")
+async def get_fold_generation_status(symbol: str):
+    """Get the status of fold generation for a symbol."""
+    status = fold_generation_status.get(symbol, {
+        "status": "not_started",
+        "symbol": symbol,
+        "message": "No fold generation in progress"
+    })
+    return status
+
 @app.post("/backtest/validate")
 async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):
     """
@@ -864,30 +897,80 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         
         symbol = request.symbols[0]
         
-        # Extract algorithm from experiment name for model selection
-        parts = request.experiment_name.split('_')
-        if len(parts) < 3:
-            raise ValueError(
-                f"Invalid experiment name format: {request.experiment_name}. "
-                "Expected: walk_forward_{{algorithm}}_{{symbol}}"
-            )
-        algorithm = parts[-2]  # Second-to-last is algorithm
+        # Handle new format: experiment_name/trial_name or old format: experiment_name
+        experiment_name = request.experiment_name
+        checkpoint_path = None
+        base_experiment = experiment_name
+        
+        if '/' in experiment_name:
+            # New format with trial path - extract experiment and get checkpoint
+            parts = experiment_name.split('/')
+            base_experiment = parts[0]
+            trial_name = parts[1]
+            
+            # Find the checkpoint path for this specific trial
+            from ray_orchestrator.list_models import list_trained_models
+            models = list_trained_models(str(settings.data.checkpoints_dir))
+            
+            matching_model = None
+            for model in models:
+                if model['experiment_name'] == base_experiment and model['trial_name'] == trial_name:
+                    matching_model = model
+                    break
+            
+            if not matching_model:
+                raise ValueError(f"Could not find checkpoint for {experiment_name}")
+            
+            checkpoint_path = matching_model['checkpoint_path']
+            best_config = matching_model['params']
+            algorithm = matching_model['algorithm']
+            
+            log.info(f"Using specific checkpoint: {checkpoint_path}")
+            log.info(f"Algorithm: {algorithm}, Config: {best_config}")
+            
+            # Use base experiment name for backtester
+            experiment_name = base_experiment
+            
+        else:
+            # Old format - extract algorithm from experiment name
+            parts = experiment_name.split('_')
+            if len(parts) < 3:
+                raise ValueError(
+                    f"Invalid experiment name format: {experiment_name}. "
+                    "Expected: walk_forward_{{algorithm}}_{{symbol}}"
+                )
+            algorithm = parts[-2]
+            best_config = None  # Will be loaded by backtester
         
         log.info(f"Starting backtest for {request.experiment_name} on symbol: {symbol}, algorithm: {algorithm}")
         
-        backtester = create_backtester(
-            experiment_name=request.experiment_name
+        # Create backtester with base experiment name and checkpoint path
+        from .backtester import ModelBacktester
+        backtester = ModelBacktester(
+            experiment_name=experiment_name,
+            checkpoint_path=checkpoint_path  # Will be None for old format, which is fine
         )
         
-        # Load best hyperparameters
-        model_info = backtester.load_best_model()
-        best_config = model_info.get('config', {})
-        
-        if not best_config:
-            raise ValueError(
-                f"No hyperparameters found for {request.experiment_name}. "
-                "The model may not have completed training successfully."
-            )
+        # Load best hyperparameters if not already set
+        if best_config is None:
+            model_info = backtester.load_best_model()
+            best_config = model_info.get('config', {})
+            
+            if not best_config:
+                raise ValueError(
+                    f"No hyperparameters found for {experiment_name}. "
+                    "The model may not have completed training successfully."
+                )
+        else:
+            # Create model_info from our loaded data
+            # For specific trial, mark that best_trial is loaded
+            backtester.best_trial = {'checkpoint_dir': checkpoint_path}
+            backtester.best_config = best_config
+            
+            model_info = {
+                'config': best_config,
+                'checkpoint_path': checkpoint_path
+            }
         
         # Get available folds for the SELECTED symbol (not model symbol)
         from .data import get_available_folds, load_fold_from_disk
@@ -903,12 +986,24 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                     import pandas as pd
                     import numpy as np
                     
+                    # Initialize status
+                    fold_generation_status[symbol] = {
+                        "status": "generating",
+                        "symbol": symbol,
+                        "current_fold": 0,
+                        "total_folds": "calculating...",
+                        "message": "Initializing fold generation...",
+                        "started_at": datetime.utcnow().isoformat()
+                    }
+                    
                     try:
                         cpu_count = len(os.sched_getaffinity(0))
                     except AttributeError:
                         cpu_count = os.cpu_count() or 4
                     
                     log.info(f"Background: Generating folds with {cpu_count} parallel actors")
+                    
+                    fold_generation_status[symbol]["message"] = f"Creating preprocessing pipeline with {cpu_count} actors..."
                     
                     preprocessor = create_preprocessing_pipeline(
                         parquet_dir=str(settings.data.parquet_dir)
@@ -918,6 +1013,8 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                     end_date = request.end_date or "2024-12-31"
                     
                     log.info(f"Background: {symbol} from {start_date} to {end_date}")
+                    
+                    fold_generation_status[symbol]["message"] = f"Generating walk-forward folds from {start_date} to {end_date}..."
                     
                     fold_count = 0
                     for fold in preprocessor.create_walk_forward_pipeline(
@@ -934,6 +1031,13 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                         actor_pool_size=cpu_count
                     ):
                         fold_count += 1
+                        
+                        # Update status
+                        fold_generation_status[symbol].update({
+                            "current_fold": fold_count,
+                            "message": f"Processing fold {fold_count} (fold_id: {fold.fold_id})..."
+                        })
+                        
                         symbol_dir = Path(settings.data.walk_forward_folds_dir) / symbol
                         fold_dir = symbol_dir / f"fold_{fold.fold_id:03d}"
                         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -965,20 +1069,46 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                         if fold.test_ds:
                             test_path = str(fold_dir / "test")
                             fold.test_ds.map_batches(transform_to_log_returns, batch_format="pandas").write_parquet(test_path, try_create_dir=True)
+                        
+                        log.info(f"Background: Saved fold {fold_count} (fold_id: {fold.fold_id})")
+                    
+                    # Mark as complete
+                    fold_generation_status[symbol] = {
+                        "status": "completed",
+                        "symbol": symbol,
+                        "total_folds": fold_count,
+                        "message": f"✅ Successfully generated {fold_count} folds",
+                        "completed_at": datetime.utcnow().isoformat()
+                    }
                     
                     log.info(f"Background: ✅ Generated {fold_count} folds for {symbol}")
+                    
                 except Exception as e:
                     log.error(f"Background fold generation failed: {e}", exc_info=True)
+                    fold_generation_status[symbol] = {
+                        "status": "failed",
+                        "symbol": symbol,
+                        "message": f"❌ Fold generation failed: {str(e)}",
+                        "failed_at": datetime.utcnow().isoformat()
+                    }
             
             background_tasks.add_task(generate_folds_background)
             
             return {
-                "status": "generating_folds",
-                "message": f"Fold generation started in background for {symbol}. Watch docker logs for progress.",
+                "status": "folds_required",
+                "message": f"No walk-forward folds exist for {symbol}. Please generate folds first using the Ray Data preprocessing pipeline.",
                 "symbol": symbol,
                 "experiment_name": request.experiment_name,
-                "eta_minutes": "2-5",
-                "note": "Run backtest again after folds are generated"
+                "instructions": {
+                    "step_1": "Go to the Training Dashboard tab",
+                    "step_2": f"Set 'Primary Symbol' to {symbol}",
+                    "step_3": "Click 'Generate Fold Data Only' button (under Advanced: Manual Fold Generation)",
+                    "step_4": "Wait 2-5 minutes for fold generation with full feature engineering",
+                    "step_5": "Return here and run backtest again",
+                    "alternative": f"Or use API: POST /streaming/walk_forward with symbols=['{symbol}']"
+                },
+                "background_task": "Fold generation started in background (watch docker logs)",
+                "note": "Folds are being generated in background, but for best results use the Training Dashboard to ensure all features match the trained model."
             }
         
         # Folds exist - proceed with backtest
@@ -1022,15 +1152,33 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         results_df = pd.DataFrame(all_results)
         summary = backtester.aggregate_results(results_df)
         
+        # Convert numpy types to native Python for JSON serialization
+        def convert_to_native(obj):
+            """Convert numpy/pandas types to native Python types."""
+            import numpy as np
+            if isinstance(obj, (np.integer, np.int64, np.int32)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_native(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_native(i) for i in obj]
+            return obj
+        
         # Cache results for dashboard
+        # Sanitize experiment_name for filename (replace / with _)
+        safe_experiment_name = request.experiment_name.replace('/', '_')
         results_dir = Path(settings.data.checkpoints_dir) / "backtest_results"
         results_dir.mkdir(parents=True, exist_ok=True)
-        results_file = results_dir / f"{request.experiment_name}_{symbol}_results.json"
+        results_file = results_dir / f"{safe_experiment_name}_{symbol}_results.json"
         
         dashboard_results = {
             "symbol": symbol,
             "model": request.experiment_name,
-            "model_info": model_info,
+            "model_info": convert_to_native(model_info),
             "backtest_config": {
                 "initial_capital": request.initial_capital,
                 "commission": request.commission,
@@ -1039,8 +1187,8 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                 "test_months": request.test_months,
                 "step_months": request.step_months
             },
-            "aggregate_metrics": summary,
-            "fold_results": all_results,
+            "aggregate_metrics": convert_to_native(summary),
+            "fold_results": convert_to_native(all_results),
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -1049,7 +1197,8 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
         
         log.info(f"✅ Backtest complete: {len(all_results)} folds, results saved to {results_file}")
         
-        return {
+        # Convert return value to native types for FastAPI JSON response
+        return convert_to_native({
             "status": "completed",
             "experiment_name": request.experiment_name,
             "symbol": symbol,
@@ -1058,13 +1207,90 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
             "model_info": model_info,
             "results": summary,
             "timestamp": datetime.utcnow().isoformat()
-        }
+        })
         
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=f"Model not found: {str(e)}")
     except Exception as e:
         log.error(f"Backtest error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Backtesting failed: {str(e)}")
+
+
+@app.get("/backtest/results/list")
+async def list_backtest_results():
+    """
+    List all available backtest results files.
+    
+    Returns metadata about each completed backtest.
+    """
+    try:
+        results_dir = settings.data.checkpoints_dir / "backtest_results"
+        log.info(f"Looking for backtest results in: {results_dir}")
+        
+        if not results_dir.exists():
+            log.warning(f"Backtest results directory does not exist: {results_dir}")
+            return []
+        
+        results = []
+        for filepath in results_dir.glob("*_results.json"):
+            # Parse filename: {experiment_name}_{symbol}_results.json
+            filename = filepath.stem  # Remove .json
+            parts = filename.rsplit("_", 2)  # Split from right: [..., symbol, "results"]
+            
+            if len(parts) >= 2:
+                symbol = parts[-2]
+                model_name = "_".join(parts[:-2])
+                
+                # Get file timestamp
+                timestamp = datetime.fromtimestamp(filepath.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                
+                results.append({
+                    "filepath": str(filepath),
+                    "model": model_name,
+                    "symbol": symbol,
+                    "timestamp": timestamp,
+                    "filename": filepath.name
+                })
+        
+        # Sort by timestamp descending
+        results.sort(key=lambda x: x["timestamp"], reverse=True)
+        log.info(f"Found {len(results)} backtest result files")
+        return results
+        
+    except Exception as e:
+        log.error(f"Error listing backtest results: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/backtest/results/load")
+async def load_backtest_result(filepath: str):
+    """
+    Load a specific backtest result file.
+    
+    Returns the complete results including aggregate metrics and fold-by-fold data.
+    """
+    try:
+        import json
+        result_path = Path(filepath)
+        
+        if not result_path.exists():
+            raise HTTPException(status_code=404, detail="Result file not found")
+        
+        # Verify it's in the backtest_results directory for security
+        results_dir = settings.data.checkpoints_dir / "backtest_results"
+        if not result_path.is_relative_to(results_dir):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        with open(result_path, 'r') as f:
+            data = json.load(f)
+        
+        return data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error loading backtest result: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/backtest/results/{experiment_name}")
@@ -1109,36 +1335,38 @@ async def get_backtest_results(experiment_name: str):
 @app.get("/backtest/experiments")
 async def list_backtest_experiments():
     """
-    List all available experiments that can be backtested.
+    List all available trained models with their metadata for backtesting.
     
-    Returns experiment names with model metadata (best trial, metrics).
+    Returns individual model checkpoints with performance metrics and config.
     """
     try:
-        checkpoint_base = "/app/data/ray_checkpoints"
-        experiments = []
+        from ray_orchestrator.list_models import list_trained_models
         
-        if os.path.exists(checkpoint_base):
-            for exp_name in os.listdir(checkpoint_base):
-                exp_path = os.path.join(checkpoint_base, exp_name)
-                if os.path.isdir(exp_path):
-                    # Try to load model info
-                    try:
-                        backtester = create_backtester(
-                            experiment_name=exp_name
-                        )
-                        model_info = backtester.load_best_model()
-                        experiments.append({
-                            "name": exp_name,
-                            "model_info": model_info,
-                            "path": exp_path
-                        })
-                    except Exception:
-                        # Skip experiments that can't load
-                        experiments.append({
-                            "name": exp_name,
-                            "model_info": None,
-                            "path": exp_path
-                        })
+        # Get all trained models with their metadata
+        models = list_trained_models(str(settings.data.checkpoints_dir))
+        
+        # Transform to match expected format for UI
+        experiments = []
+        for model in models:
+            experiments.append({
+                "name": f"{model['experiment_name']}/{model['trial_name']}",
+                "experiment_name": model['experiment_name'],
+                "trial_name": model['trial_name'],
+                "checkpoint_path": model['checkpoint_path'],
+                "model_info": {
+                    "algorithm": model['algorithm'],
+                    "ticker": model['ticker'],
+                    "feature_version": model['feature_version'],
+                    "test_rmse": model['metrics']['avg_test_rmse'],
+                    "test_r2": model['metrics']['avg_test_r2'],
+                    "test_mae": model['metrics']['avg_test_mae'],
+                    "train_rmse": model['metrics']['avg_train_rmse'],
+                    "num_folds": model['metrics']['num_folds'],
+                    "date_range": model['date_range'],
+                    "params": model['params']
+                },
+                "path": model['checkpoint_path']
+            })
         
         return {
             "experiments": experiments,
@@ -1146,6 +1374,7 @@ async def list_backtest_experiments():
         }
         
     except Exception as e:
+        log.error(f"Failed to list backtest experiments: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1175,6 +1404,12 @@ async def vectorbt_dashboard(request: Request):
 async def vectorbt_dashboard(request: Request):
     """Serve the VectorBT backtest analysis dashboard."""
     return templates.TemplateResponse("vectorbt_dashboard.html", {"request": request})
+
+
+@app.get("/backtest/results_viewer", response_class=HTMLResponse)
+async def backtest_results_viewer(request: Request):
+    """Serve the Backtest Results Viewer page."""
+    return templates.TemplateResponse("backtest_results.html", {"request": request})
 
 
 @app.get("/backtest/results")
@@ -1306,6 +1541,23 @@ async def list_symbols():
 
 
 # ============================================================================
+# Model Discovery - List trained models from Ray checkpoints
+# ============================================================================
+
+@app.get("/models/list")
+async def list_trained_models_endpoint():
+    """List all trained models from Ray checkpoints."""
+    try:
+        from ray_orchestrator.list_models import list_trained_models
+        
+        models = list_trained_models(str(settings.data.checkpoints_dir))
+        return {"models": models, "count": len(models)}
+    except Exception as e:
+        log.error(f"Failed to list models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
 # MLflow Model Registry Endpoints
 # ============================================================================
 
@@ -1313,11 +1565,23 @@ async def list_symbols():
 async def list_mlflow_models():
     """List all registered models in MLflow."""
     try:
-        mlflow_tracker = MLflowTracker(tracking_uri=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+        log.info(f"📡 /mlflow/models called - tracking_uri: {tracking_uri}")
+        
+        mlflow_tracker = MLflowTracker(tracking_uri=tracking_uri)
+        log.info(f"📡 MLflowTracker created")
+        
         models = mlflow_tracker.get_registered_models()
+        log.info(f"📡 get_registered_models() returned {len(models)} models")
+        
+        if models:
+            log.info(f"📡 First model: {models[0]}")
+        else:
+            log.warning(f"📡 No models returned from MLflow!")
+            
         return {"models": models, "count": len(models)}
     except Exception as e:
-        log.error(f"Failed to fetch MLflow models: {e}", exc_info=True)
+        log.error(f"❌ Failed to fetch MLflow models: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

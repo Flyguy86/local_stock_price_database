@@ -385,6 +385,18 @@
             
             <h1>🗄️ Model Registry</h1>
             <p>Manage trained models, analyze performance, and launch backtests</p>
+            
+            <!-- Direct MLflow Link -->
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);">
+                <h3 style="margin: 0 0 10px 0; color: white;">📊 Access Full Model Registry (MLflow)</h3>
+                <p style="margin: 0 0 15px 0; opacity: 0.95; font-size: 0.95em;">All 104 migrated model versions are available in MLflow's native UI</p>
+                <a href="http://localhost:5000" target="_blank" style="display: inline-block; background: white; color: #667eea; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    🚀 Open MLflow Registry →
+                </a>
+                <p style="margin: 15px 0 0 0; font-size: 0.85em; opacity: 0.85;">
+                    For Codespaces: Replace port <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px; font-size: 0.9em;">8100</code> with <code style="background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px; font-size: 0.9em;">5000</code> in your current URL
+                </p>
+            </div>
         </div>
         
         <div class="tabs">
@@ -395,13 +407,73 @@
         <div class="content">
             <!-- Models Tab -->
             <div id="models-tab" class="tab-content active">
-                <h2>Registered Models</h2>
+                <h2>🎯 Batch Model Backtesting</h2>
+                <p style="color: #666; margin-bottom: 20px;">Select multiple models to backtest against a target ticker with realistic trading simulation</p>
+                
+                <!-- Backtest Configuration -->
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                    <h3 style="margin-bottom: 15px;">Backtest Configuration</h3>
+                    
+                    <div class="form-group">
+                        <label for="targetTicker">Target Ticker</label>
+                        <select id="targetTicker" required style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 1em;">
+                            <option value="">-- Select a ticker --</option>
+                        </select>
+                        <small id="targetTickerDateRange" style="color: #666; display: block; margin-top: 5px;"></small>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px;">
+                        <div class="form-group">
+                            <label for="batchStartDate">Start Date</label>
+                            <input type="date" id="batchStartDate" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px;">
+                            <small style="color: #666;">Auto-populated from ticker data</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="batchEndDate">End Date</label>
+                            <input type="date" id="batchEndDate" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px;">
+                            <small style="color: #666;">Auto-populated from ticker data</small>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px;">
+                        <div class="form-group">
+                            <label for="batchInitialCapital">Initial Capital ($)</label>
+                            <input type="number" id="batchInitialCapital" value="100000" min="1000" step="1000" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px;">
+                            <small style="color: #666;">Starting portfolio value</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="batchCommission">Commission (%)</label>
+                            <input type="number" id="batchCommission" value="0.1" min="0" max="5" step="0.01" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px;">
+                            <small style="color: #666;">Trading fees per transaction</small>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group" style="margin-top: 15px;">
+                        <label for="batchSlippage">Slippage (%)</label>
+                        <input type="number" id="batchSlippage" value="0.05" min="0" max="5" step="0.01" style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 6px;">
+                        <small style="color: #666;">Price impact of market orders</small>
+                    </div>
+                    
+                    <button type="button" class="btn btn-primary" id="runBatchBacktest" onclick="runBatchBacktest()" style="width: 100%; margin-top: 20px; padding: 15px; font-size: 1.1em;" disabled>
+                        📊 Run Backtest on Selected Models
+                    </button>
+                    <div id="batchBacktestStatus" class="status-message" style="margin-top: 10px;"></div>
+                </div>
+                
+                <!-- Selected Models Count -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h2>Available Models</h2>
+                    <span id="selectedCount" style="font-weight: 600; color: #667eea;">0 models selected</span>
+                </div>
+                
                 <div id="models-grid" class="model-grid">
                     <p>Loading models...</p>
                 </div>
             </div>
             
-            <!-- Backtest Tab -->
+            <!-- Backtest Tab (kept for compatibility) -->
             <div id="backtest-tab" class="tab-content">
                 <h2>Launch Backtest Simulation</h2>
                 <form id="backtestForm" class="backtest-form">
@@ -414,7 +486,10 @@
                     
                     <div class="form-group">
                         <label for="ticker">Ticker Symbol</label>
-                        <input type="text" id="ticker" placeholder="e.g., AAPL" required>
+                        <select id="ticker" required>
+                            <option value="">-- Select a ticker --</option>
+                        </select>
+                        <small id="tickerDateRange" style="color: #666; margin-top: 5px;"></small>
                     </div>
                     
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -476,18 +551,48 @@
     
     <script>
         let allModels = [];
+        let availableTickers = [];
+        let selectedModels = new Set();
+        
+        async function loadTickers() {
+            try {
+                const response = await fetch('/symbols');
+                const data = await response.json();
+                availableTickers = data.symbols || [];
+                populateTickerSelects();
+            } catch (error) {
+                console.error('Failed to load tickers:', error);
+            }
+        }
+        
+        function populateTickerSelects() {
+            // Populate both dropdowns
+            const targetSelect = document.getElementById('targetTicker');
+            const tickerSelect = document.getElementById('ticker');
+            
+            const options = '<option value="">-- Select a ticker --</option>' +
+                availableTickers.map(ticker => 
+                    `<option value="${ticker.symbol}">${ticker.symbol} (${ticker.start_date} to ${ticker.end_date})</option>`
+                ).join('');
+            
+            if (targetSelect) targetSelect.innerHTML = options;
+            if (tickerSelect) tickerSelect.innerHTML = options;
+        }
         
         async function loadModels() {
             try {
-                const response = await fetch('/mlflow/models');
+                const response = await fetch('/models/list');
                 const data = await response.json();
+                console.log('Received models data:', data);
+                console.log('Models array:', data.models);
+                console.log('Models count:', data.count);
                 allModels = data.models || [];
                 renderModels();
                 populateModelSelect();
             } catch (error) {
                 console.error('Failed to load models:', error);
                 document.getElementById('models-grid').innerHTML = 
-                    '<p style="color: #dc3545;">Failed to load models. Is MLflow running?</p>';
+                    '<p style="color: #dc3545;">Failed to load models. Error: ' + error.message + '</p>';
             }
         }
         
@@ -495,18 +600,25 @@
             const grid = document.getElementById('models-grid');
             
             if (allModels.length === 0) {
-                grid.innerHTML = '<p>No models registered yet. Train a model first!</p>';
+                grid.innerHTML = '<p>No models found. Train a model first!</p>';
                 return;
             }
             
-            grid.innerHTML = allModels.map(model => `
-                <div class="model-card" onclick="showModelDetails('${model.name}', '${model.version}')">
-                    <div class="model-name">${model.name}</div>
-                    <span class="badge badge-${model.stage.toLowerCase()}">${model.stage}</span>
+            grid.innerHTML = allModels.map((model, idx) => `
+                <div class="model-card" style="position: relative; cursor: pointer;" onclick="showModelDetails(${idx})">
+                    <div style="position: absolute; top: 10px; left: 10px; z-index: 10;">
+                        <input type="checkbox" id="model-${idx}" class="model-checkbox" 
+                            onclick="event.stopPropagation(); toggleModelSelection(${idx})" 
+                            style="width: 20px; height: 20px; cursor: pointer;">
+                    </div>
+                    <div class="model-name" style="margin-left: 35px;">${model.algorithm.toUpperCase()} - ${model.ticker}</div>
+                    <span class="badge badge-none">Checkpoint</span>
                     <div class="model-meta">
-                        <strong>Version:</strong> <span>${model.version}</span>
-                        <strong>Created:</strong> <span>${new Date(model.created_at).toLocaleString()}</span>
-                        <strong>Run ID:</strong> <span style="font-family: monospace; font-size: 0.8em;">${model.run_id.substring(0, 8)}...</span>
+                        <strong>Test RMSE:</strong> <span>${model.metrics.avg_test_rmse.toFixed(6)}</span>
+                        <strong>Test R²:</strong> <span>${model.metrics.avg_test_r2.toFixed(4)}</span>
+                        <strong>Test MAE:</strong> <span>${model.metrics.avg_test_mae.toFixed(6)}</span>
+                        <strong>Folds:</strong> <span>${model.metrics.num_folds}</span>
+                        <strong>Trial:</strong> <span style="font-family: monospace; font-size: 0.8em;">${model.trial_name.substring(0, 20)}...</span>
                     </div>
                 </div>
             `).join('');
@@ -515,107 +627,81 @@
         function populateModelSelect() {
             const select = document.getElementById('modelSelect');
             select.innerHTML = '<option value="">-- Select a model --</option>' +
-                allModels.map(model => 
-                    `<option value="${model.name}:${model.version}">${model.name} v${model.version} (${model.stage})</option>`
+                allModels.map((model, idx) => 
+                    `<option value="${idx}">${model.algorithm.toUpperCase()} - ${model.ticker} (RMSE: ${model.metrics.avg_test_rmse.toFixed(6)})</option>`
                 ).join('');
         }
         
-        async function showModelDetails(modelName, version) {
+        async function showModelDetails(modelIndex) {
             const modal = document.getElementById('modelModal');
             const modalBody = document.getElementById('modalBody');
+            const model = allModels[modelIndex];
             
-            modalBody.innerHTML = '<p>Loading...</p>';
-            modal.classList.add('active');
-            
-            try {
-                const response = await fetch(`/mlflow/model/${modelName}/${version}`);
-                const model = await response.json();
+            modalBody.innerHTML = `
+                <h2>${model.algorithm.toUpperCase()} - ${model.ticker}</h2>
+                <span class="badge badge-none">Ray Checkpoint</span>
                 
-                const metricsHtml = Object.entries(model.metrics || {}).map(([key, val]) => `
+                <h3>Performance Metrics</h3>
+                <div class="metric-grid">
                     <div class="metric-card">
-                        <div class="metric-label">${key}</div>
-                        <div class="metric-value">${typeof val === 'number' ? val.toFixed(6) : val}</div>
+                        <div class="metric-label">Avg Test RMSE</div>
+                        <div class="metric-value">${model.metrics.avg_test_rmse.toFixed(6)}</div>
                     </div>
-                `).join('');
-                
-                const importanceHtml = model.permutation_importance ? `
-                    <h3>🔬 Feature Permutation Test ("Polygraph")</h3>
-                    <table class="importance-table">
-                        <thead>
-                            <tr>
-                                <th>Rank</th>
-                                <th>Feature</th>
-                                <th>Importance</th>
-                                <th>Std Dev</th>
-                                <th>Impact</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${model.permutation_importance.slice(0, 20).map(row => `
-                                <tr>
-                                    <td>${row.rank}</td>
-                                    <td><code>${row.feature}</code></td>
-                                    <td>${row.importance_mean.toFixed(6)}</td>
-                                    <td>${row.importance_std.toFixed(6)}</td>
-                                    <td>${row.interpretation}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                ` : '<p>No permutation importance data available.</p>';
-                
-                modalBody.innerHTML = `
-                    <h2>${modelName} v${version}</h2>
-                    <span class="badge badge-${model.stage.toLowerCase()}">${model.stage}</span>
-                    
-                    <h3>Performance Metrics</h3>
-                    <div class="metric-grid">
-                        ${metricsHtml}
+                    <div class="metric-card">
+                        <div class="metric-label">Avg Test R²</div>
+                        <div class="metric-value">${model.metrics.avg_test_r2.toFixed(4)}</div>
                     </div>
-                    
-                    ${importanceHtml}
-                    
-                    <h3>Parameters</h3>
-                    <pre style="background: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto;">${JSON.stringify(model.params, null, 2)}</pre>
-                    
-                    <div style="margin-top: 30px; display: flex; gap: 10px;">
-                        <button class="btn btn-primary" onclick="transitionStage('${modelName}', '${version}', 'Production')">
-                            Promote to Production
-                        </button>
-                        <button class="btn btn-secondary" onclick="transitionStage('${modelName}', '${version}', 'Staging')">
-                            Move to Staging
-                        </button>
-                        <button class="btn btn-danger" onclick="transitionStage('${modelName}', '${version}', 'Archived')">
-                            Archive
-                        </button>
+                    <div class="metric-card">
+                        <div class="metric-label">Avg Test MAE</div>
+                        <div class="metric-value">${model.metrics.avg_test_mae.toFixed(6)}</div>
                     </div>
-                `;
+                    <div class="metric-card">
+                        <div class="metric-label">Avg Train RMSE</div>
+                        <div class="metric-value">${model.metrics.avg_train_rmse.toFixed(6)}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Number of Folds</div>
+                        <div class="metric-value">${model.metrics.num_folds}</div>
+                    </div>
+                </div>
                 
-            } catch (error) {
-                modalBody.innerHTML = `<p style="color: #dc3545;">Failed to load model details: ${error.message}</p>`;
-            }
+                <h3>Training Information</h3>
+                <p><strong>Date Range:</strong> ${model.date_range.start || 'N/A'} to ${model.date_range.end || 'N/A'}</p>
+                <p><strong>Feature Version:</strong> ${model.feature_version}</p>
+                <p><strong>Experiment:</strong> ${model.experiment_name}</p>
+                <p><strong>Trial:</strong> ${model.trial_name}</p>
+                
+                <h3>Parameters</h3>
+                <pre style="background: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto;">${JSON.stringify(model.params, null, 2)}</pre>
+                
+                <div style="margin-top: 30px; display: flex; gap: 10px;">
+                    <button class="btn btn-primary" onclick="showBacktestFormForCheckpoint(${modelIndex})">
+                        🚀 Run Backtest
+                    </button>
+                </div>
+            `;
+            
+            modal.classList.add('active');
         }
         
-        async function transitionStage(modelName, version, stage) {
-            if (!confirm(`Move ${modelName} v${version} to ${stage}?`)) return;
+        function showBacktestFormForCheckpoint(modelIndex) {
+            const model = allModels[modelIndex];
             
-            try {
-                const response = await fetch(`/mlflow/model/${modelName}/${version}/transition`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({stage})
-                });
-                
-                if (response.ok) {
-                    alert(`✅ Model transitioned to ${stage}`);
-                    closeModal();
-                    loadModels();
-                } else {
-                    alert('❌ Failed to transition model');
-                }
-            } catch (error) {
-                alert(`❌ Error: ${error.message}`);
-            }
+            // Close model modal
+            closeModal();
+            
+            // Switch to Backtest tab
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab')[1].classList.add('active');
+            
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById('backtest-tab').classList.add('active');
+            
+            // Pre-select model in dropdown
+            document.getElementById('modelSelect').value = modelIndex;
+            
+            // Scroll to form
+            document.getElementById('backtestForm').scrollIntoView({ behavior: 'smooth' });
         }
         
         function closeModal() {
@@ -632,6 +718,97 @@
             document.getElementById(tabName + '-tab').classList.add('active');
         }
         
+        function toggleModelSelection(idx) {
+            if (selectedModels.has(idx)) {
+                selectedModels.delete(idx);
+            } else {
+                selectedModels.add(idx);
+            }
+            updateSelectedCount();
+        }
+        
+        function updateSelectedCount() {
+            const count = selectedModels.size;
+            document.getElementById('selectedCount').textContent = `${count} model${count !== 1 ? 's' : ''} selected`;
+            document.getElementById('runBatchBacktest').disabled = count === 0 || !document.getElementById('targetTicker').value;
+        }
+        
+        async function runBatchBacktest() {
+            if (selectedModels.size === 0) {
+                alert('Please select at least one model');
+                return;
+            }
+            
+            const ticker = document.getElementById('targetTicker').value;
+            if (!ticker) {
+                alert('Please select a target ticker');
+                return;
+            }
+            
+            const statusDiv = document.getElementById('batchBacktestStatus');
+            const btn = document.getElementById('runBatchBacktest');
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Launching backtests...';
+            statusDiv.className = 'status-message';
+            statusDiv.innerHTML = '';\n            
+            const selectedModelsList = Array.from(selectedModels).map(idx => allModels[idx]);
+            const results = [];\n            
+            statusDiv.innerHTML = `<div style=\"padding: 10px; background: #e3f2fd; border-radius: 6px; margin-bottom: 10px;\">\n                Launching ${selectedModelsList.length} backtest(s) for ${ticker}...\n            </div>`;\n            
+            for (let i = 0; i < selectedModelsList.length; i++) {
+                const model = selectedModelsList[i];
+                const payload = {
+                    checkpoint_path: model.checkpoint_path,
+                    ticker: ticker,
+                    start_date: document.getElementById('batchStartDate').value,
+                    end_date: document.getElementById('batchEndDate').value,
+                    slippage_pct: parseFloat(document.getElementById('batchSlippage').value) / 100,
+                    commission_per_share: parseFloat(document.getElementById('batchCommission').value) / 100,
+                    initial_capital: parseFloat(document.getElementById('batchInitialCapital').value),
+                    position_size_pct: 1.0
+                };
+                
+                try {
+                    const response = await fetch('/backtest/simulate', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        results.push({
+                            model: `${model.algorithm.toUpperCase()} - ${model.ticker}`,
+                            status: 'success',
+                            job_id: result.job_id
+                        });
+                    } else {
+                        results.push({
+                            model: `${model.algorithm.toUpperCase()} - ${model.ticker}`,
+                            status: 'failed',
+                            error: result.detail
+                        });
+                    }
+                } catch (error) {
+                    results.push({
+                        model: `${model.algorithm.toUpperCase()} - ${model.ticker}`,
+                        status: 'error',
+                        error: error.message
+                    });
+                }
+                
+                // Update progress
+                statusDiv.innerHTML = `<div style=\"padding: 10px; background: #e3f2fd; border-radius: 6px; margin-bottom: 10px;\">\n                    Progress: ${i + 1}/${selectedModelsList.length} backtests launched\n                </div>`;\n            }
+            
+            // Show final results
+            const successCount = results.filter(r => r.status === 'success').length;
+            statusDiv.className = 'status-message ' + (successCount > 0 ? 'success' : 'error');
+            statusDiv.innerHTML = `\n                <div style=\"margin-bottom: 10px;\"><strong>✅ ${successCount}/${results.length} backtests launched successfully</strong></div>\n                ${results.map(r => `\n                    <div style=\"padding: 8px; background: ${r.status === 'success' ? '#d4edda' : '#f8d7da'}; border-radius: 4px; margin: 5px 0; font-size: 0.9em;\">\n                        ${r.model}: ${r.status === 'success' ? `Job ${r.job_id}` : r.error}\n                    </div>\n                `).join('')}\n            `;\n            
+            btn.disabled = false;
+            btn.textContent = '📊 Run Backtest on Selected Models';
+        }
+        
         document.getElementById('backtestForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -643,11 +820,11 @@
             statusDiv.className = 'status-message';
             statusDiv.style.display = 'none';
             
-            const [modelName, version] = document.getElementById('modelSelect').value.split(':');
+            const modelIndex = parseInt(document.getElementById('modelSelect').value);
+            const selectedModel = allModels[modelIndex];
             
             const payload = {
-                model_name: modelName,
-                model_version: version,
+                checkpoint_path: selectedModel.checkpoint_path,
                 ticker: document.getElementById('ticker').value.toUpperCase(),
                 start_date: document.getElementById('startDate').value,
                 end_date: document.getElementById('endDate').value,
@@ -669,22 +846,63 @@
                 if (response.ok) {
                     statusDiv.className = 'status-message success';
                     statusDiv.textContent = `✅ ${result.message} Job ID: ${result.job_id}`;
+                    statusDiv.style.display = 'block';
                 } else {
                     statusDiv.className = 'status-message error';
                     statusDiv.textContent = `❌ Failed: ${result.detail || 'Unknown error'}`;
+                    statusDiv.style.display = 'block';
                 }
                 
             } catch (error) {
                 statusDiv.className = 'status-message error';
                 statusDiv.textContent = `❌ Error: ${error.message}`;
+                statusDiv.style.display = 'block';
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.textContent = '🚀 Launch Backtest';
             }
         });
         
-        // Load models on page load
-        window.addEventListener('DOMContentLoaded', loadModels);
+        // Update date range display when ticker is selected
+        document.getElementById('ticker').addEventListener('change', function() {
+            const selected = availableTickers.find(t => t.symbol === this.value);
+            const rangeDiv = document.getElementById('tickerDateRange');
+            if (selected) {
+                rangeDiv.textContent = `Data available: ${selected.start_date} to ${selected.end_date}`;
+                rangeDiv.style.display = 'block';
+                
+                // Auto-populate date fields with available range
+                document.getElementById('startDate').value = selected.start_date;
+                document.getElementById('endDate').value = selected.end_date;
+            } else {
+                rangeDiv.textContent = '';
+                rangeDiv.style.display = 'none';
+            }
+        });
+        
+        // Update date range for batch backtest target ticker
+        document.getElementById('targetTicker').addEventListener('change', function() {
+            const selected = availableTickers.find(t => t.symbol === this.value);
+            const rangeDiv = document.getElementById('targetTickerDateRange');
+            if (selected) {
+                rangeDiv.textContent = `Data available: ${selected.start_date} to ${selected.end_date}`;
+                rangeDiv.style.display = 'block';
+                
+                // Auto-populate date fields with available range
+                document.getElementById('batchStartDate').value = selected.start_date;
+                document.getElementById('batchEndDate').value = selected.end_date;
+            } else {
+                rangeDiv.textContent = '';
+                rangeDiv.style.display = 'none';
+            }
+            updateSelectedCount();
+        });
+        
+        // Load models and tickers on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            loadModels();
+            loadTickers();
+        });
     </script>
 </body>
 </html>

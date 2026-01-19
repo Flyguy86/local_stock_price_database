@@ -54,7 +54,8 @@ class ModelBacktester:
     def __init__(
         self,
         experiment_name: str,
-        checkpoint_dir: Optional[Path] = None
+        checkpoint_dir: Optional[Path] = None,
+        checkpoint_path: Optional[str] = None
     ):
         """
         Initialize backtester.
@@ -62,12 +63,14 @@ class ModelBacktester:
         Args:
             experiment_name: Name of Ray Tune experiment (e.g., "walk_forward_xgboost_GOOGL")
             checkpoint_dir: Path to Ray Tune checkpoints (defaults to config)
+            checkpoint_path: Specific checkpoint path to use (overrides auto-discovery)
         """
         if not VECTORBT_AVAILABLE:
             raise ImportError("VectorBT required for backtesting. Install with: pip install vectorbt")
         
         self.experiment_name = experiment_name
         self.checkpoint_dir = checkpoint_dir or settings.data.checkpoints_dir
+        self.checkpoint_path = checkpoint_path  # Specific trial checkpoint path
         self.best_trial = None
         self.best_config = None
         self.models = {}  # fold_id -> trained model
@@ -154,6 +157,46 @@ class ModelBacktester:
         import joblib
         import json
         
+        # Use specific checkpoint path if provided
+        if self.checkpoint_path:
+            checkpoint_dir = Path(self.checkpoint_path)
+            if not checkpoint_dir.exists():
+                log.warning(f"Checkpoint path not found: {checkpoint_dir}")
+                return None, None
+            
+            # Load fold-specific model
+            model_file = checkpoint_dir / f"fold_{fold_id:03d}_model.joblib"
+            if not model_file.exists():
+                log.warning(f"Fold model not found: {model_file}")
+                return None, None
+            
+            log.info(f"Loading fold {fold_id} model from {model_file}")
+            model = joblib.load(model_file)
+            
+            # Load features - try feature_lists.json first (standard format)
+            feature_cols = None
+            feature_lists_file = checkpoint_dir / "feature_lists.json"
+            if feature_lists_file.exists():
+                with open(feature_lists_file) as f:
+                    feature_lists = json.load(f)
+                    feature_cols = feature_lists.get(str(fold_id))
+                    if feature_cols:
+                        log.info(f"Loaded {len(feature_cols)} features for fold {fold_id} from feature_lists.json")
+            
+            # Fallback: try individual fold features file
+            if feature_cols is None:
+                individual_features_file = checkpoint_dir / f"fold_{fold_id:03d}_features.json"
+                if individual_features_file.exists():
+                    with open(individual_features_file) as f:
+                        feature_cols = json.load(f)
+                    log.info(f"Loaded {len(feature_cols)} features for fold {fold_id} from individual file")
+            
+            if feature_cols is None:
+                log.warning(f"No feature list found in {checkpoint_dir}, will use all numeric columns")
+            
+            return model, feature_cols
+        
+        # Fall back to old auto-discovery logic
         if not self.best_trial:
             log.warning("No best trial loaded - call load_best_model() first")
             return None, None
@@ -226,18 +269,24 @@ class ModelBacktester:
         """
         Convert model predictions to buy/sell signals.
         
+        Model predicts: log(future_close / current_close)
+        - Positive prediction → price expected to rise → BUY
+        - Negative prediction → price expected to fall → SELL/SHORT
+        
         Args:
-            predictions: Predicted log returns
+            predictions: Predicted log returns (log(future/current))
             threshold: Prediction threshold for signal generation
             min_confidence: Minimum prediction magnitude to trade (filters noise)
         
         Returns:
             Tuple of (entry_signals, exit_signals) boolean arrays
         """
-        # Entry signal: predicted return > threshold
+        # Entry signal: predicted log return > threshold
+        # This means: log(future/current) > 0, so future > current → price goes UP
         entries = predictions > threshold
         
-        # Exit signal: predicted return < -threshold (or reverse position)
+        # Exit signal: predicted log return < -threshold
+        # This means: log(future/current) < 0, so future < current → price goes DOWN
         exits = predictions < -threshold
         
         # Optional: Filter low-confidence predictions
@@ -245,6 +294,9 @@ class ModelBacktester:
             confidence_mask = np.abs(predictions) >= min_confidence
             entries = entries & confidence_mask
             exits = exits & confidence_mask
+        
+        log.info(f"Generated signals: {entries.sum()} entries, {exits.sum()} exits from {len(predictions)} predictions")
+        log.info(f"Prediction stats: min={predictions.min():.6f}, max={predictions.max():.6f}, mean={predictions.mean():.6f}")
         
         return entries, exits
     
@@ -300,8 +352,20 @@ class ModelBacktester:
         X_test = test_df[feature_cols].dropna()
         predictions = model.predict(X_test)
         
-        # Align with price data
-        prices = test_df['close'].loc[X_test.index]
+        # Verify predictions are log returns (should be small values around 0)
+        if predictions.std() > 1.0:
+            log.warning(f"Fold {fold_id}: Predictions have high std={predictions.std():.4f}. Expected log returns to be < 1.0")
+        
+        log.info(f"Fold {fold_id}: Prediction stats - min={predictions.min():.6f}, max={predictions.max():.6f}, mean={predictions.mean():.6f}, std={predictions.std():.6f}")
+        
+        # Align with price data (current close prices for VectorBT)
+        prices = test_df['close_raw'].loc[X_test.index] if 'close_raw' in test_df.columns else test_df['close'].loc[X_test.index]
+        
+        # Sanity check: calculate actual log returns to compare with predictions
+        actual_future_close = prices.shift(-1)
+        actual_log_returns = np.log(actual_future_close / prices)
+        correlation = np.corrcoef(predictions[:-1], actual_log_returns.dropna())[0, 1]
+        log.info(f"Fold {fold_id}: Prediction vs Actual log return correlation: {correlation:.4f}")
         
         # Generate signals
         entries, exits = self.generate_signals(
@@ -412,8 +476,11 @@ class ModelBacktester:
         Returns:
             Dict with aggregated metrics
         """
-        # Remove error folds
-        valid_results = fold_results[~fold_results.get('error').notna()].copy()
+        # Remove error folds (if error column exists)
+        if 'error' in fold_results.columns:
+            valid_results = fold_results[~fold_results['error'].notna()].copy()
+        else:
+            valid_results = fold_results.copy()
         
         if len(valid_results) == 0:
             raise ValueError("No valid fold results")
