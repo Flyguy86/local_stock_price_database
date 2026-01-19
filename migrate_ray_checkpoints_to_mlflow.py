@@ -55,16 +55,49 @@ def find_ray_checkpoints(checkpoints_dir: str = "/app/data/ray_checkpoints") -> 
     return checkpoints
 
 
-def checkpoint_already_migrated(checkpoint_path: Path) -> bool:
-    """Check if checkpoint has already been migrated to MLflow."""
+def checkpoint_already_migrated(checkpoint_path: Path, client: mlflow.tracking.MlflowClient = None) -> bool:
+    """
+    Check if checkpoint has already been migrated to MLflow.
+    
+    Uses two methods:
+    1. Check for marker file (fast)
+    2. Check MLflow for existing run with same checkpoint path (definitive)
+    """
+    # Method 1: Quick check via marker file
     marker_file = checkpoint_path / ".mlflow_migrated"
-    return marker_file.exists()
+    if marker_file.exists():
+        return True
+    
+    # Method 2: Query MLflow for runs with this checkpoint path
+    if client:
+        try:
+            # Search for runs that have this checkpoint path as a tag
+            checkpoint_str = str(checkpoint_path)
+            all_experiments = client.search_experiments()
+            
+            for exp in all_experiments:
+                runs = client.search_runs(
+                    experiment_ids=[exp.experiment_id],
+                    filter_string=f"tags.original_checkpoint = '{checkpoint_str}'"
+                )
+                if runs:
+                    log.debug(f"Found existing MLflow run for {checkpoint_path.parent.name}")
+                    # Create marker file so we don't query again
+                    mark_checkpoint_migrated(checkpoint_path, runs[0].info.run_id)
+                    return True
+        except Exception as e:
+            log.debug(f"Could not query MLflow for duplicates: {e}")
+    
+    return False
 
 
-def mark_checkpoint_migrated(checkpoint_path: Path):
+def mark_checkpoint_migrated(checkpoint_path: Path, run_id: str = None):
     """Mark checkpoint as migrated to avoid duplicate imports."""
+    if run_id is None:
+        run_id = mlflow.active_run().info.run_id if mlflow.active_run() else 'unknown'
+    
     marker_file = checkpoint_path / ".mlflow_migrated"
-    marker_file.write_text(f"Migrated at: {mlflow.active_run().info.run_id if mlflow.active_run() else 'unknown'}")
+    marker_file.write_text(f"Migrated at: {run_id}")
 
 
 def migrate_checkpoint_to_mlflow(checkpoint_path: Path):
@@ -343,12 +376,15 @@ def main():
     checkpoints = find_ray_checkpoints()
     
     if not checkpoints:
-        log.info("No checkpoints to migrate")
-        return
+      Create MLflow client for duplicate checking
+    client = mlflow.tracking.MlflowClient(mlflow_uri)
     
     # Migrate each checkpoint
     migrated = 0
     skipped = 0
+    
+    for checkpoint_path in checkpoints:
+        if checkpoint_already_migrated(checkpoint_path, client
     
     for checkpoint_path in checkpoints:
         if checkpoint_already_migrated(checkpoint_path):
