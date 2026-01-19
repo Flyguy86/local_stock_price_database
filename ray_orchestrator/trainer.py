@@ -153,6 +153,7 @@ class WalkForwardTrainer:
             
             # Extract feature importance from first fold model (representative)
             feature_importance_data = None
+            all_feature_importances = []
             if fold_models:
                 first_model = next(iter(fold_models.values()))
                 first_features = next(iter(fold_feature_lists.values()))
@@ -160,20 +161,50 @@ class WalkForwardTrainer:
                 try:
                     if hasattr(first_model, 'feature_importances_'):  # Tree-based models
                         importances = first_model.feature_importances_
+                        # Create list of ALL features with importance
+                        all_feature_importances = [
+                            {
+                                "name": first_features[i],
+                                "importance": float(importances[i]),
+                                "rank": rank + 1,
+                                "is_context": any(ctx in first_features[i] for ctx in ['_QQQ', '_VIX', '_MSFT', '_SPY'])
+                            }
+                            for rank, i in enumerate(np.argsort(importances)[::-1])
+                        ]
+                        # Keep top 15 for metadata
                         feature_importance_data = {
-                            "top_10_features": [
-                                {"name": first_features[i], "importance": float(importances[i])}
-                                for i in np.argsort(importances)[-10:][::-1]
-                            ]
+                            "top_15_features": all_feature_importances[:15]
                         }
                     elif hasattr(first_model, 'coef_'):  # Linear models
                         coef = np.abs(first_model.coef_)
+                        # Create list of ALL features with importance
+                        all_feature_importances = [
+                            {
+                                "name": first_features[i],
+                                "importance": float(coef[i]),
+                                "rank": rank + 1,
+                                "is_context": any(ctx in first_features[i] for ctx in ['_QQQ', '_VIX', '_MSFT', '_SPY'])
+                            }
+                            for rank, i in enumerate(np.argsort(coef)[::-1])
+                        ]
+                        # Keep top 15 for metadata
                         feature_importance_data = {
-                            "top_10_features": [
-                                {"name": first_features[i], "importance": float(coef[i])}
-                                for i in np.argsort(coef)[-10:][::-1]
-                            ]
+                            "top_15_features": all_feature_importances[:15]
                         }
+                    
+                    # Log top features to console
+                    if all_feature_importances:
+                        log.info("=" * 70)
+                        log.info("TOP 15 FEATURES BY IMPORTANCE:")
+                        for feat in all_feature_importances[:15]:
+                            context_marker = " [CONTEXT]" if feat["is_context"] else ""
+                            log.info(f"  {feat['rank']:2d}. {feat['name']:40s} {feat['importance']:.6f}{context_marker}")
+                        
+                        # Count context features in top 15
+                        context_in_top15 = sum(1 for f in all_feature_importances[:15] if f["is_context"])
+                        log.info(f"\n  📊 Context features in top 15: {context_in_top15}/15")
+                        log.info("=" * 70)
+                        
                 except Exception as e:
                     log.warning(f"Could not extract feature importance: {e}")
             
@@ -192,10 +223,31 @@ class WalkForwardTrainer:
                 with open(features_file, 'w') as f:
                     json.dump({str(k): v for k, v in fold_feature_lists.items()}, f, indent=2)
                 
-                # Save hyperparameters
+                # Save ALL feature importances to dedicated file
+                if all_feature_importances:
+                    importance_file = tmppath / "feature_importance.json"
+                    with open(importance_file, 'w') as f:
+                        json.dump({
+                            "all_features": all_feature_importances,
+                            "summary": {
+                                "total_features": len(all_feature_importances),
+                                "context_features_in_top15": sum(1 for f in all_feature_importances[:15] if f["is_context"]),
+                                "context_features_in_top50": sum(1 for f in all_feature_importances[:50] if f["is_context"]),
+                                "total_context_features": sum(1 for f in all_feature_importances if f["is_context"])
+                            }
+                        }, f, indent=2)
+                
+                # Save hyperparameters + top features for MLflow visibility
+                config_with_features = config.copy()
+                if feature_importance_data:
+                    # Add top 5 feature names as params (MLflow friendly)
+                    for i, feat in enumerate(feature_importance_data["top_15_features"][:5], 1):
+                        config_with_features[f"top_feature_{i}"] = feat["name"]
+                        config_with_features[f"top_feature_{i}_importance"] = feat["importance"]
+                
                 config_file = tmppath / "config.json"
                 with open(config_file, 'w') as f:
-                    json.dump(config, f, indent=2)
+                    json.dump(config_with_features, f, indent=2)
                 
                 # Build comprehensive metadata
                 complete_metadata = {

@@ -71,6 +71,14 @@ from ray.data import DataContext
 ctx = DataContext.get_current()
 ctx.enable_progress_bars = False
 
+# Suppress verbose Ray Data execution logs (optional - keeps logs cleaner)
+logging.getLogger("ray.data").setLevel(logging.WARNING)
+
+# Optimize Ray Data for CPU utilization
+ctx.execution_options.resource_limits.cpu = None  # Use all available CPUs
+ctx.execution_options.preserve_order = False  # Allow reordering for better parallelism
+ctx.target_max_block_size = 512 * 1024 * 1024  # 512MB blocks (larger = more efficient)
+
 log = logging.getLogger(__name__)
 
 
@@ -304,18 +312,24 @@ class StreamingPreprocessor:
             end_date=fold.test_end
         )
         
-        # Load context symbols if specified
+        # Load context symbols if specified (parallelized for speed)
         if context_symbols:
-            train_context = self._load_date_range(
-                symbols=context_symbols,
-                start_date=fold.train_start,
-                end_date=fold.train_end
-            )
-            test_context = self._load_date_range(
-                symbols=context_symbols,
-                start_date=fold.test_start,
-                end_date=fold.test_end
-            )
+            # Load train and test context in parallel using Ray
+            @ray.remote
+            def load_context_async(ctx_symbols, start, end):
+                return self._load_date_range(
+                    symbols=ctx_symbols,
+                    start_date=start,
+                    end_date=end
+                )
+            
+            train_context_future = load_context_async.remote(context_symbols, fold.train_start, fold.train_end)
+            test_context_future = load_context_async.remote(context_symbols, fold.test_start, fold.test_end)
+            
+            # Wait for both to complete
+            train_context, test_context = ray.get([train_context_future, test_context_future])
+            
+            log.info(f"Loaded {len(context_symbols)} context symbols in parallel")
             
             # Join on timestamp
             train_ds = self._join_context_features(train_ds, train_context, symbols[0])
@@ -1068,7 +1082,7 @@ class StreamingPreprocessor:
         self,
         fold: Fold,
         num_gpus: float = 1.0,
-        actor_pool_size: int = 2,
+        actor_pool_size: Optional[int] = None,
         windows: List[int] = [50, 200],
         resampling_timeframes: Optional[List[str]] = None
     ) -> Fold:
@@ -1088,7 +1102,17 @@ class StreamingPreprocessor:
         Returns:
             Fold with processed datasets
         """
-        log.info(f"Processing {fold} with GPU acceleration")
+        import os
+        
+        # Auto-detect CPUs if not specified
+        if actor_pool_size is None:
+            actor_pool_size = os.cpu_count() or 4
+        
+        log.info(f"Processing {fold} with {actor_pool_size} parallel actors (GPU={num_gpus > 0})")
+        
+        # Optimize batch size based on actor count (larger batches = less overhead)
+        # Each actor processes one batch at a time, so larger batches are more efficient
+        optimal_batch_size = 50000 if actor_pool_size >= 8 else 25000
         
         # Create a wrapper function for map_batches
         def process_batch(batch):
@@ -1106,26 +1130,29 @@ class StreamingPreprocessor:
                 fold.train_ds = fold.train_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000,
+                    batch_size=optimal_batch_size,
                     concurrency=actor_pool_size,
-                    num_gpus=num_gpus
+                    num_gpus=num_gpus,
+                    num_cpus=1  # Reserve 1 CPU per GPU actor
                 )
-                log.info(f"Using {actor_pool_size} GPU actors for train data")
+                log.info(f"Using {actor_pool_size} GPU actors (batch_size={optimal_batch_size}) for train data")
             elif actor_pool_size > 1:
                 # CPU parallelism (no GPU)
                 fold.train_ds = fold.train_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000,
-                    concurrency=actor_pool_size
+                    batch_size=optimal_batch_size,
+                    concurrency=actor_pool_size,
+                    num_cpus=1,  # Reserve 1 CPU per actor
+                    zero_copy_batch=True  # Reduce memory copying
                 )
-                log.info(f"Using {actor_pool_size} CPU actors for train data")
+                log.info(f"Using {actor_pool_size} CPU actors (batch_size={optimal_batch_size}) for train data")
             else:
                 # Single-threaded CPU processing
                 fold.train_ds = fold.train_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000
+                    batch_size=optimal_batch_size
                 )
             log.info(f"Processed train data for {fold}")
         
@@ -1136,26 +1163,29 @@ class StreamingPreprocessor:
                 fold.test_ds = fold.test_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000,
+                    batch_size=optimal_batch_size,
                     concurrency=actor_pool_size,
-                    num_gpus=num_gpus
+                    num_gpus=num_gpus,
+                    num_cpus=1
                 )
-                log.info(f"Using {actor_pool_size} GPU actors for test data")
+                log.info(f"Using {actor_pool_size} GPU actors (batch_size={optimal_batch_size}) for test data")
             elif actor_pool_size > 1:
                 # CPU parallelism (no GPU)
                 fold.test_ds = fold.test_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000,
-                    concurrency=actor_pool_size
+                    batch_size=optimal_batch_size,
+                    concurrency=actor_pool_size,
+                    num_cpus=1,
+                    zero_copy_batch=True
                 )
-                log.info(f"Using {actor_pool_size} CPU actors for test data")
+                log.info(f"Using {actor_pool_size} CPU actors (batch_size={optimal_batch_size}) for test data")
             else:
                 # Single-threaded CPU processing
                 fold.test_ds = fold.test_ds.map_batches(
                     process_batch,
                     batch_format="pandas",
-                    batch_size=10000
+                    batch_size=optimal_batch_size
                 )
             log.info(f"Processed test data for {fold}")
         
@@ -1481,7 +1511,7 @@ class StreamingPreprocessor:
         windows: List[int] = [50, 200],
         resampling_timeframes: Optional[List[str]] = None,
         num_gpus: float = 0.0,  # Set to 1.0 when running on GPU
-        actor_pool_size: int = 2
+        actor_pool_size: Optional[int] = None  # None = auto-detect all CPUs
     ) -> Generator[Fold, None, None]:
         """
         Create walk-forward validation pipeline with GPU acceleration.

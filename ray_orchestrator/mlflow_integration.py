@@ -118,9 +118,12 @@ class MLflowTracker:
                     registered_model_name=experiment_name if register_model else None
                 )
             
-            # Log feature names as artifact
-            feature_df = pd.DataFrame({"feature_name": feature_names})
-            mlflow.log_table(feature_df, "features.json")
+            # Log feature names as artifact (using log_dict instead of log_table for compatibility)
+            try:
+                feature_dict = {"features": feature_names}
+                mlflow.log_dict(feature_dict, "features.json")
+            except Exception as e:
+                log.warning(f"Could not log features table: {e}")
             
             # Log additional artifacts if provided
             if artifact_path and Path(artifact_path).exists():
@@ -205,8 +208,12 @@ class MLflowTracker:
             importance_df: DataFrame from calculate_permutation_importance()
         """
         with mlflow.start_run(run_id=run_id):
-            # Log as table
-            mlflow.log_table(importance_df, "permutation_importance.json")
+            # Log as dict artifact (using log_dict for compatibility)
+            try:
+                importance_dict = importance_df.to_dict(orient='records')
+                mlflow.log_dict({"permutation_importance": importance_dict}, "permutation_importance.json")
+            except Exception as e:
+                log.warning(f"Could not log permutation importance table: {e}")
             
             # Log top features as metrics
             for idx, row in importance_df.head(10).iterrows():
