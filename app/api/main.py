@@ -57,6 +57,17 @@ poller = IngestPoller(db)
 backfill_manager = BackfillManager(settings.duckdb_path, settings.parquet_dir)
 app = FastAPI(title="local_stock_price_database")
 
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "service": "ingestion_api",
+        "timestamp": _now_iso()
+    }
+
+
 class IngestResponse(BaseModel):
     symbol: str
     inserted: int

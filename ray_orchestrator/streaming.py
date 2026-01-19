@@ -488,9 +488,22 @@ class StreamingPreprocessor:
                     f"{added_cols} context features added "
                     f"({pre_merge_cols} → {post_merge_cols} total columns)")
             
+            # Drop metadata columns before validation (not used for training)
+            # Common metadata: is_backfilled, symbol, date, partition columns
+            metadata_patterns = ['is_backfilled', 'symbol', 'date', 'dt=']
+            metadata_cols = [
+                c for c in primary_pdf.columns 
+                if any(pattern in c for pattern in metadata_patterns)
+            ]
+            if metadata_cols:
+                log.info(f"Dropping {len(metadata_cols)} metadata columns before validation: {metadata_cols}")
+                validation_df = primary_pdf.drop(columns=metadata_cols)
+            else:
+                validation_df = primary_pdf
+            
             # === DATA VALIDATION: Check for NaN/null values after merge ===
             self._validate_data_quality(
-                df=primary_pdf,
+                df=validation_df,
                 stage="after_context_merge",
                 symbol=primary_symbol,
                 allow_nan_threshold=0.05  # Allow up to 5% NaNs (will be handled by imputation)
@@ -1151,6 +1164,15 @@ class StreamingPreprocessor:
             train_sample = fold.train_ds.take(1000)  # Sample for validation
             if train_sample:
                 train_df = pd.DataFrame(train_sample)
+                # Drop metadata columns before validation
+                metadata_patterns = ['is_backfilled', 'symbol', 'date', 'dt=']
+                metadata_cols = [
+                    c for c in train_df.columns 
+                    if any(pattern in c for pattern in metadata_patterns)
+                ]
+                if metadata_cols:
+                    train_df = train_df.drop(columns=metadata_cols)
+                
                 self._validate_data_quality(
                     df=train_df,
                     stage="after_indicator_calculation_train",
@@ -1162,6 +1184,15 @@ class StreamingPreprocessor:
             test_sample = fold.test_ds.take(1000)  # Sample for validation
             if test_sample:
                 test_df = pd.DataFrame(test_sample)
+                # Drop metadata columns before validation
+                metadata_patterns = ['is_backfilled', 'symbol', 'date', 'dt=']
+                metadata_cols = [
+                    c for c in test_df.columns 
+                    if any(pattern in c for pattern in metadata_patterns)
+                ]
+                if metadata_cols:
+                    test_df = test_df.drop(columns=metadata_cols)
+                
                 self._validate_data_quality(
                     df=test_df,
                     stage="after_indicator_calculation_test",
@@ -1219,6 +1250,15 @@ class StreamingPreprocessor:
             for col, count in high_nan_cols.head(10).items():
                 col_pct = count / len(df) * 100
                 error_msg += f"  - {col}: {count:,}/{len(df):,} ({col_pct:.1f}%)\n"
+            
+            # Add suggestion
+            metadata_keywords = ['is_backfilled', 'symbol', 'date', 'partition', 'dt=']
+            likely_metadata = [
+                col for col in high_nan_cols.index[:10] 
+                if any(kw in col.lower() for kw in metadata_keywords)
+            ]
+            if likely_metadata:
+                error_msg += f"\nNote: Columns {likely_metadata} appear to be metadata and should be dropped before validation.\n"
             
             log.error(error_msg)
             raise ValueError(error_msg)

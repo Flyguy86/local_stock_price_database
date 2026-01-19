@@ -49,6 +49,16 @@ logger = logging.getLogger("feature_service.web")
 app = FastAPI(title="Feature Builder Service")
 
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "service": "feature_service",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
 def _parquet_sample(symbol: str, limit: int) -> list[dict]:
   sym_root = cfg.dest_parquet / symbol
   if not sym_root.exists():

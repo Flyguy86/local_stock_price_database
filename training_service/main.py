@@ -254,6 +254,16 @@ db = TrainingDB()
 # Mount Static Files
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    from datetime import datetime, timezone
+    return {
+        "status": "healthy",
+        "service": "training_service",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
 @app.get("/logs")
 def get_logs():
     """Get recent training logs from buffer."""
