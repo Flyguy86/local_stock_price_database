@@ -71,8 +71,8 @@ from ray.data import DataContext
 ctx = DataContext.get_current()
 ctx.enable_progress_bars = False
 
-# Suppress verbose Ray Data execution logs (optional - keeps logs cleaner)
-logging.getLogger("ray.data").setLevel(logging.WARNING)
+# Enable verbose Ray Data execution logs for debugging
+logging.getLogger("ray.data").setLevel(logging.INFO)
 
 # Optimize Ray Data for CPU utilization
 ctx.execution_options.resource_limits.cpu = None  # Use all available CPUs
