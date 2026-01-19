@@ -42,7 +42,7 @@ class RaySettings(BaseSettings):
     
     # Fault tolerance
     max_failures: int = 3
-    checkpoint_frequency: int = 5  # Every N iterations
+    checkpoint_frequency: int = 1  # Every N iterations (must be <= PBT perturbation_interval)
     
     class Config:
         env_prefix = "RAY_"
@@ -86,6 +86,7 @@ class TuneSettings(BaseSettings):
     pbt_perturbation_interval: int = 5  # Generations between perturbations
     pbt_quantile_fraction: float = 0.25  # Bottom 25% replaced
     pbt_resample_probability: float = 0.25
+    # NOTE: checkpoint_frequency must be <= pbt_perturbation_interval for PBT to exploit trials
     
     # Early stopping (ASHA)
     asha_max_t: int = 100  # Max training iterations

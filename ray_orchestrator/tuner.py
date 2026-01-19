@@ -281,8 +281,29 @@ class TuneOrchestrator:
         
         PBT is the "multi-generational" approach that evolves models
         over time, replacing poor performers with mutated clones of winners.
+        
+        CRITICAL SYNC RULE:
+        - perturbation_interval must be >= checkpoint_frequency
+        - PBT can only exploit trials that have saved checkpoints
+        - Current: perturbation_interval={settings.tune.pbt_perturbation_interval}, 
+                   checkpoint_frequency={settings.ray.checkpoint_frequency}
         """
         mutations = PBT_HYPERPARAM_MUTATIONS.get(algorithm, {})
+        
+        # Validate sync rule
+        if settings.tune.pbt_perturbation_interval < settings.ray.checkpoint_frequency:
+            log.warning(
+                f"⚠️ PBT SYNC RULE VIOLATION: perturbation_interval "
+                f"({settings.tune.pbt_perturbation_interval}) < checkpoint_frequency "
+                f"({settings.ray.checkpoint_frequency}). "
+                f"PBT will not be able to exploit all trials! "
+                f"Set checkpoint_frequency <= perturbation_interval."
+            )
+        
+        log.info(
+            f"PBT Scheduler: perturbation every {settings.tune.pbt_perturbation_interval} iterations, "
+            f"checkpoints every {settings.ray.checkpoint_frequency} iterations ✓"
+        )
         
         return PopulationBasedTraining(
             time_attr="training_iteration",
@@ -456,8 +477,8 @@ class TuneOrchestrator:
                 storage_path=str(settings.data.checkpoints_dir),
                 stop={"training_iteration": num_generations},
                 checkpoint_config=CheckpointConfig(
-                    num_to_keep=10,
-                    checkpoint_frequency=1,  # Every generation
+                    num_to_keep=2,  # PBT only needs recent checkpoints (saves disk space)
+                    checkpoint_frequency=1,  # Must be <= perturbation_interval (currently 5)
                 ),
                 failure_config=ray.train.FailureConfig(
                     max_failures=settings.ray.max_failures
