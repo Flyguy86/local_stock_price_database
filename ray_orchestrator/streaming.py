@@ -1172,7 +1172,10 @@ class StreamingPreprocessor:
         
         Creates features like close_5min, sma50_15min, etc.
         """
+        batch = batch.copy()  # Avoid SettingWithCopyWarning
         batch['ts'] = pd.to_datetime(batch['ts'])
+        batch = batch.sort_values('ts').reset_index(drop=True)  # Ensure sorted
+        
         batch_resampled = batch.set_index('ts').resample(timeframe).agg({
             'open': 'first',
             'high': 'max',
@@ -1183,15 +1186,15 @@ class StreamingPreprocessor:
         
         # Calculate SMA on resampled data
         batch_resampled[f'close_{timeframe}'] = batch_resampled['close']
-        batch_resampled[f'sma50_{timeframe}'] = batch_resampled['close'].rolling(50, min_periods=50).mean()
+        batch_resampled[f'sma50_{timeframe}'] = batch_resampled['close'].rolling(50, min_periods=1).mean()
         
-        # Merge back to original data (forward-fill)
-        batch = batch.merge(
+        # Use merge_asof for time-series alignment (matches nearest earlier timestamp)
+        batch = pd.merge_asof(
+            batch,
             batch_resampled[['ts', f'close_{timeframe}', f'sma50_{timeframe}']],
             on='ts',
-            how='left'
+            direction='backward'
         )
-        batch[[f'close_{timeframe}', f'sma50_{timeframe}']] = batch[[f'close_{timeframe}', f'sma50_{timeframe}']].ffill()
         
         return batch
     
@@ -1376,22 +1379,38 @@ class StreamingPreprocessor:
         nan_count = df.isna().sum().sum()
         nan_pct = nan_count / total_cells if total_cells > 0 else 0
         
+        # Calculate expected NaN from indicator warmup (first 200 rows for 200-period indicators)
+        # This is normal and should not trigger validation failures
+        max_warmup_window = 200  # Largest typical indicator window
+        warmup_rows = min(max_warmup_window, len(df))
+        
+        # Calculate NaN percentage excluding warmup period
+        if len(df) > warmup_rows:
+            df_post_warmup = df.iloc[warmup_rows:]
+            post_warmup_cells = df_post_warmup.shape[0] * df_post_warmup.shape[1]
+            post_warmup_nan = df_post_warmup.isna().sum().sum()
+            post_warmup_nan_pct = post_warmup_nan / post_warmup_cells if post_warmup_cells > 0 else 0
+        else:
+            post_warmup_nan_pct = nan_pct  # Too few rows to exclude warmup
+        
         log.info(f"""Data Quality Validation [{stage}] for {symbol}:
           Rows: {len(df):,}
           Columns: {len(df.columns)}
           Total cells: {total_cells:,}
-          NaN cells: {nan_count:,} ({nan_pct*100:.2f}%)
+          NaN cells (overall): {nan_count:,} ({nan_pct*100:.2f}%)
+          NaN cells (post-warmup): {post_warmup_nan_pct*100:.2f}%
           Threshold: {allow_nan_threshold*100:.1f}%""")
         
-        # Check overall NaN percentage
-        if nan_pct > allow_nan_threshold:
+        # Check NaN percentage AFTER warmup period (more meaningful)
+        if post_warmup_nan_pct > allow_nan_threshold:
             # Identify columns with high NaN percentage
             nan_by_col = df.isna().sum()
             high_nan_cols = nan_by_col[nan_by_col > len(df) * 0.1].sort_values(ascending=False)
             
             error_msg = (
-                f"VALIDATION FAILED [{stage}]: NaN percentage {nan_pct*100:.2f}% "
+                f"VALIDATION FAILED [{stage}]: NaN percentage {post_warmup_nan_pct*100:.2f}% (post-warmup) "
                 f"exceeds threshold {allow_nan_threshold*100:.1f}%\n"
+                f"Overall NaN: {nan_pct*100:.2f}% (includes expected warmup period for first {warmup_rows} rows)\n"
                 f"Columns with >10% NaN (top 10):\n"
             )
             for col, count in high_nan_cols.head(10).items():
