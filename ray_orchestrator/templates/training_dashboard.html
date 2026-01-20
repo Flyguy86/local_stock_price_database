@@ -1959,19 +1959,6 @@
             }
         }
         
-        // Update API examples whenever form changes
-        document.addEventListener('DOMContentLoaded', () => {
-            // Add listeners to all form elements for real-time updates
-            const addUpdateListener = (id) => {
-                const elem = document.getElementById(id);
-                if (elem) {
-                    elem.addEventListener('change', updateApiExamples);
-                    elem.addEventListener('input', updateApiExamples);
-                }
-            };
-            
-            // Listen to all key form inputs
-        
         // ============================================================================
         // Fold Inspector Functions
         // ============================================================================
@@ -2201,6 +2188,14 @@
             };
             
             // Listen to all key form inputs
+                const elem = document.getElementById(id);
+                if (elem) {
+                    elem.addEventListener('change', updateApiExamples);
+                    elem.addEventListener('input', updateApiExamples);
+                }
+            };
+            
+            // Listen to all key form inputs
             addUpdateListener('startDate');
             addUpdateListener('endDate');
             addUpdateListener('numSamples');
@@ -2227,7 +2222,7 @@
             addUpdateListener('backtestStepMonths');
             addUpdateListener('backtestStartDate');
             addUpdateListener('backtestEndDate');
-        });
+        }); // End DOMContentLoaded
     </script>
 </body>
 </html>
