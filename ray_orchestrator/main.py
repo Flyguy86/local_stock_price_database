@@ -348,6 +348,9 @@ async def get_folds_summary():
         "total_symbols_with_folds": len(symbols_with_folds),
         "symbols_needing_preprocessing": list(set(symbols_with_data) - set(symbols_with_folds)),
         "symbols_ready_for_training": symbols_with_folds,
+    }
+    
+    return summary
 
 
 @app.get("/folds/{symbol}/{fold_id}/columns")
