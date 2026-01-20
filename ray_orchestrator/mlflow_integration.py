@@ -221,6 +221,77 @@ class MLflowTracker:
             
             log.info(f"Permutation importance logged to run {run_id}")
     
+    def evaluate_model(
+        self,
+        run_id: str,
+        model: Any,
+        X_test: np.ndarray,
+        y_test: np.ndarray,
+        model_type: str = "regressor"
+    ):
+        """
+        Run MLflow model evaluation to generate comprehensive performance metrics.
+        
+        Uses mlflow.evaluate() to automatically compute metrics and generate plots:
+        - Regression: RMSE, MAE, R², residuals plot, predicted vs actual
+        - Additional: Feature importance, error distribution
+        
+        Args:
+            run_id: MLflow run ID to log evaluation to
+            model: Trained model instance
+            X_test: Test features
+            y_test: Test targets
+            model_type: "regressor" or "classifier"
+        """
+        log.info(f"🔬 Running MLflow model evaluation...")
+        
+        try:
+            with mlflow.start_run(run_id=run_id):
+                # Create evaluation dataset
+                eval_data = pd.DataFrame(X_test)
+                eval_data['target'] = y_test
+                
+                # Define evaluators based on model type
+                if model_type == "regressor":
+                    evaluators = "default"  # RMSE, MAE, R², plots
+                else:
+                    evaluators = "default"  # Accuracy, precision, recall, etc.
+                
+                # Run evaluation (logs metrics + artifacts automatically)
+                eval_result = mlflow.evaluate(
+                    model=model,
+                    data=eval_data,
+                    targets='target',
+                    model_type=model_type,
+                    evaluators=evaluators,
+                    evaluator_config={
+                        "log_model_explainability": False,  # Skip SHAP for speed
+                        "metric_prefix": "eval_"  # Prefix metrics to distinguish from training
+                    }
+                )
+                
+                log.info(f"✅ MLflow evaluation complete:")
+                log.info(f"   📊 Metrics logged: {list(eval_result.metrics.keys())}")
+                log.info(f"   📁 Artifacts logged: {list(eval_result.artifacts.keys())}")
+                
+                # Log custom time-series specific metrics
+                y_pred = model.predict(X_test)
+                residuals = y_test - y_pred
+                
+                # Additional metrics for financial time series
+                mlflow.log_metrics({
+                    "eval_mean_residual": float(np.mean(residuals)),
+                    "eval_std_residual": float(np.std(residuals)),
+                    "eval_max_error": float(np.max(np.abs(residuals))),
+                    "eval_mape": float(np.mean(np.abs(residuals / (y_test + 1e-9))) * 100),  # Mean Absolute Percentage Error
+                })
+                
+                log.info(f"   ✓ Custom time-series metrics logged")
+                
+        except Exception as e:
+            log.warning(f"⚠️  MLflow evaluation failed: {e}")
+            log.debug(f"Evaluation error details:", exc_info=True)
+    
     def get_registered_models(self) -> list:
         """
         Get list of all registered models.

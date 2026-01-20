@@ -367,6 +367,16 @@ class WalkForwardTrainer:
                             )
                             mlflow_tracker.log_permutation_importance(run_id, importance_df)
                         
+                        # Run MLflow model evaluation (generates plots + comprehensive metrics)
+                        if len(X_sample) >= 10:
+                            mlflow_tracker.evaluate_model(
+                                run_id=run_id,
+                                model=first_model,
+                                X_test=X_sample,
+                                y_test=y_sample,
+                                model_type="regressor"
+                            )
+                        
                         log.info(f"✅ Logged to MLflow: run_id={run_id}")
                 except Exception as e:
                     log.warning(f"Failed to log to MLflow: {e}", exc_info=True)
