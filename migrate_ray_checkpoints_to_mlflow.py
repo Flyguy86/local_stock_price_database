@@ -376,15 +376,15 @@ def main():
     checkpoints = find_ray_checkpoints()
     
     if not checkpoints:
-      Create MLflow client for duplicate checking
+        log.info("No Ray checkpoints found to migrate.")
+        return
+    
+    # Create MLflow client for duplicate checking
     client = mlflow.tracking.MlflowClient(mlflow_uri)
     
     # Migrate each checkpoint
     migrated = 0
     skipped = 0
-    
-    for checkpoint_path in checkpoints:
-        if checkpoint_already_migrated(checkpoint_path, client
     
     for checkpoint_path in checkpoints:
         if checkpoint_already_migrated(checkpoint_path):
