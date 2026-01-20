@@ -167,6 +167,51 @@ def migrate_checkpoint_to_mlflow(checkpoint_path: Path):
             mlflow.set_tag("feature_engineering_version", model_info.get("feature_engineering_version", "unknown"))
             mlflow.set_tag("migrated_from_ray", "true")
             
+            # Log checkpoint artifacts (feature importance, metadata, etc.)
+            log.info(f"  📊 Logging checkpoint artifacts...")
+            
+            # 1. Log feature importance if available
+            feature_importance_file = checkpoint_path / "feature_importance.json"
+            if feature_importance_file.exists():
+                mlflow.log_artifact(str(feature_importance_file), "feature_analysis")
+                log.info(f"    ✓ Logged feature_importance.json")
+            else:
+                log.warning(f"    ⚠️  feature_importance.json not found")
+            
+            # 2. Log feature lists (features used per fold)
+            if features_file.exists():
+                mlflow.log_artifact(str(features_file), "feature_analysis")
+                log.info(f"    ✓ Logged feature_lists.json")
+            
+            # 3. Log full metadata (fold-by-fold metrics)
+            metadata_file = checkpoint_path / "metadata.json"
+            if metadata_file.exists():
+                mlflow.log_artifact(str(metadata_file), "training_details")
+                log.info(f"    ✓ Logged metadata.json")
+            
+            # 4. Log top features as parameters for quick filtering
+            feature_importance_path = checkpoint_path / "feature_importance.json"
+            if feature_importance_path.exists():
+                try:
+                    with open(feature_importance_path, "r") as f:
+                        importance_data = json.load(f)
+                    
+                    top_features = importance_data.get("all_features", [])[:10]
+                    for i, feat in enumerate(top_features, 1):
+                        mlflow.log_param(f"top_{i}_feature", feat.get("name", "unknown"))
+                        mlflow.log_metric(f"top_{i}_importance", feat.get("importance", 0.0))
+                    
+                    # Log context feature counts
+                    summary = importance_data.get("summary", {})
+                    if summary:
+                        mlflow.log_param("context_features_in_top15", summary.get("context_features_in_top15", 0))
+                        mlflow.log_param("context_features_in_top50", summary.get("context_features_in_top50", 0))
+                        mlflow.log_param("total_context_features", summary.get("total_context_features", 0))
+                    
+                    log.info(f"    ✓ Logged top 10 features as params")
+                except Exception as e:
+                    log.warning(f"    ⚠️  Could not parse feature importance: {e}")
+            
             # Log model
             if algorithm in ["elasticnet", "ridge", "lasso", "randomforest"]:
                 mlflow.sklearn.log_model(

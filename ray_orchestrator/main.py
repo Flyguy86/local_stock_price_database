@@ -1362,8 +1362,24 @@ async def load_backtest_result(filepath: str):
         if not result_path.is_relative_to(results_dir):
             raise HTTPException(status_code=403, detail="Access denied")
         
-        with open(result_path, 'r') as f:
-            data = json.load(f)
+        try:
+            with open(result_path, 'r') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as je:
+            log.error(f"Malformed JSON in {result_path.name}: {je}")
+            log.error(f"  Error at line {je.lineno}, column {je.colno}")
+            # Try to read the problematic line for debugging
+            try:
+                with open(result_path, 'r') as f:
+                    lines = f.readlines()
+                    if je.lineno <= len(lines):
+                        log.error(f"  Problematic line {je.lineno}: {lines[je.lineno-1][:100]}")
+            except:
+                pass
+            raise HTTPException(
+                status_code=422, 
+                detail=f"Corrupted JSON file at line {je.lineno}, column {je.colno}. File may need to be regenerated."
+            )
         
         return data
         
