@@ -623,14 +623,20 @@ async def generate_folds_only(request: GenerateFoldsRequest, background_tasks: B
                     """Transform OHLC to log returns and add target."""
                     batch = batch.copy()
                     
-                    # Keep raw close for VectorBT simulation
+                    # Keep close for training (used as target_col)
+                    # Also keep raw close for VectorBT simulation
                     batch['close_raw'] = batch['close']
                     
-                    # Transform OHLC to log returns
-                    for col in ['open', 'high', 'low', 'close']:
+                    # Transform OHLC to log returns (but keep original close for target creation)
+                    for col in ['open', 'high', 'low']:  # Don't drop 'close' yet
                         if col in batch.columns:
                             batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
                             batch.drop(columns=[col], inplace=True)
+                    
+                    # Create close_log_return but keep 'close' for training
+                    if 'close' in batch.columns:
+                        batch['close_log_return'] = np.log((batch['close'] + 1e-9) / (batch['close'].shift(1) + 1e-9))
+                        # DO NOT drop 'close' - it's needed as target_col in training
                     
                     # Add target (future close log return)
                     future_close = batch['close_raw'].shift(-1)
@@ -735,17 +741,23 @@ async def run_walk_forward_preprocess(request: WalkForwardPreprocessRequest, bac
                     """
                     Transform OHLC to log returns to prevent absolute price leakage.
                     Keep close_raw for VectorBT simulation.
+                    Keep close for training (used as target_col).
                     """
                     batch = batch.copy()
                     
                     # Preserve raw close for VectorBT
                     batch['close_raw'] = batch['close']
                     
-                    # Transform OHLC to log returns
-                    for col in ['open', 'high', 'low', 'close']:
+                    # Transform OHLC to log returns (but keep original close for target creation)
+                    for col in ['open', 'high', 'low']:  # Don't drop 'close' yet
                         if col in batch.columns:
                             batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
                             batch.drop(columns=[col], inplace=True)
+                    
+                    # Create close_log_return but keep 'close' for training
+                    if 'close' in batch.columns:
+                        batch['close_log_return'] = np.log((batch['close'] + 1e-9) / (batch['close'].shift(1) + 1e-9))
+                        # DO NOT drop 'close' - it's needed as target_col in training
                     
                     # Add target as future close log return
                     future_close = batch['close_raw'].shift(-1)
@@ -1127,15 +1139,21 @@ async def run_backtest(request: BacktestRequest, background_tasks: BackgroundTas
                             """Transform OHLC to log returns and add target."""
                             batch = batch.copy()
                             
-                            # Keep raw close for VectorBT simulation (needed for portfolio tracking)
+                            # Keep close for training (used as target_col)
+                            # Also keep raw close for VectorBT simulation
                             batch['close_raw'] = batch['close']
                             
-                            # Transform OHLC to log returns (prevents absolute price leakage)
-                            for col in ['open', 'high', 'low', 'close']:
+                            # Transform OHLC to log returns (but keep original close for target creation)
+                            for col in ['open', 'high', 'low']:  # Don't drop 'close' yet
                                 if col in batch.columns:
                                     batch[f'{col}_log_return'] = np.log((batch[col] + 1e-9) / (batch[col].shift(1) + 1e-9))
                                     # Drop raw price column
                                     batch.drop(columns=[col], inplace=True)
+                            
+                            # Create close_log_return but keep 'close' for training
+                            if 'close' in batch.columns:
+                                batch['close_log_return'] = np.log((batch['close'] + 1e-9) / (batch['close'].shift(1) + 1e-9))
+                                # DO NOT drop 'close' - it's needed as target_col in training
                             
                             # Add target (future close log return)
                             future_close = batch['close_raw'].shift(-1)
