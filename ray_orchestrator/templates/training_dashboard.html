@@ -2188,14 +2188,6 @@
             };
             
             // Listen to all key form inputs
-                const elem = document.getElementById(id);
-                if (elem) {
-                    elem.addEventListener('change', updateApiExamples);
-                    elem.addEventListener('input', updateApiExamples);
-                }
-            };
-            
-            // Listen to all key form inputs
             addUpdateListener('startDate');
             addUpdateListener('endDate');
             addUpdateListener('numSamples');
