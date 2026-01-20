@@ -434,12 +434,6 @@ async def get_fold_columns(symbol: str, fold_id: int):
         raise HTTPException(status_code=500, detail=f"Error reading fold data: {str(e)}")
 
 
-@app.get("/folds/summary")
-    }
-    
-    return summary
-
-
 @app.get("/streaming/status")
 async def get_streaming_status():
     """Get status of Ray Data streaming jobs with symbol and date information."""
