@@ -316,6 +316,29 @@
             transform: none;
         }
         
+        .retrain-step {
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        #modelListTable tr:hover {
+            background: #f8f9fa !important;
+        }
+        
+        .feature-checkbox {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+        
+        #featureTableBody tr:hover {
+            background: #f0f7ff !important;
+        }
+        
         .status {
             padding: 15px;
             border-radius: 8px;
@@ -744,7 +767,142 @@
             <button type="submit" class="btn btn-primary" id="submitBtn">
                 🚀 Start Walk-Forward Training
             </button>
+            
+            <!-- Retrain Button -->
+            <button type="button" class="btn" onclick="showRetrainWorkflow()" style="background: #28a745; margin-left: 15px;">
+                🔄 Retrain Existing Model
+            </button>
         </form>
+        
+        <!-- Retrain Workflow Modal -->
+        <div id="retrainModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; overflow-y: auto;">
+            <div style="max-width: 1200px; margin: 40px auto; background: white; border-radius: 12px; padding: 30px; position: relative;">
+                <button onclick="closeRetrainWorkflow()" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 1.1em;">✕</button>
+                
+                <h2 style="margin-bottom: 25px; color: #333;">🔄 Retrain Existing Model</h2>
+                
+                <!-- Step 1: Model Selection -->
+                <div id="retrainStep1" class="retrain-step">
+                    <h3 style="color: #667eea; margin-bottom: 20px;">Step 1: Select Model to Retrain</h3>
+                    
+                    <div class="help-text" style="margin-bottom: 20px;">
+                        Choose a previously trained model. Configuration and feature sets will be loaded automatically.
+                    </div>
+                    
+                    <div id="modelListLoading" style="text-align: center; padding: 40px;">
+                        <div style="font-size: 2em; margin-bottom: 10px;">⏳</div>
+                        Loading trained models...
+                    </div>
+                    
+                    <div id="modelListContainer" style="display: none;">
+                        <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                            <thead>
+                                <tr style="background: #f8f9fa; border-bottom: 2px solid #667eea;">
+                                    <th style="padding: 12px; text-align: left;">Select</th>
+                                    <th style="padding: 12px; text-align: left;">Algorithm</th>
+                                    <th style="padding: 12px; text-align: left;">Ticker</th>
+                                    <th style="padding: 12px; text-align: center;">Features</th>
+                                    <th style="padding: 12px; text-align: center;">Folds</th>
+                                    <th style="padding: 12px; text-align: center;">Test R²</th>
+                                    <th style="padding: 12px; text-align: center;">Test RMSE</th>
+                                    <th style="padding: 12px; text-align: left;">Context</th>
+                                    <th style="padding: 12px; text-align: left;">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="modelListTable">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                        
+                        <button type="button" class="btn btn-primary" onclick="loadModelDetails()">
+                            Next: Configure Features →
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Step 2: Feature Selection -->
+                <div id="retrainStep2" class="retrain-step" style="display: none;">
+                    <button type="button" onclick="showRetrainStep(1)" style="background: #6c757d; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-bottom: 20px;">
+                        ← Back to Model Selection
+                    </button>
+                    
+                    <h3 style="color: #667eea; margin-bottom: 20px;">Step 2: Review Configuration & Select Features</h3>
+                    
+                    <!-- Model Info Summary -->
+                    <div id="selectedModelInfo" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 25px; border-left: 4px solid #667eea;">
+                        <!-- Populated dynamically -->
+                    </div>
+                    
+                    <!-- Configuration Parameters -->
+                    <div style="background: white; border: 2px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                        <h4 style="margin-bottom: 15px; color: #333;">📋 Training Configuration</h4>
+                        <div id="retrainConfigDisplay" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                    
+                    <!-- Feature Selection Grid -->
+                    <div style="background: white; border: 2px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h4 style="margin: 0; color: #333;">🎯 Feature Selection</h4>
+                            <div>
+                                <button type="button" onclick="selectAllFeatures()" class="btn" style="background: #28a745; margin-right: 10px;">✓ Select All</button>
+                                <button type="button" onclick="deselectAllFeatures()" class="btn" style="background: #6c757d;">✗ Clear All</button>
+                                <button type="button" onclick="selectHighImportanceOnly()" class="btn" style="background: #667eea; margin-left: 10px;">⭐ High Importance Only</button>
+                            </div>
+                        </div>
+                        
+                        <div class="help-text" style="margin-bottom: 15px;">
+                            <strong>✓ Checked</strong> features will be included in retraining. 
+                            <strong style="color: #dc3545;">Low importance</strong> features are unchecked by default (below median importance).
+                            Median importance: <span id="medianImportanceValue">-</span>
+                        </div>
+                        
+                        <div style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 15px; border-radius: 6px;">
+                            <strong>⚠️ XGBoost Retraining Note:</strong>
+                            <div style="margin-top: 8px; font-size: 0.95em;">
+                                When excluding features, a <strong>new model</strong> is trained from scratch (not incremental).
+                                XGBoost's <code>xgb_model</code> parameter requires the same feature set.
+                                For true incremental learning (adding trees), keep all features and use longer training runs.
+                            </div>
+                        </div>
+                        
+                        <div id="featureSelectionLoading" style="text-align: center; padding: 40px;">
+                            <div style="font-size: 2em; margin-bottom: 10px;">⏳</div>
+                            Loading feature importance data...
+                        </div>
+                        
+                        <div id="featureSelectionGrid" style="display: none; max-height: 500px; overflow-y: auto; border: 1px solid #ddd; border-radius: 6px;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
+                                    <tr>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 2px solid #667eea;">Include</th>
+                                        <th style="padding: 12px; text-align: left; border-bottom: 2px solid #667eea;">Feature Name</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 2px solid #667eea;">Importance</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 2px solid #667eea;">Rank</th>
+                                        <th style="padding: 12px; text-align: center; border-bottom: 2px solid #667eea;">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="featureTableBody">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <div id="featureSelectionSummary" style="margin-top: 15px; padding: 15px; background: #e7f3ff; border-radius: 6px; display: none;">
+                            <strong>Selection Summary:</strong>
+                            <span id="selectedFeatureCount">0</span> of <span id="totalFeatureCount">0</span> features selected
+                            (<span id="excludedFeatureCount">0</span> excluded)
+                        </div>
+                    </div>
+                    
+                    <!-- Submit Retrain -->
+                    <button type="button" class="btn btn-primary" onclick="submitRetrain()" id="retrainSubmitBtn">
+                        🚀 Start Retraining with Selected Features
+                    </button>
+                </div>
+            </div>
+        </div>
         
         <!-- Fold Inspector Section -->
         <div class="section" style="margin-top: 30px;">
@@ -2215,6 +2373,309 @@
             addUpdateListener('backtestStartDate');
             addUpdateListener('backtestEndDate');
         }); // End DOMContentLoaded
+        
+        // ============================================================================
+        // Retrain Workflow Functions
+        // ============================================================================
+        
+        let selectedModel = null;
+        let modelFeatures = null;
+        
+        async function showRetrainWorkflow() {
+            document.getElementById('retrainModal').style.display = 'block';
+            document.body.style.overflow = 'hidden';
+            await loadModelsList();
+        }
+        
+        function closeRetrainWorkflow() {
+            document.getElementById('retrainModal').style.display = 'none';
+            document.body.style.overflow = 'auto';
+            selectedModel = null;
+            modelFeatures = null;
+            showRetrainStep(1);
+        }
+        
+        function showRetrainStep(step) {
+            document.getElementById('retrainStep1').style.display = step === 1 ? 'block' : 'none';
+            document.getElementById('retrainStep2').style.display = step === 2 ? 'block' : 'none';
+        }
+        
+        async function loadModelsList() {
+            const loadingEl = document.getElementById('modelListLoading');
+            const containerEl = document.getElementById('modelListContainer');
+            const tableBody = document.getElementById('modelListTable');
+            
+            loadingEl.style.display = 'block';
+            containerEl.style.display = 'none';
+            
+            try {
+                const response = await fetch('/models/list');
+                const data = await response.json();
+                
+                if (!data.models || data.models.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #6c757d;">No trained models found. Train a model first.</td></tr>';
+                } else {
+                    tableBody.innerHTML = data.models.map((model, idx) => {
+                        const r2Display = model.avg_test_r2 != null ? model.avg_test_r2.toFixed(4) : 'N/A';
+                        const rmseDisplay = model.avg_test_rmse != null ? model.avg_test_rmse.toFixed(6) : 'N/A';
+                        const contextDisplay = model.context_symbols && model.context_symbols.length > 0 
+                            ? model.context_symbols.join(', ') 
+                            : 'None';
+                        const dateDisplay = new Date(model.created_at).toLocaleString();
+                        
+                        const r2Color = model.avg_test_r2 > 0.5 ? '#28a745' : (model.avg_test_r2 > 0.2 ? '#ffc107' : '#dc3545');
+                        
+                        return `
+                            <tr style="border-bottom: 1px solid #e5e7eb; cursor: pointer;" 
+                                onclick="selectModelRow(${idx}, ${JSON.stringify(model).replace(/"/g, '&quot;')})"
+                                id="modelRow${idx}">
+                                <td style="padding: 12px;">
+                                    <input type="radio" name="selectedModel" value="${idx}" 
+                                        onchange="selectModelRow(${idx}, ${JSON.stringify(model).replace(/"/g, '&quot;')})">
+                                </td>
+                                <td style="padding: 12px;">
+                                    <span style="background: #667eea; color: white; padding: 4px 10px; border-radius: 4px; font-size: 0.85em; font-weight: bold;">
+                                        ${model.algorithm.toUpperCase()}
+                                    </span>
+                                </td>
+                                <td style="padding: 12px; font-weight: bold;">${model.ticker}</td>
+                                <td style="padding: 12px; text-align: center;">${model.num_features}</td>
+                                <td style="padding: 12px; text-align: center;">${model.num_folds}</td>
+                                <td style="padding: 12px; text-align: center; color: ${r2Color}; font-weight: bold;">${r2Display}</td>
+                                <td style="padding: 12px; text-align: center;">${rmseDisplay}</td>
+                                <td style="padding: 12px; font-size: 0.85em;">${contextDisplay}</td>
+                                <td style="padding: 12px; font-size: 0.85em;">${dateDisplay}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+                
+                loadingEl.style.display = 'none';
+                containerEl.style.display = 'block';
+            } catch (error) {
+                console.error('Error loading models:', error);
+                tableBody.innerHTML = `<tr><td colspan="9" style="text-align: center; padding: 40px; color: #dc3545;">Error loading models: ${error.message}</td></tr>`;
+                loadingEl.style.display = 'none';
+                containerEl.style.display = 'block';
+            }
+        }
+        
+        function selectModelRow(idx, model) {
+            // Highlight selected row
+            document.querySelectorAll('#modelListTable tr').forEach(row => {
+                row.style.background = '';
+            });
+            document.getElementById(`modelRow${idx}`).style.background = '#e7f3ff';
+            
+            // Check the radio button
+            document.querySelectorAll('input[name="selectedModel"]')[idx].checked = true;
+            
+            selectedModel = model;
+        }
+        
+        async function loadModelDetails() {
+            if (!selectedModel) {
+                alert('Please select a model first');
+                return;
+            }
+            
+            showRetrainStep(2);
+            
+            // Display model info summary
+            const contextSymbols = selectedModel.context_symbols && selectedModel.context_symbols.length > 0 
+                ? selectedModel.context_symbols.join(', ') 
+                : 'None';
+            
+            document.getElementById('selectedModelInfo').innerHTML = `
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div><strong>Algorithm:</strong> ${selectedModel.algorithm.toUpperCase()}</div>
+                    <div><strong>Ticker:</strong> ${selectedModel.ticker}</div>
+                    <div><strong>Test R²:</strong> <span style="color: ${selectedModel.avg_test_r2 > 0.5 ? '#28a745' : '#ffc107'};">${(selectedModel.avg_test_r2 || 0).toFixed(4)}</span></div>
+                    <div><strong>Test RMSE:</strong> ${(selectedModel.avg_test_rmse || 0).toFixed(6)}</div>
+                    <div><strong>Folds:</strong> ${selectedModel.num_folds}</div>
+                    <div><strong>Features:</strong> ${selectedModel.num_features}</div>
+                    <div><strong>Context:</strong> ${contextSymbols}</div>
+                    <div><strong>Train Period:</strong> ${selectedModel.train_months || 'N/A'}m</div>
+                    <div><strong>Test Period:</strong> ${selectedModel.test_months || 'N/A'}m</div>
+                </div>
+            `;
+            
+            // Display configuration
+            const configDisplay = document.getElementById('retrainConfigDisplay');
+            const config = selectedModel.config || {};
+            const params = selectedModel.params || {};
+            
+            const allParams = {...config, ...params};
+            configDisplay.innerHTML = Object.entries(allParams)
+                .filter(([key]) => !key.startsWith('top_feature_') && !key.startsWith('pbt_'))
+                .map(([key, value]) => {
+                    const displayValue = typeof value === 'number' ? value.toFixed(4) : value;
+                    return `
+                        <div style="padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                            <div style="font-size: 0.85em; color: #6c757d; margin-bottom: 4px;">${key}</div>
+                            <div style="font-weight: bold;">${displayValue}</div>
+                        </div>
+                    `;
+                }).join('');
+            
+            // Load feature importance
+            await loadFeatureImportance();
+        }
+        
+        async function loadFeatureImportance() {
+            const loadingEl = document.getElementById('featureSelectionLoading');
+            const gridEl = document.getElementById('featureSelectionGrid');
+            const summaryEl = document.getElementById('featureSelectionSummary');
+            
+            loadingEl.style.display = 'block';
+            gridEl.style.display = 'none';
+            summaryEl.style.display = 'none';
+            
+            try {
+                const response = await fetch(`/models/${selectedModel.experiment_id}/${selectedModel.trial_id}/features`);
+                const data = await response.json();
+                
+                modelFeatures = data.feature_importance;
+                const medianImportance = data.summary.median_importance;
+                
+                document.getElementById('medianImportanceValue').textContent = medianImportance.toFixed(6);
+                
+                const tableBody = document.getElementById('featureTableBody');
+                tableBody.innerHTML = modelFeatures.map((feat, idx) => {
+                    const isLowImportance = feat.is_low_importance;
+                    const checked = !isLowImportance; // Uncheck low importance by default
+                    const statusBadge = isLowImportance 
+                        ? '<span style="background: #dc3545; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;">Low</span>'
+                        : '<span style="background: #28a745; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;">High</span>';
+                    
+                    const rowStyle = isLowImportance ? 'background: #fff3cd;' : '';
+                    
+                    return `
+                        <tr style="${rowStyle} border-bottom: 1px solid #e5e7eb;">
+                            <td style="padding: 12px; text-align: center;">
+                                <input type="checkbox" 
+                                    class="feature-checkbox" 
+                                    data-feature="${feat.name}"
+                                    data-importance="${feat.importance}"
+                                    ${checked ? 'checked' : ''}
+                                    onchange="updateFeatureSelectionSummary()">
+                            </td>
+                            <td style="padding: 12px; font-family: monospace; font-size: 0.9em;">${feat.name}</td>
+                            <td style="padding: 12px; text-align: center; font-weight: bold;">${feat.importance.toFixed(6)}</td>
+                            <td style="padding: 12px; text-align: center;">#${idx + 1}</td>
+                            <td style="padding: 12px; text-align: center;">${statusBadge}</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+                loadingEl.style.display = 'none';
+                gridEl.style.display = 'block';
+                summaryEl.style.display = 'block';
+                
+                updateFeatureSelectionSummary();
+            } catch (error) {
+                console.error('Error loading features:', error);
+                loadingEl.innerHTML = `
+                    <div style="color: #dc3545; padding: 40px;">
+                        <div style="font-size: 2em; margin-bottom: 10px;">❌</div>
+                        Error loading features: ${error.message}
+                    </div>
+                `;
+            }
+        }
+        
+        function updateFeatureSelectionSummary() {
+            const checkboxes = document.querySelectorAll('.feature-checkbox');
+            const total = checkboxes.length;
+            const selected = Array.from(checkboxes).filter(cb => cb.checked).length;
+            const excluded = total - selected;
+            
+            document.getElementById('totalFeatureCount').textContent = total;
+            document.getElementById('selectedFeatureCount').textContent = selected;
+            document.getElementById('excludedFeatureCount').textContent = excluded;
+        }
+        
+        function selectAllFeatures() {
+            document.querySelectorAll('.feature-checkbox').forEach(cb => cb.checked = true);
+            updateFeatureSelectionSummary();
+        }
+        
+        function deselectAllFeatures() {
+            document.querySelectorAll('.feature-checkbox').forEach(cb => cb.checked = false);
+            updateFeatureSelectionSummary();
+        }
+        
+        function selectHighImportanceOnly() {
+            document.querySelectorAll('.feature-checkbox').forEach(cb => {
+                const row = cb.closest('tr');
+                const isLowImportance = row.style.background.includes('fff3cd');
+                cb.checked = !isLowImportance;
+            });
+            updateFeatureSelectionSummary();
+        }
+        
+        async function submitRetrain() {
+            if (!selectedModel || !modelFeatures) {
+                alert('Model or features not loaded');
+                return;
+            }
+            
+            // Get excluded features (unchecked boxes)
+            const checkboxes = document.querySelectorAll('.feature-checkbox');
+            const excludedFeatures = Array.from(checkboxes)
+                .filter(cb => !cb.checked)
+                .map(cb => cb.dataset.feature);
+            
+            if (excludedFeatures.length === checkboxes.length) {
+                alert('You must select at least one feature for training!');
+                return;
+            }
+            
+            // Build training request from original model config
+            const trainRequest = {
+                symbols: [selectedModel.ticker],
+                context_symbols: selectedModel.context_symbols || [],
+                start_date: document.getElementById('startDate').value,
+                end_date: document.getElementById('endDate').value,
+                train_months: selectedModel.train_months || 3,
+                test_months: selectedModel.test_months || 1,
+                step_months: 1,
+                algorithm: selectedModel.algorithm,
+                param_space: selectedModel.params || null,
+                num_samples: 50,
+                windows: [50, 200],
+                resampling_timeframes: null,
+                excluded_features: excludedFeatures,
+                base_experiment_id: selectedModel.experiment_id
+            };
+            
+            const submitBtn = document.getElementById('retrainSubmitBtn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '⏳ Starting Retrain...';
+            
+            try {
+                const response = await fetch('/train/walk_forward', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(trainRequest)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert(`✅ Retrain started successfully!\\n\\nJob ID: ${result.job_id}\\n\\nExcluded ${excludedFeatures.length} low-importance features.\\n\\nCheck Ray Dashboard for progress.`);
+                    closeRetrainWorkflow();
+                } else {
+                    alert(`❌ Error starting retrain: ${result.detail || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Error submitting retrain:', error);
+                alert(`❌ Error submitting retrain: ${error.message}`);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = '🚀 Start Retraining with Selected Features';
+            }
+        }
     </script>
 </body>
 </html>
