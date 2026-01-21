@@ -620,7 +620,12 @@ class WalkForwardTrainer:
         log.info(f"Reserving {cpu_count - actor_pool_size} CPUs for training trials")
         
         # Step 1: Generate and load folds
-        log.info("Generating walk-forward folds...")
+        log.info("="*100)
+        log.info("GENERATING WALK-FORWARD FOLDS")
+        log.info(f"Configuration: {train_months} months train, {test_months} months test, {step_months} months step")
+        log.info(f"Date Range: {start_date} to {end_date}")
+        log.info(f"Cache Status: {'DISABLED (fresh calculation guaranteed)' if not use_cached_folds else 'ENABLED (may use cached data)'}")
+        log.info("="*100)
         self.folds = []
         
         for fold in self.preprocessor.create_walk_forward_pipeline(

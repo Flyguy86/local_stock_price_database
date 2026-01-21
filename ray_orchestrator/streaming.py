@@ -1721,8 +1721,9 @@ class StreamingPreprocessor:
             
             # Cache miss or caching disabled - compute from scratch
             cache_status = "DISABLED" if not use_cached_folds else "MISS"
-            log.info(f"Computing fold {fold.fold_id} from FRESH data (cache: {cache_status})")
-            log.info(f"  Dates: Train {fold.train_start} to {fold.train_end}, Test {fold.test_start} to {fold.test_end}")
+            log.warning(f"🔄 FOLD {fold.fold_id}: Computing from FRESH DATA (cache: {cache_status})")
+            log.warning(f"   📅 Train Period: {fold.train_start} → {fold.train_end}")
+            log.warning(f"   📅 Test Period:  {fold.test_start} → {fold.test_end}")
             
             # Load data
             fold = self.load_fold_data(
