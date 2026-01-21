@@ -2555,6 +2555,41 @@ async def get_model_features(experiment_id: str, trial_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/experiments/list")
+async def list_experiments():
+    """
+    List all MLflow experiment names.
+    Used to populate dropdown in rank models UI.
+    """
+    try:
+        from ray_orchestrator.mlflow_integration import MLflowTracker
+        mlflow_tracker = MLflowTracker()
+        
+        import mlflow
+        client = mlflow.tracking.MlflowClient(mlflow_tracker.tracking_uri)
+        
+        # Get all experiments
+        experiments = client.search_experiments()
+        
+        # Extract names and filter out deleted ones
+        experiment_names = [
+            exp.name for exp in experiments 
+            if exp.lifecycle_stage == "active" and exp.name != "Default"
+        ]
+        
+        # Sort by name
+        experiment_names.sort()
+        
+        return {
+            "experiments": experiment_names,
+            "total": len(experiment_names)
+        }
+        
+    except Exception as e:
+        log.error(f"Error listing experiments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/models/rank")
 async def rank_models(
     experiment_name: str,

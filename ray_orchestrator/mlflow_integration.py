@@ -343,6 +343,7 @@ class MLflowTracker:
         Args:
             experiment_name: Name of the experiment to rank
             metric: Metric name to rank by (default: avg_test_r2)
+                   Special: 'balanced_performance' = high R² + low overfitting
             top_n: Number of top models to tag (default: 10)
             ascending: Whether to sort ascending (True) or descending (False)
         
@@ -358,13 +359,47 @@ class MLflowTracker:
                 log.warning(f"Experiment '{experiment_name}' not found")
                 return []
             
-            # Search all runs in experiment, ordered by metric
-            order_by = f"metrics.{metric} {'ASC' if ascending else 'DESC'}"
-            runs = client.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                order_by=[order_by],
-                max_results=1000
-            )
+            # For composite metric, fetch all runs and compute score manually
+            if metric == "balanced_performance":
+                runs = client.search_runs(
+                    experiment_ids=[experiment.experiment_id],
+                    max_results=1000
+                )
+                
+                # Calculate composite score for each run
+                scored_runs = []
+                for run in runs:
+                    r2 = run.data.metrics.get("avg_test_r2", None)
+                    test_rmse = run.data.metrics.get("avg_test_rmse", None)
+                    train_rmse = run.data.metrics.get("avg_train_rmse", None)
+                    
+                    if r2 is None or test_rmse is None or train_rmse is None:
+                        continue
+                    
+                    # Composite score: R² minus overfitting penalty
+                    # overfitting_gap = test_rmse - train_rmse (positive = overfitting)
+                    overfitting_gap = abs(test_rmse - train_rmse)
+                    composite_score = r2 - (overfitting_gap * 10)  # Penalty weight of 10
+                    
+                    scored_runs.append({
+                        "run": run,
+                        "score": composite_score,
+                        "r2": r2,
+                        "overfitting_gap": overfitting_gap
+                    })
+                
+                # Sort by composite score descending (higher is better)
+                scored_runs.sort(key=lambda x: x["score"], reverse=True)
+                runs = [sr["run"] for sr in scored_runs]
+                
+            else:
+                # Search all runs in experiment, ordered by metric
+                order_by = f"metrics.{metric} {'ASC' if ascending else 'DESC'}"
+                runs = client.search_runs(
+                    experiment_ids=[experiment.experiment_id],
+                    order_by=[order_by],
+                    max_results=1000
+                )
             
             if not runs:
                 log.warning(f"No runs found in experiment '{experiment_name}'")
@@ -376,11 +411,34 @@ class MLflowTracker:
             top_models = []
             for rank, run in enumerate(runs[:top_n], start=1):
                 run_id = run.info.run_id
-                metric_value = run.data.metrics.get(metric, None)
                 
-                if metric_value is None:
-                    log.warning(f"Run {run_id} missing metric {metric}, skipping")
-                    continue
+                # Get metric value (or compute composite)
+                if metric == "balanced_performance":
+                    r2 = run.data.metrics.get("avg_test_r2", None)
+                    test_rmse = run.data.metrics.get("avg_test_rmse", None)
+                    train_rmse = run.data.metrics.get("avg_train_rmse", None)
+                    
+                    if r2 is None or test_rmse is None or train_rmse is None:
+                        log.warning(f"Run {run_id} missing metrics for composite score, skipping")
+                        continue
+                    
+                    overfitting_gap = abs(test_rmse - train_rmse)
+                    metric_value = r2 - (overfitting_gap * 10)
+                    
+                    # Store detailed metrics for display
+                    extra_info = {
+                        "r2": r2,
+                        "overfitting_gap": overfitting_gap,
+                        "test_rmse": test_rmse,
+                        "train_rmse": train_rmse
+                    }
+                else:
+                    metric_value = run.data.metrics.get(metric, None)
+                    extra_info = {}
+                    
+                    if metric_value is None:
+                        log.warning(f"Run {run_id} missing metric {metric}, skipping")
+                        continue
                 
                 # Tag with rank
                 client.set_tag(run_id, "model_rank", str(rank))
@@ -390,13 +448,15 @@ class MLflowTracker:
                 if rank <= 3:
                     client.set_tag(run_id, "production_candidate", "true")
                 
-                top_models.append({
+                model_entry = {
                     "rank": rank,
                     "run_id": run_id,
                     "metric": metric,
                     "value": metric_value,
                     "run_name": run.data.tags.get("mlflow.runName", "Unknown")
-                })
+                }
+                model_entry.update(extra_info)
+                top_models.append(model_entry)
                 
                 log.info(f"  #{rank}: {run_id[:8]} - {metric}={metric_value:.4f}")
             

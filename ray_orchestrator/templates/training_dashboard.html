@@ -791,18 +791,22 @@
                 
                 <div class="form-group">
                     <label for="rankExperimentName">Experiment Name</label>
-                    <input type="text" id="rankExperimentName" placeholder="e.g., wf_xgboost_AAPL_f150_tr3m_te1m" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
-                    <div class="help-text">Enter the exact MLflow experiment name to rank</div>
+                    <select id="rankExperimentName" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
+                        <option value="">-- Loading experiments... --</option>
+                    </select>
+                    <div class="help-text">Select an MLflow experiment to rank</div>
                 </div>
                 
                 <div class="two-col">
                     <div class="form-group">
                         <label for="rankMetric">Metric to Rank By</label>
                         <select id="rankMetric" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
-                            <option value="avg_test_r2" selected>Test R² (higher is better)</option>
+                            <option value="balanced_performance" selected>⭐ Balanced: High R² + Low Overfitting</option>
+                            <option value="avg_test_r2">Test R² (higher is better)</option>
                             <option value="avg_test_rmse">Test RMSE (lower is better)</option>
                             <option value="avg_test_mae">Test MAE (lower is better)</option>
                         </select>
+                        <div class="help-text">Balanced metric = R² - (|Test RMSE - Train RMSE| × 10)</div>
                     </div>
                     
                     <div class="form-group">
@@ -2730,9 +2734,34 @@
         // Rank Models Dialog
         // ========================================================================
         
-        function showRankModelsDialog() {
+        async function showRankModelsDialog() {
             document.getElementById('rankModelsModal').style.display = 'block';
             document.getElementById('rankResults').style.display = 'none';
+            
+            // Load experiment names
+            await loadExperimentNames();
+        }
+        
+        async function loadExperimentNames() {
+            const select = document.getElementById('rankExperimentName');
+            select.innerHTML = '<option value="">-- Loading... --</option>';
+            
+            try {
+                const response = await fetch('/experiments/list');
+                const data = await response.json();
+                
+                if (response.ok && data.experiments && data.experiments.length > 0) {
+                    select.innerHTML = '<option value="">-- Select an experiment --</option>' +
+                        data.experiments.map(name => 
+                            `<option value="${name}">${name}</option>`
+                        ).join('');
+                } else {
+                    select.innerHTML = '<option value="">No experiments found</option>';
+                }
+            } catch (error) {
+                console.error('Error loading experiments:', error);
+                select.innerHTML = '<option value="">Error loading experiments</option>';
+            }
         }
         
         function closeRankModelsDialog() {
@@ -2754,7 +2783,7 @@
             btn.textContent = '⏳ Ranking models...';
             
             try {
-                // Determine if ascending (lower is better for RMSE/MAE)
+                // Determine if ascending (lower is better for RMSE/MAE, higher for R² and balanced)
                 const ascending = metric.includes('rmse') || metric.includes('mae');
                 
                 const response = await fetch(`/models/rank?experiment_name=${encodeURIComponent(experimentName)}&metric=${metric}&top_n=${topN}&ascending=${ascending}`, {
@@ -2779,7 +2808,8 @@
                                     <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Rank</th>
                                     <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run ID</th>
                                     <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run Name</th>
-                                    <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">${result.metric}</th>
+                                    <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Score</th>
+                                    ${result.metric === 'balanced_performance' ? '<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">R²</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Overfitting Gap</th>' : ''}
                                     <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Tags</th>
                                 </tr>
                             </thead>
@@ -2791,12 +2821,18 @@
                         if (model.rank <= 3) tags.push('<span style="background: #28a745; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">🏆 Production Candidate</span>');
                         tags.push(`<span style="background: #ffc107; color: #333; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">Top ${topN}</span>`);
                         
+                        const compositeColumns = result.metric === 'balanced_performance' 
+                            ? `<td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.r2.toFixed(4)}</td>
+                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.overfitting_gap.toFixed(6)}</td>`
+                            : '';
+                        
                         html += `
                             <tr>
                                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>#${model.rank}</strong></td>
                                 <td style="padding: 8px; border: 1px solid #ddd; font-family: monospace; font-size: 0.9em;">${model.run_id.substring(0, 8)}...</td>
                                 <td style="padding: 8px; border: 1px solid #ddd;">${model.run_name}</td>
                                 <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.value.toFixed(6)}</td>
+                                ${compositeColumns}
                                 <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${tags.join(' ')}</td>
                             </tr>
                         `;
