@@ -772,7 +772,56 @@
             <button type="button" class="btn" onclick="showRetrainWorkflow()" style="background: #28a745; margin-left: 15px;">
                 🔄 Retrain Existing Model
             </button>
+            
+            <!-- Rank Models Button -->
+            <button type="button" class="btn" onclick="showRankModelsDialog()" style="background: #ffc107; color: #333; margin-left: 15px;">
+                🏆 Rank Top Models
+            </button>
         </form>
+        
+        <!-- Rank Models Modal -->
+        <div id="rankModelsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; overflow-y: auto;">
+            <div style="max-width: 900px; margin: 80px auto; background: white; border-radius: 12px; padding: 30px; position: relative;">
+                <button onclick="closeRankModelsDialog()" style="position: absolute; top: 15px; right: 15px; background: #dc3545; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 1.1em;">✕</button>
+                
+                <h2 style="margin-top: 0; color: #333;">🏆 Rank Top Models in Experiment</h2>
+                <p style="color: #666; margin-bottom: 25px;">
+                    This will identify and tag the top performing models in an experiment with rankings visible in MLflow UI.
+                </p>
+                
+                <div class="form-group">
+                    <label for="rankExperimentName">Experiment Name</label>
+                    <input type="text" id="rankExperimentName" placeholder="e.g., wf_xgboost_AAPL_f150_tr3m_te1m" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
+                    <div class="help-text">Enter the exact MLflow experiment name to rank</div>
+                </div>
+                
+                <div class="two-col">
+                    <div class="form-group">
+                        <label for="rankMetric">Metric to Rank By</label>
+                        <select id="rankMetric" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
+                            <option value="avg_test_r2" selected>Test R² (higher is better)</option>
+                            <option value="avg_test_rmse">Test RMSE (lower is better)</option>
+                            <option value="avg_test_mae">Test MAE (lower is better)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="rankTopN">Number of Models to Tag</label>
+                        <input type="number" id="rankTopN" value="10" min="1" max="50" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px;">
+                        <div class="help-text">Top N models will be tagged (default: 10)</div>
+                    </div>
+                </div>
+                
+                <div id="rankResults" style="margin-top: 20px; display: none;">
+                    <h3 style="color: #28a745;">✅ Ranking Complete!</h3>
+                    <div id="rankResultsContent" style="background: #f8f9fa; padding: 15px; border-radius: 6px; max-height: 400px; overflow-y: auto;"></div>
+                </div>
+                
+                <button onclick="rankModels()" id="rankModelsBtn" style="width: 100%; padding: 15px; background: #ffc107; color: #333; border: none; border-radius: 6px; font-size: 1.1em; cursor: pointer; margin-top: 20px; font-weight: bold;">
+                    🏆 Rank Models Now
+                </button>
+            </div>
+        </div>
         
         <!-- Retrain Workflow Modal -->
         <div id="retrainModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; overflow-y: auto;">
@@ -2674,6 +2723,111 @@
             } finally {
                 submitBtn.disabled = false;
                 submitBtn.textContent = '🚀 Start Retraining with Selected Features';
+            }
+        }
+        
+        // ========================================================================
+        // Rank Models Dialog
+        // ========================================================================
+        
+        function showRankModelsDialog() {
+            document.getElementById('rankModelsModal').style.display = 'block';
+            document.getElementById('rankResults').style.display = 'none';
+        }
+        
+        function closeRankModelsDialog() {
+            document.getElementById('rankModelsModal').style.display = 'none';
+        }
+        
+        async function rankModels() {
+            const experimentName = document.getElementById('rankExperimentName').value.trim();
+            const metric = document.getElementById('rankMetric').value;
+            const topN = parseInt(document.getElementById('rankTopN').value);
+            
+            if (!experimentName) {
+                alert('⚠️ Please enter an experiment name');
+                return;
+            }
+            
+            const btn = document.getElementById('rankModelsBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Ranking models...';
+            
+            try {
+                // Determine if ascending (lower is better for RMSE/MAE)
+                const ascending = metric.includes('rmse') || metric.includes('mae');
+                
+                const response = await fetch(`/models/rank?experiment_name=${encodeURIComponent(experimentName)}&metric=${metric}&top_n=${topN}&ascending=${ascending}`, {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Show results
+                    document.getElementById('rankResults').style.display = 'block';
+                    
+                    let html = `
+                        <p style="margin-bottom: 15px;">
+                            <strong>Experiment:</strong> ${result.experiment_name}<br>
+                            <strong>Ranked by:</strong> ${result.metric}<br>
+                            <strong>Total models tagged:</strong> ${result.total_ranked}
+                        </p>
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #e9ecef;">
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Rank</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run ID</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run Name</th>
+                                    <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">${result.metric}</th>
+                                    <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Tags</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+                    
+                    result.models.forEach(model => {
+                        const tags = [];
+                        if (model.rank <= 3) tags.push('<span style="background: #28a745; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">🏆 Production Candidate</span>');
+                        tags.push(`<span style="background: #ffc107; color: #333; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">Top ${topN}</span>`);
+                        
+                        html += `
+                            <tr>
+                                <td style="padding: 8px; border: 1px solid #ddd;"><strong>#${model.rank}</strong></td>
+                                <td style="padding: 8px; border: 1px solid #ddd; font-family: monospace; font-size: 0.9em;">${model.run_id.substring(0, 8)}...</td>
+                                <td style="padding: 8px; border: 1px solid #ddd;">${model.run_name}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.value.toFixed(6)}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${tags.join(' ')}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += `
+                            </tbody>
+                        </table>
+                        <p style="margin-top: 15px; color: #666; font-size: 0.95em;">
+                            ℹ️ Models are now tagged in MLflow with 'model_rank', 'top_${topN}', and 'production_candidate' tags.<br>
+                            You can filter by these tags in the MLflow UI.
+                        </p>
+                    `;
+                    
+                    document.getElementById('rankResultsContent').innerHTML = html;
+                    
+                    btn.textContent = '✅ Ranking Complete';
+                    setTimeout(() => {
+                        btn.textContent = '🏆 Rank Models Now';
+                        btn.disabled = false;
+                    }, 2000);
+                } else {
+                    alert(`❌ Error ranking models: ${result.detail || 'Unknown error'}`);
+                    btn.textContent = '🏆 Rank Models Now';
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error('Error ranking models:', error);
+                alert(`❌ Error ranking models: ${error.message}`);
+                btn.textContent = '🏆 Rank Models Now';
+                btn.disabled = false;
             }
         }
     </script>

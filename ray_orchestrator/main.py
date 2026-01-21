@@ -2454,23 +2454,29 @@ async def list_trained_models():
                         with open(feature_importance_file, 'r') as f:
                             feature_importance = json.load(f)
                     
-                    # Extract key info
+                    # Extract key info from nested metadata structure
+                    model_info_section = metadata.get("model_info", {})
+                    preprocessing_config = metadata.get("preprocessing_config", {})
+                    validation_summary = metadata.get("validation_summary", {})
+                    overall_metrics = validation_summary.get("overall_metrics", {})
+                    training_info = metadata.get("training_info", {})
+                    
                     model_info = {
                         "experiment_id": experiment_dir.name,
                         "trial_id": trial_dir.name,
                         "checkpoint_path": str(checkpoint_dir),
-                        "algorithm": metadata.get("algorithm", "unknown"),
-                        "ticker": metadata.get("ticker", "unknown"),
+                        "algorithm": model_info_section.get("algorithm", "unknown"),
+                        "ticker": preprocessing_config.get("primary_ticker", "unknown"),
                         "num_features": len(feature_importance),
-                        "avg_test_rmse": metadata.get("avg_test_rmse"),
-                        "avg_test_r2": metadata.get("avg_test_r2"),
-                        "num_folds": metadata.get("num_folds", 0),
-                        "context_symbols": metadata.get("context_symbols", []),
-                        "train_months": metadata.get("train_months"),
-                        "test_months": metadata.get("test_months"),
+                        "avg_test_rmse": overall_metrics.get("avg_test_rmse"),
+                        "avg_test_r2": overall_metrics.get("avg_test_r2"),
+                        "num_folds": overall_metrics.get("num_folds", 0),
+                        "context_symbols": preprocessing_config.get("context_symbols", []),
+                        "train_months": preprocessing_config.get("train_months"),
+                        "test_months": preprocessing_config.get("test_months"),
                         "params": params,
                         "config": config,
-                        "created_at": metadata.get("timestamp", "unknown"),
+                        "created_at": training_info.get("trained_at", "unknown"),
                         "top_features": feature_importance[:10] if feature_importance else []
                     }
                     
@@ -2546,6 +2552,71 @@ async def get_model_features(experiment_id: str, trial_id: str):
         raise HTTPException(status_code=404, detail="Model or features not found")
     except Exception as e:
         log.error(f"Error getting features: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/models/rank")
+async def rank_models(
+    experiment_name: str,
+    metric: str = "avg_test_r2",
+    top_n: int = 10,
+    ascending: bool = False
+) -> dict:
+    """
+    Rank models in an experiment and tag the top N.
+    
+    This endpoint:
+    1. Queries all runs in the specified experiment
+    2. Sorts by the specified metric
+    3. Tags the top N with 'model_rank', 'top_N', and 'production_candidate' tags
+    4. Returns the ranked list
+    
+    Args:
+        experiment_name: Name of MLflow experiment to rank
+        metric: Metric to rank by (default: avg_test_r2)
+        top_n: Number of top models to tag (default: 10)
+        ascending: Sort ascending (True) or descending (False, default)
+    
+    Returns:
+        Dict with ranked models list and summary stats
+    
+    Example:
+        POST /models/rank?experiment_name=wf_xgboost_AAPL_f150_tr3m_te1m&metric=avg_test_r2&top_n=10
+    """
+    try:
+        from ray_orchestrator.mlflow_integration import MLflowTracker
+        mlflow_tracker = MLflowTracker()
+        
+        top_models = mlflow_tracker.rank_top_models(
+            experiment_name=experiment_name,
+            metric=metric,
+            top_n=top_n,
+            ascending=ascending
+        )
+        
+        if not top_models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No models found in experiment '{experiment_name}' or experiment does not exist"
+            )
+        
+        return {
+            "experiment_name": experiment_name,
+            "metric": metric,
+            "top_n": top_n,
+            "total_ranked": len(top_models),
+            "models": top_models,
+            "summary": {
+                "best_value": top_models[0]["value"] if top_models else None,
+                "worst_value": top_models[-1]["value"] if top_models else None,
+                "best_run_id": top_models[0]["run_id"] if top_models else None
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error ranking models: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

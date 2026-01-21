@@ -202,6 +202,11 @@ class MLflowTracker:
     ):
         """
         Log permutation importance to an existing MLflow run.
+        Makes feature importance visible in MLflow UI through:
+        - All features logged as parameters (comma-separated list)
+        - Top 20 features logged as individual metrics
+        - Full importance data as JSON artifact
+        - CSV artifact for easy download/analysis
         
         Args:
             run_id: MLflow run ID
@@ -215,11 +220,44 @@ class MLflowTracker:
             except Exception as e:
                 log.warning(f"Could not log permutation importance table: {e}")
             
-            # Log top features as metrics
-            for idx, row in importance_df.head(10).iterrows():
-                mlflow.log_metric(f"perm_importance_{row['feature']}", row['importance_mean'])
+            # Log CSV for easy download
+            try:
+                import tempfile
+                import os
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+                    importance_df.to_csv(f.name, index=False)
+                    mlflow.log_artifact(f.name, "feature_importance.csv")
+                    os.unlink(f.name)
+            except Exception as e:
+                log.warning(f"Could not log feature importance CSV: {e}")
+            
+            # Log all feature names as a parameter (visible in UI)
+            try:
+                all_features = ", ".join(importance_df['feature'].tolist()[:50])  # First 50 to avoid param length limit
+                if len(importance_df) > 50:
+                    all_features += f" ...and {len(importance_df) - 50} more"
+                mlflow.log_param("feature_names", all_features)
+                mlflow.log_param("total_features", len(importance_df))
+            except Exception as e:
+                log.warning(f"Could not log feature names: {e}")
+            
+            # Log top 20 features as individual metrics (visible in UI)
+            for idx, row in importance_df.head(20).iterrows():
+                # Use safe metric name (replace invalid chars)
+                safe_name = str(row['feature']).replace('/', '_').replace(' ', '_')[:250]
+                mlflow.log_metric(f"importance_{safe_name}", row['importance_mean'])
+            
+            # Log summary stats as metrics
+            mlflow.log_metrics({
+                "importance_max": float(importance_df['importance_mean'].max()),
+                "importance_mean": float(importance_df['importance_mean'].mean()),
+                "importance_median": float(importance_df['importance_mean'].median()),
+                "importance_min": float(importance_df['importance_mean'].min()),
+            })
             
             log.info(f"Permutation importance logged to run {run_id}")
+            log.info(f"  - Top feature: {importance_df.iloc[0]['feature']} ({importance_df.iloc[0]['importance_mean']:.4f})")
+            log.info(f"  - {len(importance_df)} features logged as metrics (top 20) and parameters")
     
     def evaluate_model(
         self,
@@ -291,6 +329,83 @@ class MLflowTracker:
         except Exception as e:
             log.warning(f"⚠️  MLflow evaluation failed: {e}")
             log.debug(f"Evaluation error details:", exc_info=True)
+    
+    def rank_top_models(
+        self,
+        experiment_name: str,
+        metric: str = "avg_test_r2",
+        top_n: int = 10,
+        ascending: bool = False
+    ) -> list:
+        """
+        Rank models in an experiment by a metric and tag the top N.
+        
+        Args:
+            experiment_name: Name of the experiment to rank
+            metric: Metric name to rank by (default: avg_test_r2)
+            top_n: Number of top models to tag (default: 10)
+            ascending: Whether to sort ascending (True) or descending (False)
+        
+        Returns:
+            List of top model run info dictionaries with rankings
+        """
+        try:
+            client = mlflow.tracking.MlflowClient(self.tracking_uri)
+            
+            # Get experiment
+            experiment = client.get_experiment_by_name(experiment_name)
+            if not experiment:
+                log.warning(f"Experiment '{experiment_name}' not found")
+                return []
+            
+            # Search all runs in experiment, ordered by metric
+            order_by = f"metrics.{metric} {'ASC' if ascending else 'DESC'}"
+            runs = client.search_runs(
+                experiment_ids=[experiment.experiment_id],
+                order_by=[order_by],
+                max_results=1000
+            )
+            
+            if not runs:
+                log.warning(f"No runs found in experiment '{experiment_name}'")
+                return []
+            
+            log.info(f"Found {len(runs)} runs in '{experiment_name}', ranking by {metric}")
+            
+            # Tag top N runs
+            top_models = []
+            for rank, run in enumerate(runs[:top_n], start=1):
+                run_id = run.info.run_id
+                metric_value = run.data.metrics.get(metric, None)
+                
+                if metric_value is None:
+                    log.warning(f"Run {run_id} missing metric {metric}, skipping")
+                    continue
+                
+                # Tag with rank
+                client.set_tag(run_id, "model_rank", str(rank))
+                client.set_tag(run_id, f"top_{top_n}", "true")
+                
+                # Tag top 3 as production candidates
+                if rank <= 3:
+                    client.set_tag(run_id, "production_candidate", "true")
+                
+                top_models.append({
+                    "rank": rank,
+                    "run_id": run_id,
+                    "metric": metric,
+                    "value": metric_value,
+                    "run_name": run.data.tags.get("mlflow.runName", "Unknown")
+                })
+                
+                log.info(f"  #{rank}: {run_id[:8]} - {metric}={metric_value:.4f}")
+            
+            log.info(f"✅ Tagged top {len(top_models)} models in '{experiment_name}'")
+            return top_models
+            
+        except Exception as e:
+            log.error(f"Error ranking models: {e}", exc_info=True)
+            return []
     
     def get_registered_models(self) -> list:
         """
