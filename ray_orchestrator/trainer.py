@@ -641,6 +641,18 @@ class WalkForwardTrainer:
         
         log.info(f"Loaded {len(self.folds)} folds for training")
         
+        # Log detailed fold splits
+        log.info("="*80)
+        log.info("TRAIN/TEST FOLD SPLITS")
+        log.info("="*80)
+        for fold in self.folds:
+            train_rows = len(fold.X_train) if hasattr(fold, 'X_train') and fold.X_train is not None else 'unknown'
+            test_rows = len(fold.X_test) if hasattr(fold, 'X_test') and fold.X_test is not None else 'unknown'
+            log.info(f"Fold {fold.fold_id}:")
+            log.info(f"  Train: {fold.train_start} to {fold.train_end} ({train_rows} rows)")
+            log.info(f"  Test:  {fold.test_start} to {fold.test_end} ({test_rows} rows)")
+        log.info("="*80)
+        
         # CRITICAL: Force cleanup of preprocessing actors to free CPUs for training
         import gc
         gc.collect()  # Python garbage collection

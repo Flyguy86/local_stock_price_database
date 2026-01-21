@@ -1715,12 +1715,14 @@ class StreamingPreprocessor:
             if use_cached_folds and len(symbols) == 1:
                 cached_fold = self._try_load_cached_fold(fold, symbols[0])
                 if cached_fold is not None:
-                    log.info(f"✓ Using cached fold {fold.fold_id} for {symbols[0]} (skipping recalculation)")
+                    log.info(f"✓ Using CACHED fold {fold.fold_id} for {symbols[0]} (skipping recalculation)")
                     yield cached_fold
                     continue
             
             # Cache miss or caching disabled - compute from scratch
-            log.info(f"Computing fold {fold.fold_id} from scratch...")
+            cache_status = "DISABLED" if not use_cached_folds else "MISS"
+            log.info(f"Computing fold {fold.fold_id} from FRESH data (cache: {cache_status})")
+            log.info(f"  Dates: Train {fold.train_start} to {fold.train_end}, Test {fold.test_start} to {fold.test_end}")
             
             # Load data
             fold = self.load_fold_data(

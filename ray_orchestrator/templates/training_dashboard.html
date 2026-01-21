@@ -3097,9 +3097,11 @@
             btn.textContent = '🔄 Submitting Training Job...';
             
             try {
-                // Create new experiment name with lineage from original
+                // Create descriptive experiment name with ticker, context, and fold config
                 const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-                const newExperimentName = `${originalExperimentName}_retrain_${timestamp}`;
+                const contextStr = contextSymbols.length > 0 ? `_ctx${contextSymbols.join('')}` : '';
+                const foldStr = `_${trainMonths}m${testMonths}m`;
+                const newExperimentName = `${primaryTicker}${contextStr}${foldStr}_retrain_${timestamp}`;
                 
                 // Submit new training job with form values
                 const trainingConfig = {
