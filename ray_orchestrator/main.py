@@ -2558,24 +2558,21 @@ async def get_model_features(experiment_id: str, trial_id: str):
 @app.get("/experiments/list")
 async def list_experiments():
     """
-    List all MLflow experiment names.
+    List all experiment names from Ray checkpoints directory.
     Used to populate dropdown in rank models UI.
     """
     try:
-        from ray_orchestrator.mlflow_integration import MLflowTracker
-        mlflow_tracker = MLflowTracker()
+        checkpoint_base = Path("/app/data/ray_checkpoints")
+        if not checkpoint_base.exists():
+            return {"experiments": [], "total": 0}
         
-        import mlflow
-        client = mlflow.tracking.MlflowClient(mlflow_tracker.tracking_uri)
-        
-        # Get all experiments
-        experiments = client.search_experiments()
-        
-        # Extract names and filter out deleted ones
-        experiment_names = [
-            exp.name for exp in experiments 
-            if exp.lifecycle_stage == "active" and exp.name != "Default"
-        ]
+        # Get all experiment directory names
+        experiment_names = []
+        for experiment_dir in checkpoint_base.iterdir():
+            if experiment_dir.is_dir() and not experiment_dir.name.startswith('.'):
+                # Skip special directories
+                if experiment_dir.name not in ['backtest_results', 'fingerprints.db']:
+                    experiment_names.append(experiment_dir.name)
         
         # Sort by name
         experiment_names.sort()
