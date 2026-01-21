@@ -2221,25 +2221,24 @@ async def clear_all_fingerprints():
 
 @app.get("/experiments")
 async def list_experiments():
-    """List all experiments and their status."""
-    experiments = []
-    
-    for name, results in orchestrator.results.items():
-        try:
-            df = results.get_dataframe()
-            experiments.append({
-                "name": name,
-                "num_trials": len(df),
-                "completed": len(df[df.get("status", "") == "completed"]) if "status" in df.columns else len(df),
-                "best_metric": float(df[settings.tune.metric].max()) if settings.tune.metric in df.columns else None
-            })
-        except Exception as e:
-            experiments.append({
-                "name": name,
-                "error": str(e)
-            })
-    
-    return {"experiments": experiments}
+    """List all experiments from Ray checkpoints directory."""
+    try:
+        checkpoint_base = Path("/app/data/ray_checkpoints")
+        
+        if not checkpoint_base.exists():
+            return {"experiments": []}
+        
+        experiments = []
+        for experiment_dir in checkpoint_base.iterdir():
+            if experiment_dir.is_dir() and not experiment_dir.name.startswith('.'):
+                if experiment_dir.name not in ['backtest_results', 'fingerprints.db']:
+                    experiments.append({"name": experiment_dir.name})
+        
+        return {"experiments": experiments}
+        
+    except Exception as e:
+        log.error(f"Error listing experiments: {e}")
+        return {"experiments": []}
 
 
 @app.get("/experiments/{experiment_name}")
@@ -2555,52 +2554,10 @@ async def get_model_features(experiment_id: str, trial_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/experiments/list")
-async def list_experiments():
-    """
-    List all experiment names from Ray checkpoints directory.
-    Used to populate dropdown in rank models UI.
-    """
-    try:
-        checkpoint_base = Path("/app/data/ray_checkpoints")
-        log.info(f"Checking checkpoint directory: {checkpoint_base}")
-        log.info(f"Directory exists: {checkpoint_base.exists()}")
-        
-        if not checkpoint_base.exists():
-            log.warning(f"Checkpoint directory does not exist: {checkpoint_base}")
-            return {"experiments": [], "total": 0}
-        
-        # Get all experiment directory names
-        experiment_names = []
-        all_items = list(checkpoint_base.iterdir())
-        log.info(f"Found {len(all_items)} items in checkpoint directory")
-        
-        for experiment_dir in all_items:
-            log.info(f"Checking item: {experiment_dir.name}, is_dir={experiment_dir.is_dir()}")
-            if experiment_dir.is_dir() and not experiment_dir.name.startswith('.'):
-                # Skip special directories
-                if experiment_dir.name not in ['backtest_results', 'fingerprints.db']:
-                    experiment_names.append(experiment_dir.name)
-                    log.info(f"Added experiment: {experiment_dir.name}")
-        
-        # Sort by name
-        experiment_names.sort()
-        
-        log.info(f"Returning {len(experiment_names)} experiments: {experiment_names}")
-        return {
-            "experiments": experiment_names,
-            "total": len(experiment_names)
-        }
-        
-    except Exception as e:
-        log.error(f"Error listing experiments: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/models/rank")
 async def rank_models(
     experiment_name: str,
-    metric: str = "avg_test_r2",
+    metric: str = "test_r2",
     top_n: int = 10,
     ascending: bool = False
 ) -> dict:
@@ -2615,7 +2572,7 @@ async def rank_models(
     
     Args:
         experiment_name: Name of MLflow experiment to rank
-        metric: Metric to rank by (default: avg_test_r2)
+        metric: Metric to rank by (default: test_r2, options: test_r2, test_rmse, train_rmse, balanced_performance)
         top_n: Number of top models to tag (default: 10)
         ascending: Sort ascending (True) or descending (False, default)
     
@@ -2651,7 +2608,7 @@ async def rank_models(
             "summary": {
                 "best_value": top_models[0]["value"] if top_models else None,
                 "worst_value": top_models[-1]["value"] if top_models else None,
-                "best_run_id": top_models[0]["run_id"] if top_models else None
+                "best_trial_id": top_models[0]["trial_id"] if top_models else None
             }
         }
         
@@ -2659,6 +2616,252 @@ async def rank_models(
         raise
     except Exception as e:
         log.error(f"Error ranking models: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/models/trial-details")
+async def get_trial_details(experiment_name: str, trial_dir: str) -> dict:
+    """
+    Get detailed information about a specific trial including config and feature importance.
+    
+    Args:
+        experiment_name: Name of the experiment
+        trial_dir: Trial directory name
+        
+    Returns:
+        Dict with trial config, metrics, and feature importance
+    """
+    try:
+        from pathlib import Path
+        import json
+        
+        # Read trial data from checkpoint
+        checkpoint_base = Path(f"/app/data/ray_checkpoints/{experiment_name}")
+        trial_path = checkpoint_base / trial_dir
+        
+        if not trial_path.exists():
+            raise HTTPException(status_code=404, detail=f"Trial directory not found: {trial_dir}")
+        
+        # Read result.json for metrics
+        result_file = trial_path / "result.json"
+        if result_file.exists():
+            with open(result_file, 'r') as f:
+                lines = f.readlines()
+                last_line = lines[-1].strip() if lines else None
+                if last_line:
+                    metrics = json.loads(last_line)
+                else:
+                    metrics = {}
+        else:
+            metrics = {}
+        
+        # Read params.json for config
+        params_file = trial_path / "params.json"
+        if params_file.exists():
+            with open(params_file, 'r') as f:
+                config = json.load(f)
+        else:
+            config = {}
+        
+        # Try to load feature importance from checkpoint
+        feature_importance = []
+        checkpoint_dir = trial_path / "checkpoint_000000"
+        if checkpoint_dir.exists():
+            # Look for feature importance file
+            fi_file = checkpoint_dir / "feature_importance.json"
+            if fi_file.exists():
+                with open(fi_file, 'r') as f:
+                    fi_data = json.load(f)
+                    # Extract from "all_features" array and convert to expected format
+                    if 'all_features' in fi_data:
+                        feature_importance = [
+                            {
+                                "feature": feat["name"],
+                                "importance": feat["importance"],
+                                "rank": feat.get("rank", idx + 1)
+                            }
+                            for idx, feat in enumerate(fi_data["all_features"])
+                        ]
+                    else:
+                        # Fallback if different format
+                        feature_importance = fi_data
+        
+        return {
+            "trial_dir": trial_dir,
+            "config": config,
+            "metrics": metrics,
+            "feature_importance": feature_importance
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting trial details: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/training/submit")
+async def submit_retrain_job(config: dict):
+    """
+    Submit a retraining job with feature selection.
+    
+    This creates a new Ray training job that inherits configuration from the parent trial
+    but uses only the selected features.
+    
+    Expected config format:
+    {
+        "primary_ticker": "GOOGL",
+        "context_tickers": [],
+        "algorithm": "xgboost",
+        "selected_features": ["returns", "log_returns", ...],
+        "fold_config": {...},
+        "hyperparameters": {...},
+        "experiment_name": "walk_forward_xgboost_GOOGL_retrain_...",
+        "parent_experiment": "walk_forward_xgboost_GOOGL",
+        "parent_trial": "trial_dir_name"
+    }
+    """
+    try:
+        primary_ticker = config.get("primary_ticker")
+        selected_features = config.get("selected_features", [])
+        experiment_name = config.get("experiment_name")
+        parent_experiment = config.get("parent_experiment")
+        parent_trial = config.get("parent_trial")
+        
+        # Validate required parameters
+        if not primary_ticker:
+            raise HTTPException(status_code=400, detail="primary_ticker is required")
+        if not selected_features:
+            raise HTTPException(status_code=400, detail="selected_features is required")
+        if not experiment_name:
+            raise HTTPException(status_code=400, detail="experiment_name is required")
+        
+        log.info(f"Submitting retrain job for {primary_ticker} with {len(selected_features)} selected features")
+        log.info(f"Parent: {parent_experiment} / {parent_trial}")
+        
+        # Calculate excluded features by loading all features from parent checkpoint
+        excluded_features = []
+        if parent_experiment and parent_trial:
+            try:
+                checkpoint_dir = os.path.join("/app/data/ray_checkpoints", parent_experiment, parent_trial, "checkpoint_000000")
+                feature_importance_file = os.path.join(checkpoint_dir, "feature_importance.json")
+                
+                if os.path.exists(feature_importance_file):
+                    with open(feature_importance_file, 'r') as f:
+                        importance_data = json.load(f)
+                        all_features = [feat["name"] for feat in importance_data.get("all_features", [])]
+                        # Exclude features that weren't selected
+                        excluded_features = [f for f in all_features if f not in selected_features]
+                        log.info(f"Calculated exclusion list: {len(excluded_features)} features to exclude from {len(all_features)} total")
+                else:
+                    log.warning(f"Feature importance file not found at {feature_importance_file}, cannot calculate exclusions")
+            except Exception as e:
+                log.error(f"Error loading parent features: {e}", exc_info=True)
+        
+        # Get fold configuration from config (passed directly from UI)
+        train_months = config.get("train_months", 12)
+        test_months = config.get("test_months", 3)
+        step_months = config.get("step_months", 3)
+        start_date = config.get("start_date", "2020-01-01")
+        end_date = config.get("end_date", "2024-12-31")
+        windows = config.get("windows", [5, 10, 20, 60])
+        resampling_timeframes = config.get("resampling_timeframes", ['1min', '5min', '15min', '30min', '1h', '4h', '1d'])
+        context_symbols = config.get("context_tickers", [])
+        
+        # Get hyperparameters from parent or use defaults for tuning
+        hyperparameters = config.get("hyperparameters", {})
+        
+        # Create job submission client
+        from ray.job_submission import JobSubmissionClient
+        client = JobSubmissionClient("http://127.0.0.1:8265")
+        
+        # Prepare Python entrypoint
+        entrypoint_code = f'''
+import ray
+from ray_orchestrator.trainer import create_walk_forward_trainer
+
+ray.init(address="auto", ignore_reinit_error=True)
+
+trainer = create_walk_forward_trainer(parquet_dir="/app/data/parquet")
+
+# Feature filtering: exclude features not in selected list
+excluded_features = {excluded_features!r}
+
+results = trainer.run_walk_forward_tuning(
+    symbols=["{primary_ticker}"],
+    start_date="{start_date}",
+    end_date="{end_date}",
+    train_months={train_months},
+    test_months={test_months},
+    step_months={step_months},
+    algorithm="{config.get('algorithm', 'xgboost')}",
+    param_space={hyperparameters if hyperparameters else 'None'},
+    num_samples={config.get('num_samples', 10)},
+    context_symbols={context_symbols!r},
+    windows={windows!r},
+    resampling_timeframes={resampling_timeframes!r},
+    num_gpus={config.get('num_gpus', 0)},
+    actor_pool_size={config.get('actor_pool_size', 4)},
+    skip_empty_folds={config.get('skip_empty_folds', True)},
+    excluded_features=excluded_features,
+    experiment_name="{experiment_name}",
+    disable_mlflow=True,
+    use_cached_folds=False
+)
+
+best = results.get_best_result()
+print(f"=== RETRAIN COMPLETE ===")
+print(f"Experiment: {experiment_name}")
+print(f"Selected features: {{len({selected_features!r})}}")
+print(f"Excluded features: {{len(excluded_features)}}")
+print(f"Best test RMSE: {{best.metrics.get('test_rmse', 'N/A')}}")
+print(f"Best test R2: {{best.metrics.get('test_r2', 'N/A')}}")
+'''
+        
+        # Submit job with metadata for lineage tracking
+        import base64
+        encoded_code = base64.b64encode(entrypoint_code.encode()).decode()
+        
+        runtime_env = {
+            "env_vars": {
+                "PYTHONPATH": "/app"
+            }
+        }
+        
+        metadata = {
+            "ticker": str(primary_ticker or "unknown"),
+            "algorithm": str(config.get("algorithm", "xgboost")),
+            "experiment_name": str(experiment_name or "unknown"),
+            "parent_experiment": str(parent_experiment or "unknown"),
+            "parent_trial": str(parent_trial or "unknown"),
+            "features_selected": str(len(selected_features)),
+            "features_excluded": str(len(excluded_features)),
+            "type": "retrain_with_feature_selection"
+        }
+        
+        job_id = client.submit_job(
+            entrypoint=f'python -c "import base64; exec(base64.b64decode(\'{encoded_code}\').decode())"',
+            runtime_env=runtime_env,
+            metadata=metadata
+        )
+        
+        log.info(f"Retrain job submitted: {job_id} for experiment {experiment_name}")
+        log.info(f"Features: {len(selected_features)} selected, {len(excluded_features)} excluded")
+        
+        return {
+            "status": "submitted",
+            "job_id": job_id,
+            "experiment_name": experiment_name,
+            "primary_ticker": primary_ticker,
+            "features_selected": len(selected_features),
+            "features_excluded": len(excluded_features),
+            "parent_experiment": parent_experiment,
+            "parent_trial": parent_trial,
+            "note": f"Job submitted via Ray. View progress at Ray Dashboard (port 8265). Job ID: {job_id}"
+        }
+        
+    except Exception as e:
+        log.error(f"Error submitting retrain job: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

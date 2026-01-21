@@ -827,6 +827,74 @@
             </div>
         </div>
         
+        <!-- Feature Selection & Retrain Modal -->
+        <div id="featureSelectionModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 900px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h2 style="margin: 0;">🎯 Feature Selection & Retrain</h2>
+                    <button onclick="closeFeatureSelectionDialog()" style="background: none; border: none; font-size: 1.5em; cursor: pointer;">×</button>
+                </div>
+                
+                <div id="selectedModelInfo" style="background: #e7f3ff; padding: 15px; border-radius: 6px; margin-bottom: 20px;"></div>
+                
+                <!-- Training Configuration Form -->
+                <div style="margin-bottom: 20px; background: #fff3cd; padding: 15px; border-radius: 6px; border: 1px solid #ffc107;">
+                    <h3>⚙️ Training Configuration</h3>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 15px;">
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Primary Ticker *</label>
+                            <input type="text" id="retrainTicker" value="GOOGL" placeholder="e.g., GOOGL" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Context Symbols</label>
+                            <input type="text" id="retrainContext" placeholder="e.g., QQQ,VIX" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Start Date *</label>
+                            <input type="date" id="retrainStartDate" value="2023-01-01" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">End Date *</label>
+                            <input type="date" id="retrainEndDate" value="2024-12-31" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Train Months *</label>
+                            <input type="number" id="retrainTrainMonths" value="12" min="1" max="60" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Test Months *</label>
+                            <input type="number" id="retrainTestMonths" value="3" min="1" max="12" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Step Months *</label>
+                            <input type="number" id="retrainStepMonths" value="3" min="1" max="12" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                        <div>
+                            <label style="display: block; margin-bottom: 5px; font-weight: bold;">Number of Trials *</label>
+                            <input type="number" id="retrainNumSamples" value="10" min="1" max="100" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;" required>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="featureImportanceSection" style="margin-bottom: 20px;">
+                    <h3>📊 Feature Importance</h3>
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 10px;">
+                        <label style="display: inline-block; margin-right: 20px;">
+                            <input type="checkbox" id="autoFilterLowImportance" checked onclick="toggleAutoFilter()">
+                            Auto-hide features with importance &lt; 0.0001
+                        </label>
+                        <button onclick="selectAllFeatures()" style="padding: 5px 10px; margin-right: 10px;">Select All</button>
+                        <button onclick="deselectAllFeatures()" style="padding: 5px 10px;">Deselect All</button>
+                    </div>
+                    <div id="featureList" style="max-height: 400px; overflow-y: auto; background: white; border: 1px solid #ddd; border-radius: 4px; padding: 10px;"></div>
+                </div>
+                
+                <button onclick="trainWithSelectedFeatures()" id="retrainBtn" style="width: 100%; padding: 15px; background: #28a745; color: white; border: none; border-radius: 6px; font-size: 1.1em; cursor: pointer; font-weight: bold;">
+                    🚀 Train New Model with Selected Features
+                </button>
+            </div>
+        </div>
+        
         <!-- Retrain Workflow Modal -->
         <div id="retrainModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; overflow-y: auto;">
             <div style="max-width: 1200px; margin: 40px auto; background: white; border-radius: 12px; padding: 30px; position: relative;">
@@ -2748,7 +2816,7 @@
             
             try {
                 console.log('Fetching experiments...');
-                const response = await fetch('/experiments/list');
+                const response = await fetch('/experiments');
                 const data = await response.json();
                 
                 console.log('Experiments response:', response.ok, data);
@@ -2758,8 +2826,8 @@
                 if (response.ok && data.experiments && data.experiments.length > 0) {
                     console.log('Populating dropdown with', data.experiments.length, 'experiments');
                     select.innerHTML = '<option value="">-- Select an experiment --</option>' +
-                        data.experiments.map(name => 
-                            `<option value="${name}">${name}</option>`
+                        data.experiments.map(exp => 
+                            `<option value="${exp.name}">${exp.name}</option>`
                         ).join('');
                     console.log('Dropdown HTML:', select.innerHTML.substring(0, 200));
                 } else {
@@ -2814,11 +2882,14 @@
                             <thead>
                                 <tr style="background: #e9ecef;">
                                     <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Rank</th>
-                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run ID</th>
-                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Run Name</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Trial ID</th>
+                                    <th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Trial Name</th>
                                     <th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Score</th>
-                                    ${result.metric === 'balanced_performance' ? '<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">R²</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Overfitting Gap</th>' : ''}
+                                    ${result.metric === 'balanced_performance' 
+                                        ? '<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Test R²</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Overfitting Gap</th>' 
+                                        : '<th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Test R²</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Test RMSE</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Train RMSE</th><th style="padding: 8px; text-align: right; border: 1px solid #ddd;">Overfitting Gap</th>'}
                                     <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Tags</th>
+                                    <th style="padding: 8px; text-align: center; border: 1px solid #ddd;">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -2830,18 +2901,27 @@
                         tags.push(`<span style="background: #ffc107; color: #333; padding: 2px 6px; border-radius: 3px; font-size: 0.85em;">Top ${topN}</span>`);
                         
                         const compositeColumns = result.metric === 'balanced_performance' 
-                            ? `<td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.r2.toFixed(4)}</td>
-                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.overfitting_gap.toFixed(6)}</td>`
-                            : '';
+                            ? `<td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.test_r2 || 0).toFixed(4)}</td>
+                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.overfitting_gap || 0).toFixed(6)}</td>`
+                            : `<td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.test_r2 || 0).toFixed(4)}</td>
+                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.test_rmse || 0).toFixed(6)}</td>
+                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.train_rmse || 0).toFixed(6)}</td>
+                               <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${(model.overfitting_gap || 0).toFixed(6)}</td>`;
                         
                         html += `
                             <tr>
                                 <td style="padding: 8px; border: 1px solid #ddd;"><strong>#${model.rank}</strong></td>
-                                <td style="padding: 8px; border: 1px solid #ddd; font-family: monospace; font-size: 0.9em;">${model.run_id.substring(0, 8)}...</td>
-                                <td style="padding: 8px; border: 1px solid #ddd;">${model.run_name}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd; font-family: monospace; font-size: 0.9em;">${model.trial_id || 'N/A'}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd;">${model.run_name || model.trial_dir}</td>
                                 <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">${model.value.toFixed(6)}</td>
                                 ${compositeColumns}
                                 <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">${tags.join(' ')}</td>
+                                <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">
+                                    <button onclick="selectModelForRetrain('${result.experiment_name}', '${model.trial_dir}', ${model.rank})" 
+                                            style="background: #007bff; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.9em;">
+                                        📝 Select for Retrain
+                                    </button>
+                                </td>
                             </tr>
                         `;
                     });
@@ -2872,6 +2952,209 @@
                 alert(`❌ Error ranking models: ${error.message}`);
                 btn.textContent = '🏆 Rank Models Now';
                 btn.disabled = false;
+            }
+        }
+        
+        // Feature Selection & Retrain Functions
+        let selectedModelData = null;
+        let originalExperimentName = null;
+        
+        async function selectModelForRetrain(experimentName, trialDir, rank) {
+            try {
+                // Store original experiment name for lineage
+                originalExperimentName = experimentName;
+                
+                // Fetch trial details and feature importance
+                const response = await fetch(`/models/trial-details?experiment_name=${experimentName}&trial_dir=${encodeURIComponent(trialDir)}`);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Failed to load trial details');
+                }
+                
+                selectedModelData = data;
+                
+                // Display model info
+                document.getElementById('selectedModelInfo').innerHTML = `
+                    <h4 style="margin-top: 0;">Selected Model: Rank #${rank}</h4>
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; font-size: 0.95em;">
+                        <div><strong>Original Experiment:</strong> ${experimentName}</div>
+                        <div><strong>Trial:</strong> ${trialDir}</div>
+                        <div><strong>Primary Symbol:</strong> ${data.config.primary_ticker || 'N/A'}</div>
+                        <div><strong>Algorithm:</strong> ${data.config.algorithm || 'N/A'}</div>
+                        <div><strong>Test R²:</strong> ${(data.metrics.test_r2 || 0).toFixed(4)}</div>
+                        <div><strong>Features Used:</strong> ${data.feature_importance ? data.feature_importance.length : 0}</div>
+                    </div>
+                `;
+                
+                // Display feature importance with checkboxes
+                displayFeatureImportance(data.feature_importance || []);
+                
+                // Show modal
+                document.getElementById('featureSelectionModal').style.display = 'block';
+                
+            } catch (error) {
+                console.error('Error selecting model:', error);
+                alert(`❌ Error: ${error.message}`);
+            }
+        }
+        
+        function displayFeatureImportance(features) {
+            const autoFilter = document.getElementById('autoFilterLowImportance').checked;
+            const threshold = 0.0001;
+            
+            if (!features || features.length === 0) {
+                document.getElementById('featureList').innerHTML = '<p style="color: #666;">No feature importance data available for this model.</p>';
+                return;
+            }
+            
+            // Sort by importance descending
+            features.sort((a, b) => b.importance - a.importance);
+            
+            let html = '<div style="display: grid; gap: 8px;">';
+            features.forEach((feature, idx) => {
+                const isLowImportance = feature.importance < threshold;
+                const checked = autoFilter ? !isLowImportance : true;
+                const opacity = isLowImportance ? 'opacity: 0.5;' : '';
+                
+                html += `
+                    <label style="display: flex; align-items: center; padding: 8px; background: ${idx % 2 === 0 ? '#f8f9fa' : 'white'}; border-radius: 4px; ${opacity}">
+                        <input type="checkbox" 
+                               class="feature-checkbox" 
+                               data-feature="${feature.feature}" 
+                               data-importance="${feature.importance}"
+                               ${checked ? 'checked' : ''}
+                               style="margin-right: 10px;">
+                        <span style="flex: 1; font-family: monospace; font-size: 0.9em;">${feature.feature}</span>
+                        <span style="color: ${feature.importance >= threshold ? '#28a745' : '#6c757d'}; font-weight: bold; margin-left: 10px;">
+                            ${feature.importance.toFixed(6)}
+                        </span>
+                    </label>
+                `;
+            });
+            html += '</div>';
+            
+            document.getElementById('featureList').innerHTML = html;
+        }
+        
+        function closeFeatureSelectionDialog() {
+            document.getElementById('featureSelectionModal').style.display = 'none';
+            selectedModelData = null;
+        }
+        
+        function toggleAutoFilter() {
+            if (selectedModelData && selectedModelData.feature_importance) {
+                displayFeatureImportance(selectedModelData.feature_importance);
+            }
+        }
+        
+        function selectAllFeatures() {
+            document.querySelectorAll('.feature-checkbox').forEach(cb => cb.checked = true);
+        }
+        
+        function deselectAllFeatures() {
+            document.querySelectorAll('.feature-checkbox').forEach(cb => cb.checked = false);
+        }
+        
+        async function trainWithSelectedFeatures() {
+            if (!selectedModelData) {
+                alert('No model selected');
+                return;
+            }
+            
+            // Get selected features
+            const selectedFeatures = Array.from(document.querySelectorAll('.feature-checkbox:checked'))
+                .map(cb => cb.dataset.feature);
+            
+            if (selectedFeatures.length === 0) {
+                alert('Please select at least one feature');
+                return;
+            }
+            
+            // Get form values
+            const primaryTicker = document.getElementById('retrainTicker').value.trim();
+            const contextSymbolsStr = document.getElementById('retrainContext').value.trim();
+            const contextSymbols = contextSymbolsStr ? contextSymbolsStr.split(',').map(s => s.trim()) : [];
+            const startDate = document.getElementById('retrainStartDate').value;
+            const endDate = document.getElementById('retrainEndDate').value;
+            const trainMonths = parseInt(document.getElementById('retrainTrainMonths').value);
+            const testMonths = parseInt(document.getElementById('retrainTestMonths').value);
+            const stepMonths = parseInt(document.getElementById('retrainStepMonths').value);
+            const numSamples = parseInt(document.getElementById('retrainNumSamples').value);
+            
+            // Validate
+            if (!primaryTicker) {
+                alert('Please enter a primary ticker');
+                return;
+            }
+            if (!startDate || !endDate) {
+                alert('Please enter start and end dates');
+                return;
+            }
+            
+            const btn = document.getElementById('retrainBtn');
+            btn.disabled = true;
+            btn.textContent = '🔄 Submitting Training Job...';
+            
+            try {
+                // Create new experiment name with lineage from original
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+                const newExperimentName = `${originalExperimentName}_retrain_${timestamp}`;
+                
+                // Submit new training job with form values
+                const trainingConfig = {
+                    primary_ticker: primaryTicker,
+                    context_tickers: contextSymbols,
+                    algorithm: selectedModelData.config.algorithm || 'xgboost',
+                    selected_features: selectedFeatures,
+                    start_date: startDate,
+                    end_date: endDate,
+                    train_months: trainMonths,
+                    test_months: testMonths,
+                    step_months: stepMonths,
+                    windows: [5, 10, 20, 60],
+                    resampling_timeframes: ['1min', '5min', '15min', '30min', '1h', '4h', '1d'],
+                    hyperparameters: {},
+                    num_samples: numSamples,
+                    experiment_name: newExperimentName,
+                    parent_experiment: originalExperimentName,
+                    parent_trial: selectedModelData.trial_dir
+                };
+                
+                const response = await fetch('/training/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(trainingConfig)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // Get Ray Dashboard URL based on current environment
+                    const rayDashboardUrl = window.location.hostname === 'localhost' 
+                        ? `http://localhost:8265/#/jobs/${result.job_id}`
+                        : `https://${window.location.hostname.replace('-8100', '-8265')}/#/jobs/${result.job_id}`;
+                    
+                    const message = `✅ Training job submitted successfully!\n\n` +
+                                  `Experiment: ${trainingConfig.experiment_name}\n` +
+                                  `Job ID: ${result.job_id}\n` +
+                                  `Features: ${selectedFeatures.length} selected, ${result.features_excluded} excluded\n\n` +
+                                  `View progress at:\n${rayDashboardUrl}`;
+                    alert(message);
+                    
+                    // Open Ray Dashboard in new tab
+                    window.open(rayDashboardUrl, '_blank');
+                    
+                    closeFeatureSelectionDialog();
+                } else {
+                    throw new Error(result.detail || 'Training submission failed');
+                }
+            } catch (error) {
+                console.error('Error submitting training:', error);
+                alert(`❌ Error: ${error.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🚀 Train New Model with Selected Features';
             }
         }
     </script>

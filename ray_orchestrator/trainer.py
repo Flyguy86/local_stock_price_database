@@ -571,6 +571,9 @@ class WalkForwardTrainer:
         actor_pool_size: Optional[int] = None,
         skip_empty_folds: bool = False,
         excluded_features: Optional[List[str]] = None,
+        experiment_name: Optional[str] = None,
+        disable_mlflow: bool = False,
+        use_cached_folds: bool = True,
     ) -> tune.ResultGrid:
         """
         Run hyperparameter tuning with walk-forward validation.
@@ -589,6 +592,8 @@ class WalkForwardTrainer:
             resampling_timeframes: Multi-timeframe features
             skip_empty_folds: If True, skip empty folds with warnings; if False, fail on empty folds
             excluded_features: List of feature names to exclude from training (for retraining workflow)
+            experiment_name: Custom experiment name (for retrain lineage tracking). If None, auto-generated.
+            disable_mlflow: If True, skip MLflow logging (for isolated Ray jobs without network access)
             
         Returns:
             Ray Tune ResultGrid with all trial results
@@ -629,7 +634,8 @@ class WalkForwardTrainer:
             windows=windows,
             resampling_timeframes=resampling_timeframes,
             num_gpus=num_gpus,
-            actor_pool_size=actor_pool_size
+            actor_pool_size=actor_pool_size,
+            use_cached_folds=use_cached_folds
         ):
             self.folds.append(fold)
         
@@ -782,24 +788,29 @@ class WalkForwardTrainer:
         # Build descriptive experiment name
         primary_symbol = symbols[0]
         context_str = f"+{len(context_symbols)}ctx" if context_symbols else ""
-        # We don't know num_features yet, will update in checkpoint metadata
-        experiment_name = f"wf_{algorithm}_{primary_symbol}{context_str}_pbt"
+        # Use provided experiment_name or auto-generate one
+        if experiment_name is None:
+            experiment_name = f"wf_{algorithm}_{primary_symbol}{context_str}_pbt"
+        
+        log.info(f"Experiment name: {experiment_name}")
         
         # Setup MLflow callback for automatic trial logging
-        mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-        
         callbacks = []
-        try:
-            mlflow_callback = MLflowLoggerCallback(
-                tracking_uri=mlflow_uri,
-                experiment_name=experiment_name,
-                save_artifact=True,  # Save model artifacts to MLflow
-                tags={"algorithm": algorithm, "ticker": primary_symbol, "context_symbols": str(context_symbols)}
-            )
-            callbacks.append(mlflow_callback)
-            log.info(f"✅ MLflow callback configured: {mlflow_uri}, experiment: {experiment_name}")
-        except Exception as e:
-            log.warning(f"⚠️ Failed to setup MLflow callback: {e}. Continuing without MLflow logging.")
+        if not disable_mlflow:
+            mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+            try:
+                mlflow_callback = MLflowLoggerCallback(
+                    tracking_uri=mlflow_uri,
+                    experiment_name=experiment_name,
+                    save_artifact=True,  # Save model artifacts to MLflow
+                    tags={"algorithm": algorithm, "ticker": primary_symbol, "context_symbols": str(context_symbols)}
+                )
+                callbacks.append(mlflow_callback)
+                log.info(f"✅ MLflow callback configured: {mlflow_uri}, experiment: {experiment_name}")
+            except Exception as e:
+                log.warning(f"⚠️ Failed to setup MLflow callback: {e}. Continuing without MLflow logging.")
+        else:
+            log.info("MLflow logging disabled for this training run")
         
         tuner = tune.Tuner(
             trainable,

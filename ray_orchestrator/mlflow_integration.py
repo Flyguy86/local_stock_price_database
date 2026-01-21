@@ -339,9 +339,10 @@ class MLflowTracker:
     ) -> list:
         """
         Rank models in an experiment by a metric and tag the top N.
+        Reads from Ray checkpoint result.json files.
         
         Args:
-            experiment_name: Name of the experiment to rank
+            experiment_name: Name of the experiment (checkpoint directory name)
             metric: Metric name to rank by (default: avg_test_r2)
                    Special: 'balanced_performance' = high R² + low overfitting
             top_n: Number of top models to tag (default: 10)
@@ -351,116 +352,143 @@ class MLflowTracker:
             List of top model run info dictionaries with rankings
         """
         try:
-            client = mlflow.tracking.MlflowClient(self.tracking_uri)
+            from pathlib import Path
+            import json
             
-            # Get experiment
-            experiment = client.get_experiment_by_name(experiment_name)
-            if not experiment:
-                log.warning(f"Experiment '{experiment_name}' not found")
+            checkpoint_base = Path(f"/app/data/ray_checkpoints/{experiment_name}")
+            
+            if not checkpoint_base.exists():
+                log.warning(f"Experiment directory '{experiment_name}' not found")
                 return []
             
-            # For composite metric, fetch all runs and compute score manually
-            if metric == "balanced_performance":
-                runs = client.search_runs(
-                    experiment_ids=[experiment.experiment_id],
-                    max_results=1000
-                )
+            # Read all trial results
+            trial_results = []
+            for trial_dir in checkpoint_base.iterdir():
+                if not trial_dir.is_dir() or trial_dir.name.startswith('.'):
+                    continue
                 
-                # Calculate composite score for each run
-                scored_runs = []
-                for run in runs:
-                    r2 = run.data.metrics.get("avg_test_r2", None)
-                    test_rmse = run.data.metrics.get("avg_test_rmse", None)
-                    train_rmse = run.data.metrics.get("avg_train_rmse", None)
+                result_file = trial_dir / "result.json"
+                if not result_file.exists():
+                    continue
+                
+                try:
+                    # Ray Tune writes JSONL format (one JSON object per line)
+                    # Read the last line which contains the final metrics
+                    with open(result_file, 'r') as f:
+                        lines = f.readlines()
+                        if not lines:
+                            continue
+                        last_line = lines[-1].strip()
+                        if not last_line:
+                            continue
+                        result = json.loads(last_line)
                     
-                    if r2 is None or test_rmse is None or train_rmse is None:
-                        continue
-                    
-                    # Composite score: R² minus overfitting penalty
-                    # overfitting_gap = test_rmse - train_rmse (positive = overfitting)
-                    overfitting_gap = abs(test_rmse - train_rmse)
-                    composite_score = r2 - (overfitting_gap * 10)  # Penalty weight of 10
-                    
-                    scored_runs.append({
-                        "run": run,
-                        "score": composite_score,
-                        "r2": r2,
-                        "overfitting_gap": overfitting_gap
+                    trial_results.append({
+                        "trial_dir": trial_dir.name,
+                        "trial_id": trial_dir.name.split('_')[3] if '_' in trial_dir.name else trial_dir.name,
+                        "metrics": result
                     })
-                
-                # Sort by composite score descending (higher is better)
-                scored_runs.sort(key=lambda x: x["score"], reverse=True)
-                runs = [sr["run"] for sr in scored_runs]
-                
-            else:
-                # Search all runs in experiment, ordered by metric
-                order_by = f"metrics.{metric} {'ASC' if ascending else 'DESC'}"
-                runs = client.search_runs(
-                    experiment_ids=[experiment.experiment_id],
-                    order_by=[order_by],
-                    max_results=1000
-                )
+                except Exception as e:
+                    log.warning(f"Could not read {result_file}: {e}")
+                    continue
             
-            if not runs:
-                log.warning(f"No runs found in experiment '{experiment_name}'")
+            if not trial_results:
+                log.warning(f"No trial results found in '{experiment_name}'")
                 return []
             
-            log.info(f"Found {len(runs)} runs in '{experiment_name}', ranking by {metric}")
+            # Calculate scores and rank
+            scored_trials = []
             
-            # Tag top N runs
-            top_models = []
-            for rank, run in enumerate(runs[:top_n], start=1):
-                run_id = run.info.run_id
+            # Map frontend metric names to Ray Tune metric names
+            metric_map = {
+                "avg_test_r2": "test_r2",
+                "avg_test_rmse": "test_rmse",
+                "avg_train_rmse": "train_rmse",
+                "avg_test_mae": "test_mae"
+            }
+            
+            for trial in trial_results:
+                metrics = trial["metrics"]
                 
-                # Get metric value (or compute composite)
                 if metric == "balanced_performance":
-                    r2 = run.data.metrics.get("avg_test_r2", None)
-                    test_rmse = run.data.metrics.get("avg_test_rmse", None)
-                    train_rmse = run.data.metrics.get("avg_train_rmse", None)
+                    # Ray Tune uses test_r2, test_rmse, train_rmse (not avg_*)
+                    r2 = metrics.get("test_r2")
+                    test_rmse = metrics.get("test_rmse")
+                    train_rmse = metrics.get("train_rmse")
                     
                     if r2 is None or test_rmse is None or train_rmse is None:
-                        log.warning(f"Run {run_id} missing metrics for composite score, skipping")
                         continue
                     
                     overfitting_gap = abs(test_rmse - train_rmse)
-                    metric_value = r2 - (overfitting_gap * 10)
+                    score = r2 - (overfitting_gap * 10)
                     
-                    # Store detailed metrics for display
-                    extra_info = {
+                    scored_trials.append({
+                        "trial": trial,
+                        "score": score,
                         "r2": r2,
                         "overfitting_gap": overfitting_gap,
                         "test_rmse": test_rmse,
                         "train_rmse": train_rmse
-                    }
+                    })
                 else:
-                    metric_value = run.data.metrics.get(metric, None)
-                    extra_info = {}
-                    
-                    if metric_value is None:
-                        log.warning(f"Run {run_id} missing metric {metric}, skipping")
+                    # Map metric name if needed
+                    ray_metric = metric_map.get(metric, metric)
+                    score = metrics.get(ray_metric)
+                    if score is None:
                         continue
-                
-                # Tag with rank
-                client.set_tag(run_id, "model_rank", str(rank))
-                client.set_tag(run_id, f"top_{top_n}", "true")
-                
-                # Tag top 3 as production candidates
-                if rank <= 3:
-                    client.set_tag(run_id, "production_candidate", "true")
+                    
+                    scored_trials.append({
+                        "trial": trial,
+                        "score": score
+                    })
+            
+            # Sort by score
+            scored_trials.sort(key=lambda x: x["score"], reverse=not ascending)
+            
+            # Build top models list
+            top_models = []
+            for rank, scored in enumerate(scored_trials[:top_n], start=1):
+                trial = scored["trial"]
                 
                 model_entry = {
                     "rank": rank,
-                    "run_id": run_id,
+                    "trial_dir": trial["trial_dir"],
+                    "trial_id": trial["trial_id"],
                     "metric": metric,
-                    "value": metric_value,
-                    "run_name": run.data.tags.get("mlflow.runName", "Unknown")
+                    "value": scored["score"],
+                    "run_name": trial["trial_dir"]
                 }
-                model_entry.update(extra_info)
-                top_models.append(model_entry)
                 
-                log.info(f"  #{rank}: {run_id[:8]} - {metric}={metric_value:.4f}")
+                # Add model-specific metrics from Ray Tune results
+                trial_metrics = trial["metrics"]
+                
+                # Calculate overfitting gap for all models (test_rmse - train_rmse)
+                # Smaller gap = less overfit, closer to optimal generalization
+                test_rmse_val = trial_metrics.get("test_rmse", 0)
+                train_rmse_val = trial_metrics.get("train_rmse", 0)
+                overfitting_gap = abs(test_rmse_val - train_rmse_val)
+                
+                if metric == "balanced_performance":
+                    model_entry.update({
+                        "test_r2": scored["r2"],
+                        "overfitting_gap": overfitting_gap,
+                        "test_rmse": test_rmse_val,
+                        "train_rmse": train_rmse_val
+                    })
+                else:
+                    # Include all key metrics for this specific trial/model
+                    model_entry.update({
+                        "test_r2": trial_metrics.get("test_r2"),
+                        "test_rmse": test_rmse_val,
+                        "train_rmse": train_rmse_val,
+                        "overfitting_gap": overfitting_gap,
+                        "test_mae": trial_metrics.get("test_mae")
+                    })
+                
+                top_models.append(model_entry)
+                log.info(f"  #{rank}: {trial['trial_id']} - {metric}={scored['score']:.4f}")
             
-            log.info(f"✅ Tagged top {len(top_models)} models in '{experiment_name}'")
+            log.info(f"✅ Ranked {len(top_models)} models in '{experiment_name}'")
             return top_models
             
         except Exception as e:

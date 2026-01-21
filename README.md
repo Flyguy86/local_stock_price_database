@@ -3,6 +3,7 @@ Stock price database with ML model training, backtesting, and model registry
 
 ## Quick Links
 - **[Model Registry Guide](MODEL_REGISTRY_GUIDE.md)** - MLflow model management & backtest simulation
+- **[Feature Selection Workflow](FEATURE_SELECTION_WORKFLOW.md)** - Model ranking and iterative feature selection
 - **[Complete Test Guide](tests/COMPLETE_TEST_GUIDE.md)** - All 208+ tests documented
 - **[CI/CD Workflow](.github/workflows/test.yml)** - Automated testing pipeline
 - **[Test Runner](run_unit_tests.sh)** - Run tests locally
@@ -11,6 +12,7 @@ Stock price database with ML model training, backtesting, and model registry
 
 ### MLflow Model Registry
 - **Browse Models**: `http://localhost:8265/registry`
+- **Training Dashboard**: `http://localhost:8100` - Rank models, select features, retrain
 - **MLflow UI**: `http://localhost:5000`
 - **Features**:
   - Automatic model logging from training runs
@@ -18,6 +20,8 @@ Stock price database with ML model training, backtesting, and model registry
   - Model versioning and stage management (Production/Staging/Archived)
   - Detailed performance metrics and hyperparameters
   - Launch backtests with configurable slippage and transaction costs
+  - **NEW**: Model ranking by performance metrics
+  - **NEW**: Feature selection and retraining workflow with lineage tracking
 
 ### Single Source of Truth: Ray Data Pipeline
 **CRITICAL**: All feature engineering (training and backtesting) uses the **same Ray Data pipeline** (`StreamingPreprocessor.calculate_indicators_gpu()`):
