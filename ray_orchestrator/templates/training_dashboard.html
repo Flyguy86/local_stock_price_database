@@ -2747,15 +2747,23 @@
             select.innerHTML = '<option value="">-- Loading... --</option>';
             
             try {
+                console.log('Fetching experiments...');
                 const response = await fetch('/experiments/list');
                 const data = await response.json();
                 
+                console.log('Experiments response:', response.ok, data);
+                console.log('Experiments array:', data.experiments);
+                console.log('Experiments length:', data.experiments ? data.experiments.length : 0);
+                
                 if (response.ok && data.experiments && data.experiments.length > 0) {
+                    console.log('Populating dropdown with', data.experiments.length, 'experiments');
                     select.innerHTML = '<option value="">-- Select an experiment --</option>' +
                         data.experiments.map(name => 
                             `<option value="${name}">${name}</option>`
                         ).join('');
+                    console.log('Dropdown HTML:', select.innerHTML.substring(0, 200));
                 } else {
+                    console.log('No experiments condition triggered');
                     select.innerHTML = '<option value="">No experiments found</option>';
                 }
             } catch (error) {

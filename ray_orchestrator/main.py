@@ -2563,20 +2563,30 @@ async def list_experiments():
     """
     try:
         checkpoint_base = Path("/app/data/ray_checkpoints")
+        log.info(f"Checking checkpoint directory: {checkpoint_base}")
+        log.info(f"Directory exists: {checkpoint_base.exists()}")
+        
         if not checkpoint_base.exists():
+            log.warning(f"Checkpoint directory does not exist: {checkpoint_base}")
             return {"experiments": [], "total": 0}
         
         # Get all experiment directory names
         experiment_names = []
-        for experiment_dir in checkpoint_base.iterdir():
+        all_items = list(checkpoint_base.iterdir())
+        log.info(f"Found {len(all_items)} items in checkpoint directory")
+        
+        for experiment_dir in all_items:
+            log.info(f"Checking item: {experiment_dir.name}, is_dir={experiment_dir.is_dir()}")
             if experiment_dir.is_dir() and not experiment_dir.name.startswith('.'):
                 # Skip special directories
                 if experiment_dir.name not in ['backtest_results', 'fingerprints.db']:
                     experiment_names.append(experiment_dir.name)
+                    log.info(f"Added experiment: {experiment_dir.name}")
         
         # Sort by name
         experiment_names.sort()
         
+        log.info(f"Returning {len(experiment_names)} experiments: {experiment_names}")
         return {
             "experiments": experiment_names,
             "total": len(experiment_names)
