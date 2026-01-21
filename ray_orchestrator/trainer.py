@@ -104,7 +104,8 @@ class WalkForwardTrainer:
                     algorithm=algorithm,
                     target_col=target_col,
                     feature_cols=feature_cols,
-                    target_transform=target_transform
+                    target_transform=target_transform,
+                    excluded_features=preprocessing_config.get("excluded_features") if preprocessing_config else None
                 )
                 fold_training_time = time.time() - fold_start_time
                 
@@ -336,9 +337,18 @@ class WalkForwardTrainer:
                         X_sample = sample_df[first_features].fillna(0).replace([np.inf, -np.inf], 0).values[:100]
                         y_sample = sample_df[target_col].fillna(0).values[:100]
                         
+                        # Build descriptive experiment name
+                        primary_ticker = preprocessing_config.get('primary_ticker', 'unknown')
+                        context_symbols = preprocessing_config.get('context_symbols', [])
+                        num_features = len(first_features)
+                        train_months = preprocessing_config.get('train_months', 3)
+                        test_months = preprocessing_config.get('test_months', 1)
+                        context_str = f"+{len(context_symbols)}ctx" if context_symbols else ""
+                        experiment_name = f"wf_{algorithm}_{primary_ticker}{context_str}_f{num_features}_tr{train_months}m_te{test_months}m"
+                        
                         # Log to MLflow
                         run_id = mlflow_tracker.log_training_run(
-                            experiment_name=f"walk_forward_{algorithm}_{preprocessing_config.get('primary_ticker', 'unknown')}",
+                            experiment_name=experiment_name,
                             model=first_model,
                             model_type=algorithm,
                             params=config,
@@ -399,7 +409,8 @@ class WalkForwardTrainer:
         algorithm: str,
         target_col: str,
         feature_cols: Optional[List[str]],
-        target_transform: str
+        target_transform: str,
+        excluded_features: Optional[List[str]] = None
     ) -> Dict:
         """Train and evaluate on a single fold."""
         
@@ -427,6 +438,12 @@ class WalkForwardTrainer:
             # Auto-select numeric features (exclude target and metadata)
             exclude_cols = {'ts', 'symbol', target_col, 'open', 'high', 'low', 'volume', 'vwap', 'trade_count'}
             feature_cols = [c for c in train_df.columns if c not in exclude_cols and train_df[c].dtype in [np.float64, np.int64]]
+        
+        # Filter out excluded features (for retraining workflow)
+        if excluded_features:
+            original_count = len(feature_cols)
+            feature_cols = [c for c in feature_cols if c not in excluded_features]
+            log.info(f"Fold {fold.fold_id} excluded {original_count - len(feature_cols)} features ({len(feature_cols)} remaining)")
         
         log.info(f"Fold {fold.fold_id} selected features ({len(feature_cols)}): {feature_cols[:10]}...")
         
@@ -553,6 +570,7 @@ class WalkForwardTrainer:
         num_gpus: float = 0.0,
         actor_pool_size: Optional[int] = None,
         skip_empty_folds: bool = False,
+        excluded_features: Optional[List[str]] = None,
     ) -> tune.ResultGrid:
         """
         Run hyperparameter tuning with walk-forward validation.
@@ -570,11 +588,15 @@ class WalkForwardTrainer:
             windows: SMA windows
             resampling_timeframes: Multi-timeframe features
             skip_empty_folds: If True, skip empty folds with warnings; if False, fail on empty folds
+            excluded_features: List of feature names to exclude from training (for retraining workflow)
             
         Returns:
             Ray Tune ResultGrid with all trial results
         """
         log.info("Starting walk-forward hyperparameter tuning")
+        
+        if excluded_features:
+            log.info(f"Excluding {len(excluded_features)} features from training: {excluded_features[:5]}...")
         
         # Auto-detect CPU count if not specified
         import os
@@ -737,7 +759,9 @@ class WalkForwardTrainer:
             "symbols": symbols,
             "start_date": start_date,
             "end_date": end_date,
-            "feature_engineering_version": self.preprocessor.feature_engineering_version
+            "feature_engineering_version": self.preprocessor.feature_engineering_version,
+            "excluded_features": excluded_features,
+            "primary_ticker": symbols[0]  # For experiment naming
         }
         
         trainable = self.create_trainable(
@@ -755,9 +779,14 @@ class WalkForwardTrainer:
         max_concurrent = max(1, cpu_count - 1)  # Leave 1 CPU for Ray system
         log.info(f"Running up to {max_concurrent} concurrent trials (reserving 1 CPU for Ray)")
         
+        # Build descriptive experiment name
+        primary_symbol = symbols[0]
+        context_str = f"+{len(context_symbols)}ctx" if context_symbols else ""
+        # We don't know num_features yet, will update in checkpoint metadata
+        experiment_name = f"wf_{algorithm}_{primary_symbol}{context_str}_pbt"
+        
         # Setup MLflow callback for automatic trial logging
         mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-        experiment_name = f"walk_forward_{algorithm}_{symbols[0]}"
         
         callbacks = []
         try:
@@ -765,7 +794,7 @@ class WalkForwardTrainer:
                 tracking_uri=mlflow_uri,
                 experiment_name=experiment_name,
                 save_artifact=True,  # Save model artifacts to MLflow
-                tags={"algorithm": algorithm, "ticker": symbols[0]}
+                tags={"algorithm": algorithm, "ticker": primary_symbol, "context_symbols": str(context_symbols)}
             )
             callbacks.append(mlflow_callback)
             log.info(f"✅ MLflow callback configured: {mlflow_uri}, experiment: {experiment_name}")

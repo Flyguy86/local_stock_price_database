@@ -169,6 +169,8 @@ class WalkForwardTrainRequest(BaseModel):
     end_date: Optional[str] = None
     name: Optional[str] = None
     resume: bool = False  # Resume crashed/stopped experiment
+    excluded_features: Optional[list[str]] = None  # Features to exclude from training
+    base_experiment_id: Optional[str] = None  # For retraining from existing model
 
 
 class MultiTickerPBTRequest(BaseModel):
@@ -866,7 +868,8 @@ results = trainer.run_walk_forward_tuning(
     resampling_timeframes={request.resampling_timeframes!r},
     num_gpus={request.num_gpus},
     actor_pool_size={request.actor_pool_size!r},
-    skip_empty_folds={request.skip_empty_folds}
+    skip_empty_folds={request.skip_empty_folds},
+    excluded_features={request.excluded_features!r}
 )
 
 best = results.get_best_result()
@@ -2395,6 +2398,159 @@ async def dashboard(request: Request):
 
 # ============================================================================
 # Main Entry Point
+# ============================================================================
+# Model Retraining & Feature Selection APIs
+# ============================================================================
+
+@app.get("/models/list")
+async def list_trained_models():
+    """
+    List all trained models from Ray checkpoints with their metadata.
+    Returns model info for the retrain workflow.
+    """
+    try:
+        checkpoint_base = Path("/app/data/ray_checkpoints")
+        if not checkpoint_base.exists():
+            return {"models": []}
+        
+        models = []
+        for experiment_dir in checkpoint_base.iterdir():
+            if not experiment_dir.is_dir():
+                continue
+            
+            for trial_dir in experiment_dir.iterdir():
+                if not trial_dir.is_dir():
+                    continue
+                
+                checkpoint_dir = trial_dir / "checkpoint_000000"
+                if not checkpoint_dir.exists():
+                    continue
+                
+                # Read metadata files
+                metadata_file = checkpoint_dir / "metadata.json"
+                params_file = checkpoint_dir / "params.json"
+                config_file = checkpoint_dir / "config.json"
+                feature_importance_file = checkpoint_dir / "feature_importance.json"
+                
+                if not metadata_file.exists():
+                    continue
+                
+                try:
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    params = {}
+                    if params_file.exists():
+                        with open(params_file, 'r') as f:
+                            params = json.load(f)
+                    
+                    config = {}
+                    if config_file.exists():
+                        with open(config_file, 'r') as f:
+                            config = json.load(f)
+                    
+                    feature_importance = []
+                    if feature_importance_file.exists():
+                        with open(feature_importance_file, 'r') as f:
+                            feature_importance = json.load(f)
+                    
+                    # Extract key info
+                    model_info = {
+                        "experiment_id": experiment_dir.name,
+                        "trial_id": trial_dir.name,
+                        "checkpoint_path": str(checkpoint_dir),
+                        "algorithm": metadata.get("algorithm", "unknown"),
+                        "ticker": metadata.get("ticker", "unknown"),
+                        "num_features": len(feature_importance),
+                        "avg_test_rmse": metadata.get("avg_test_rmse"),
+                        "avg_test_r2": metadata.get("avg_test_r2"),
+                        "num_folds": metadata.get("num_folds", 0),
+                        "context_symbols": metadata.get("context_symbols", []),
+                        "train_months": metadata.get("train_months"),
+                        "test_months": metadata.get("test_months"),
+                        "params": params,
+                        "config": config,
+                        "created_at": metadata.get("timestamp", "unknown"),
+                        "top_features": feature_importance[:10] if feature_importance else []
+                    }
+                    
+                    models.append(model_info)
+                    
+                except Exception as e:
+                    log.warning(f"Error reading checkpoint {checkpoint_dir}: {e}")
+                    continue
+        
+        # Sort by test R² descending
+        models.sort(key=lambda x: x.get("avg_test_r2", 0) or 0, reverse=True)
+        
+        return {"models": models}
+        
+    except Exception as e:
+        log.error(f"Error listing models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/models/{experiment_id}/{trial_id}/features")
+async def get_model_features(experiment_id: str, trial_id: str):
+    """
+    Get feature importance and feature lists for a specific model.
+    Used in the retrain workflow for feature selection.
+    """
+    try:
+        checkpoint_dir = Path(f"/app/data/ray_checkpoints/{experiment_id}/{trial_id}/checkpoint_000000")
+        
+        if not checkpoint_dir.exists():
+            raise HTTPException(status_code=404, detail="Checkpoint not found")
+        
+        feature_importance_file = checkpoint_dir / "feature_importance.json"
+        feature_lists_file = checkpoint_dir / "feature_lists.json"
+        metadata_file = checkpoint_dir / "metadata.json"
+        
+        if not feature_importance_file.exists():
+            raise HTTPException(status_code=404, detail="Feature importance file not found")
+        
+        with open(feature_importance_file, 'r') as f:
+            feature_importance = json.load(f)
+        
+        feature_lists = {}
+        if feature_lists_file.exists():
+            with open(feature_lists_file, 'r') as f:
+                feature_lists = json.load(f)
+        
+        metadata = {}
+        if metadata_file.exists():
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+        
+        # Calculate threshold for "low importance"
+        if feature_importance:
+            importances = [f["importance"] for f in feature_importance]
+            median_importance = sorted(importances)[len(importances) // 2]
+            
+            # Mark features below median as low importance
+            for feat in feature_importance:
+                feat["is_low_importance"] = feat["importance"] < median_importance
+        
+        return {
+            "feature_importance": feature_importance,
+            "feature_lists": feature_lists,
+            "metadata": metadata,
+            "summary": {
+                "total_features": len(feature_importance),
+                "low_importance_count": sum(1 for f in feature_importance if f.get("is_low_importance", False)),
+                "median_importance": median_importance if feature_importance else 0
+            }
+        }
+        
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Model or features not found")
+    except Exception as e:
+        log.error(f"Error getting features: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Existing endpoints continue below...
 # ============================================================================
 
 def main():
